@@ -113,6 +113,7 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 client=client,
                 model=model,
                 on_pass=_on_pass,
+                output_mode=intent.get("output_mode", "Both"),
             )
 
             status.update(label="Done", state="complete", expanded=False)
@@ -364,6 +365,7 @@ if st.session_state.outputs:
                 outputs=st.session_state.outputs,
                 client=client,
                 model=model,
+                output_mode=st.session_state.output_mode,
             )
 
     if st.session_state.validation_result:

@@ -56,6 +56,9 @@ Only flag things that are technically wrong, produce incorrect behavior, or woul
 
 VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 
+## Output mode: {output_mode}
+{output_mode_instruction}
+
 ## Original user request
 {user_input}
 
@@ -76,6 +79,12 @@ VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 
 Return only the JSON review object."""
 
+_OUTPUT_MODE_INSTRUCTIONS = {
+    "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
+    "Lambda only": "The user requested Lambda only. Do NOT evaluate or report any Terraform issues — set terraform_issues to []. Only review lambda_python.",
+    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf.",
+}
+
 
 def validate_outputs(
     user_input: str,
@@ -83,6 +92,7 @@ def validate_outputs(
     outputs: dict,
     client: anthropic.Anthropic,
     model: str,
+    output_mode: str = "Both",
 ) -> dict:
     user_content = VALIDATOR_USER_TEMPLATE.format(
         user_input=user_input,
@@ -91,6 +101,8 @@ def validate_outputs(
         terraform_lambda_hcl=outputs.get("terraform_lambda_hcl", ""),
         lambda_python=outputs.get("lambda_python", ""),
         optional_tf=outputs.get("optional_tf", "") or "(none)",
+        output_mode=output_mode,
+        output_mode_instruction=_OUTPUT_MODE_INSTRUCTIONS.get(output_mode, _OUTPUT_MODE_INSTRUCTIONS["Both"]),
     )
 
     response = client.messages.create(
@@ -124,10 +136,11 @@ def refine_outputs(
     model: str,
     max_passes: int = 3,
     on_pass: callable = None,
+    output_mode: str = "Both",
 ) -> dict:
     """Validate and auto-fix outputs up to max_passes times. Returns best-effort result."""
     for pass_num in range(1, max_passes + 1):
-        result = validate_outputs(user_input, intent, outputs, client, model)
+        result = validate_outputs(user_input, intent, outputs, client, model, output_mode=output_mode)
         has_issues = bool(result.get("terraform_issues") or result.get("lambda_issues"))
         if on_pass:
             on_pass(pass_num, result, has_issues)
