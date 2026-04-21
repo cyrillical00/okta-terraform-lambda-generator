@@ -1,0 +1,9 @@
+[
+  {
+    "timestamp": "2026-04-21T06:15:03.635162+00:00",
+    "input": "build a rule or workflow that will add users to the creator role in tableau, but any time a user is added to that role they should be removed from their previous tableau role",
+    "operation_type": "create",
+    "resource_type": "unknown",
+    "resource_name": "tableau_creator_role_workflow"
+  }
+]
