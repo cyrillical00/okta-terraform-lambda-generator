@@ -86,6 +86,15 @@ def build_project_zip(outputs: dict, mode: str) -> bytes:
     return buffer.getvalue()
 
 
+def render_suggestions(suggestions: list[str]) -> None:
+    if not suggestions:
+        return
+    st.divider()
+    st.markdown("**Suggested additions**")
+    for s in suggestions:
+        st.info(s)
+
+
 def render_validation_result(result: dict) -> bool:
     """Renders self-check result. Returns True if the Fix Issues button was clicked."""
     overall = result.get("overall", "warn")

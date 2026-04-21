@@ -17,7 +17,7 @@ from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result
+from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_suggestions
 from history import add_entry, get_entries
 
 
@@ -190,6 +190,7 @@ if st.session_state.gen_error:
 if st.session_state.outputs:
     mode = st.session_state.output_mode
     render_code_panels(st.session_state.outputs, mode)
+    render_suggestions(st.session_state.outputs.get("suggestions", []))
 
     col_check, _ = st.columns([1, 3])
     with col_check:

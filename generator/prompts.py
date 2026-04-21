@@ -171,6 +171,31 @@ For API Gateway triggers: parse event.get("body") and return proper statusCode +
 - Generate functional, complete code for every resource and function
 - If uncertain about a required attribute value, use a sensible Okta default and add an inline comment explaining it
 - The generated code must be ready to apply (Terraform) or deploy (Lambda) with only credential/variable substitution
+
+---
+
+## SECTION E — Suggestions (optional key)
+
+After generating the four required keys, evaluate whether the intent contains requirements that the generated Terraform and Lambda CANNOT fully satisfy on their own. If yes, include a "suggestions" key containing a list of plain-English recommendation strings.
+
+Each suggestion must:
+- State specifically what is missing or unenforceable in the generated code
+- Explain why it cannot be handled by the current resources
+- Propose a concrete next step (Okta Workflows, a second Lambda + event hook, an additional Terraform resource, a manual admin policy, etc.)
+
+**Only include "suggestions" when something meaningful is missing.** Omit the key entirely for straightforward requests that the generated code fully implements.
+
+Common cases that warrant a suggestion:
+- A behavioral constraint that requires runtime enforcement (e.g. "block users from being added to other groups" — the group resource cannot enforce this)
+- Provisioning/deprovisioning automation that needs Okta Workflows or a separate event-driven Lambda
+- Notification or alerting requirements not expressed in the generated code
+- Multi-step flows where only the first step is captured in the generated resource
+- Requirements that depend on external systems (Slack, HR system, ticketing) not configured here
+
+Example — "create a terminated group where members can't be added elsewhere":
+"suggestions": [
+  "The okta_group resource creates the group but cannot enforce membership exclusivity at the Okta level. To auto-remove Terminated users from other groups when they're added, consider: (1) an Okta Workflow triggered on 'User added to group' that checks for Terminated membership and removes conflicting assignments, or (2) a second okta_event_hook + Lambda that listens for group.user_membership.add events and calls the Okta API to remove the user from non-Terminated groups."
+]
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:
@@ -183,4 +208,4 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 
 {clarifications_section}Additional instructions: {extra_instructions}
 
-Return only the JSON object with the four required keys."""
+Return only the JSON object. Include the four required keys always. Include the optional "suggestions" key only if the generated code cannot fully satisfy the intent."""

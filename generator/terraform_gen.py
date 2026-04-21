@@ -20,6 +20,9 @@ def _parse_output(raw: str) -> dict:
     missing = REQUIRED_OUTPUT_KEYS - set(parsed.keys())
     if missing:
         raise ValueError(f"Generated output missing required keys: {', '.join(sorted(missing))}")
+    # suggestions is optional — normalize to list if present
+    if "suggestions" in parsed and not isinstance(parsed["suggestions"], list):
+        parsed["suggestions"] = []
     return parsed
 
 
