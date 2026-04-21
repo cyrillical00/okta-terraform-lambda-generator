@@ -21,8 +21,8 @@ Return exactly this JSON structure (all fields required):
 - okta_app_saml (SAML 2.0 application integration)
 - okta_app_oauth (OIDC/OAuth 2.0 application)
 - okta_group (Okta group)
-- okta_group_rule (group membership rule based on expression)
-- okta_event_hook (Okta event hook webhook to an external endpoint)
+- okta_group_rule (group membership rule that ADDS users to groups based on a profile expression — cannot remove users from groups)
+- okta_event_hook (webhook triggered by Okta events — use this when the request involves removing users from a group, enforcing mutual exclusivity between groups, or any action that cannot be expressed as a simple "add to group" rule)
 - okta_user_profile_mapping (profile mapping between Okta user and an app)
 - okta_auth_server (custom authorization server with scopes and claims)
 - okta_auth_server_policy (access policy on a custom authorization server)
@@ -177,7 +177,7 @@ For resources NOT in the live context list, continue using var.* declarations as
 - Include all required arguments for every resource (never omit required fields)
 - For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps
 - For okta_group: include name and description
-- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about")
+- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
 - For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
 
 ```hcl
