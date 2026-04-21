@@ -48,6 +48,7 @@ def generate_all(
     repo_context_section: str = "",
 ) -> dict:
     answers = intent.get("answers", {})
+    output_mode = intent.get("output_mode", "Both")
     resource_types = intent.get("resource_types", [])
     if len(resource_types) > 1:
         multi_resource_section = (
@@ -67,6 +68,7 @@ def generate_all(
         aws_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
+        output_mode=output_mode,
         clarifications_section=_format_clarifications(answers),
         extra_instructions=extra_instructions or "None",
         env_context_section=env_context_section,

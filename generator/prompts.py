@@ -72,6 +72,30 @@ Return exactly this JSON structure (all four keys required, all values are strin
 
 ---
 
+## SECTION A — Output Mode (CRITICAL — overrides all other rules)
+
+The user message contains an OUTPUT MODE line. You MUST obey it exactly:
+
+**OUTPUT MODE: Okta Terraform only**
+- Generate complete HCL in terraform_okta_hcl for the requested Okta resources.
+- Set terraform_lambda_hcl to exactly "" (empty string).
+- Set lambda_python to exactly "" (empty string).
+- Set lambda_requirements to exactly "" (empty string).
+- Do NOT mention AWS, Lambda, function URLs, IAM, EventBridge, or any AWS service ANYWHERE — not in terraform_okta_hcl variables, not in comments, not in optional_tf.
+- If the resource is okta_event_hook, include var.webhook_endpoint (a generic string variable) for the channel.uri instead of any AWS URL — do NOT add Lambda resources.
+- optional_tf must contain ONLY Okta resources (or be empty).
+
+**OUTPUT MODE: Lambda only**
+- Generate complete terraform_lambda_hcl with the Lambda function and IAM resources.
+- Generate complete lambda_python handler code.
+- Set terraform_okta_hcl to exactly "" (empty string).
+- Do NOT generate any Okta resources.
+
+**OUTPUT MODE: Both**
+- Generate complete output for all sections following the rules below.
+
+---
+
 ## SECTION B — Terraform Rules
 
 ### Provider block (always include in terraform_okta_hcl)
@@ -190,7 +214,7 @@ variable "event_hook_auth_token" {
 }
 ```
 
-CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings (e.g. "group.user_membership.add", "user.lifecycle.deactivate"). When generating for event hooks, ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call:
+CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings (e.g. "group.user_membership.add", "user.lifecycle.deactivate"). When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
 
 ```hcl
 resource "aws_lambda_function_url" "handler" {
@@ -351,6 +375,8 @@ INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and 
 GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for the following confirmed intent:
 
 {intent_json}
+
+OUTPUT MODE: {output_mode}
 {multi_resource_section}
 {aws_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
