@@ -27,7 +27,7 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
     messages = [{"role": "user", "content": user_content}]
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=4096,
         system=[
             {
@@ -43,7 +43,6 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
     try:
         return _parse_output(raw)
     except (json.JSONDecodeError, ValueError):
-        # Assistant-turn injection retry: show Claude its own broken output and ask it to fix it
         retry_messages = messages + [
             {"role": "assistant", "content": raw},
             {
@@ -52,7 +51,7 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
             },
         ]
         retry_response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=4096,
             system=[
                 {

@@ -17,7 +17,7 @@ REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes
 
 def parse_intent(user_input: str, client: anthropic.Anthropic) -> dict:
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=1024,
         system=[
             {
