@@ -14,7 +14,7 @@ ALLOWED_RESOURCE_TYPES = {
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}
 
-MODEL = "claude-3-haiku-20240307"
+MODEL = "claude-haiku-4-5-20251001"
 
 
 def _extract_json(text: str) -> str:

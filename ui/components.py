@@ -86,14 +86,15 @@ def build_project_zip(outputs: dict, mode: str) -> bytes:
     return buffer.getvalue()
 
 
-def render_validation_result(result: dict):
+def render_validation_result(result: dict) -> bool:
+    """Renders self-check result. Returns True if the Fix Issues button was clicked."""
     overall = result.get("overall", "warn")
     tf_issues = result.get("terraform_issues", [])
     lambda_issues = result.get("lambda_issues", [])
 
     if overall == "pass":
         st.success("Self-check passed — output matches the request with no issues found.")
-        return
+        return False
 
     badge = "⚠️ Warning" if overall == "warn" else "❌ Failed"
     st.warning(badge) if overall == "warn" else st.error(badge)
@@ -107,6 +108,8 @@ def render_validation_result(result: dict):
         st.markdown("**Lambda issues:**")
         for issue in lambda_issues:
             st.markdown(f"- {issue}")
+
+    return st.button("Fix Issues", type="primary")
 
 
 def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[bool, bool, str, str, str]:

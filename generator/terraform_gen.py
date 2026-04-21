@@ -5,7 +5,7 @@ from .parser import _extract_json
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 
-MODEL = "claude-3-5-sonnet-20240620"
+MODEL = "claude-haiku-4-5-20251001"
 
 
 class GenerationError(Exception):

@@ -15,7 +15,7 @@ st.set_page_config(
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
-from generator.validator import validate_outputs
+from generator.validator import validate_outputs, fix_outputs
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result
 
@@ -34,7 +34,8 @@ def _init_session_state():
         "gen_error": None,
         "commit_url": None,
         "generation_triggered": False,
-    "validation_result": None,
+        "validation_result": None,
+        "last_user_input": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -174,7 +175,27 @@ if st.session_state.outputs:
             )
 
     if st.session_state.validation_result:
-        render_validation_result(st.session_state.validation_result)
+        fix_clicked = render_validation_result(st.session_state.validation_result)
+        if fix_clicked:
+            client = _get_client()
+            model = _get_model("claude-haiku-4-5-20251001")
+            with st.spinner("Fixing issues..."):
+                try:
+                    fixed = fix_outputs(
+                        intent=st.session_state.intent,
+                        outputs=st.session_state.outputs,
+                        validation_result=st.session_state.validation_result,
+                        client=client,
+                        model=model,
+                    )
+                    st.session_state.outputs = fixed
+                    st.session_state.validation_result = None
+                    st.session_state.commit_url = None
+                    st.rerun()
+                except GenerationError as e:
+                    st.error(f"Fix failed: {e}")
+                    with st.expander("Raw response from Claude"):
+                        st.code(e.raw_response)
 
     default_repo = _get_secret("GITHUB_REPO")
     push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override = render_action_buttons(
