@@ -20,7 +20,8 @@ from ui.components import render_intent_card, render_code_panels, render_action_
 
 
 def _get_secret(key: str) -> str:
-    return st.secrets.get(key) or os.getenv(key, "")
+    val = st.secrets.get(key) or os.getenv(key, "")
+    return val.strip() if val else ""
 
 
 def _init_session_state():
