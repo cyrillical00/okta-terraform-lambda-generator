@@ -17,6 +17,16 @@ REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes
 MODEL = "claude-3-haiku-20240307"
 
 
+def _extract_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        # drop opening fence line and closing fence
+        inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
+        text = "\n".join(inner).strip()
+    return text
+
+
 def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
     response = client.messages.create(
         model=model,
@@ -29,7 +39,7 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
             }
         ],
     )
-    raw = response.content[0].text.strip()
+    raw = _extract_json(response.content[0].text)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:

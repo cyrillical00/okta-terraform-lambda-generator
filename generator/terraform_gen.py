@@ -1,6 +1,7 @@
 import json
 import anthropic
 from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
+from .parser import _extract_json
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 
@@ -14,6 +15,7 @@ class GenerationError(Exception):
 
 
 def _parse_output(raw: str) -> dict:
+    raw = _extract_json(raw)
     parsed = json.loads(raw)
     missing = REQUIRED_OUTPUT_KEYS - set(parsed.keys())
     if missing:
