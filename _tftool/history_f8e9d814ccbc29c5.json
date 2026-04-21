@@ -1,5 +1,12 @@
 [
   {
+    "timestamp": "2026-04-21T21:30:44.013383+00:00",
+    "input": "When a user is removed from the \"Contractors\" Okta group, automatically deactivate their Okta account and send a notification to an internal webhook. The Lambda should run on a daily schedule as a sweep to catch any contractors whose end date has passed but are still active.",
+    "operation_type": "create",
+    "resource_type": "okta_event_hook",
+    "resource_name": "contractor_removal_deactivation"
+  },
+  {
     "timestamp": "2026-04-21T20:22:38.535305+00:00",
     "input": "When a user is added to the Tableau Creator group in Okta, remove them from the Tableau Viewer and Tableau Explorer groups",
     "operation_type": "create",
