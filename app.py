@@ -316,6 +316,7 @@ if parse_clicked and user_input.strip():
                 intent["resource_types"] = okta_types
             if aws_types:
                 intent["aws_resource_types"] = aws_types
+            intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
             errors = validate_intent(intent)
             if errors:
                 st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
