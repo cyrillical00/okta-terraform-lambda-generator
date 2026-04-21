@@ -214,7 +214,22 @@ variable "event_hook_auth_token" {
 }
 ```
 
-CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings (e.g. "group.user_membership.add", "user.lifecycle.deactivate"). When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
+CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings chosen from this reference table — pick the most specific match for the described use case:
+
+| Use case | Correct event type(s) |
+|---|---|
+| User added to a group / role transition | `group.user_membership.add` |
+| User removed from a group | `group.user_membership.remove` |
+| User account deactivated / offboarded | `user.lifecycle.deactivate` |
+| User account activated / onboarded | `user.lifecycle.activate` |
+| New user created in Okta | `user.lifecycle.create` |
+| User deleted | `user.lifecycle.delete` |
+| User profile attribute updated | `user.account.update_profile` |
+| User password changed | `user.account.update_password` |
+| App assigned to user | `application.user_membership.add` |
+| App removed from user | `application.user_membership.remove` |
+
+For group-membership-based automation (e.g. "when a user is added to role X, do Y") always use `group.user_membership.add`, NOT `user.lifecycle.create` or `user.lifecycle.update`. When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
 
 ```hcl
 resource "aws_lambda_function_url" "handler" {
