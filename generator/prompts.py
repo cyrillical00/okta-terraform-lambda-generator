@@ -352,6 +352,14 @@ Rules for optional_tf:
 - Generate complete, working HCL — not pseudocode or placeholders
 - Omit this key entirely (or set to empty string "") when the four required outputs fully satisfy the intent
 
+STRICT ANTI-DUPLICATION — these will cause Terraform conflicts if violated:
+- NEVER declare resource "aws_lambda_function" in optional_tf. The Lambda function already exists in terraform_lambda_hcl as aws_lambda_function.handler. Reference it by that address.
+- NEVER declare resource "aws_iam_role" in optional_tf. The IAM role already exists in terraform_lambda_hcl as aws_iam_role.handler. Reference it as aws_iam_role.handler.id.
+- NEVER name a policy resource "handler" in optional_tf. An aws_iam_role_policy named "handler" already exists in terraform_lambda_hcl. Use a unique name such as "lambda_sns_policy", "lambda_alarm_policy", or "lambda_ext_policy".
+- When adding SNS capability: only add aws_sns_topic + aws_lambda_permission (unique logical name, principal "sns.amazonaws.com") + aws_iam_role_policy with a unique name granting sns:Publish on the topic. DO NOT redeclare the Lambda function.
+- When adding a CloudWatch alarm: reference aws_lambda_function.handler.function_name in the metric dimension. DO NOT redeclare the Lambda function.
+- If an optional extension requires a new Lambda environment variable: add a comment inside the HCL block explaining the user must manually add that variable to the Lambda's environment block in terraform_lambda_hcl. DO NOT redeclare aws_lambda_function to set the env var — that causes a resource conflict.
+
 ---
 
 ## SECTION F — terraform.tfvars.example (optional key)

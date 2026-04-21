@@ -249,6 +249,32 @@ TEST_CASES = [
              expected_resource_type="okta_event_hook",
              must_contain=["group.user_membership.add"],
              must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+
+    # ── optional_tf collision tests (Both mode) ───────────────────────────────
+    TestCase("OPT01",
+             "When a user is removed from the Contractors group, deactivate their account. Also run a daily Lambda sweep for contractors whose end date has passed.",
+             aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule"],
+             must_contain=["group.user_membership.remove"],
+             notes="optional_tf must not redefine aws_lambda_function or aws_iam_role"),
+    TestCase("OPT02",
+             "Fire an event hook when a user is added to the Terminated group and send an SNS alert to the security team",
+             aws_types=["aws_lambda_function", "aws_sns_topic"],
+             must_contain=["group.user_membership.add"],
+             notes="optional_tf must not redefine Lambda or use IAM policy name 'handler'"),
+    TestCase("OPT03",
+             "Create an event hook for user deactivation that calls a Lambda. Add a CloudWatch alarm on Lambda errors.",
+             aws_types=["aws_lambda_function"],
+             must_contain=["user.lifecycle.deactivate"],
+             notes="optional_tf CloudWatch alarm must reference aws_lambda_function.handler, not redeclare it"),
+    TestCase("OPT04",
+             "Build a daily Lambda sweep that deactivates Okta users inactive for 90 days and sends an SNS notification",
+             aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule", "aws_sns_topic"],
+             notes="optional_tf must not add a second aws_lambda_function resource"),
+    TestCase("OPT05",
+             "Set up an event hook for new user creation that triggers Lambda and also publishes to SNS for audit logging",
+             aws_types=["aws_lambda_function", "aws_sns_topic"],
+             must_contain=["user.lifecycle.create"],
+             notes="SNS resources in optional_tf must not redefine Lambda or duplicate IAM policy"),
 ]
 
 
@@ -343,6 +369,23 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         actual = intent.get("resource_type", "")
         if actual != tc.expected_resource_type:
             issues.append(f"Parser chose '{actual}', expected '{tc.expected_resource_type}'")
+
+    # ── 11. optional_tf must not redefine Lambda/IAM already in lambda_hcl ──
+    if optional_tf.strip() and lambda_hcl.strip():
+        if re.search(r'resource\s+"aws_lambda_function"', optional_tf):
+            issues.append(
+                "optional_tf redefines aws_lambda_function — add supplemental resources only, "
+                "reference aws_lambda_function.handler instead"
+            )
+        if re.search(r'resource\s+"aws_iam_role"\s+"', optional_tf):
+            issues.append(
+                "optional_tf redefines aws_iam_role — reference aws_iam_role.handler.id instead"
+            )
+        if re.search(r'resource\s+"aws_iam_role_policy"\s+"handler"', optional_tf):
+            issues.append(
+                "optional_tf uses aws_iam_role_policy name 'handler' which conflicts with "
+                "the existing policy in terraform_lambda_hcl — use a unique name"
+            )
 
     return issues
 
