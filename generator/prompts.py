@@ -119,16 +119,18 @@ The aws_lambda_function resource must use:
 Also include an aws_provider block with region = var.aws_region, and a variable "aws_region" with default = "us-east-1".
 
 ### General Terraform rules
+- Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
-- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref, app_settings_json
+- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps
 - For okta_group: include name and description
-- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments
+- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. The group_assignments field must reference okta_group resource IDs, NEVER app IDs
 - For okta_event_hook: include name, status, channel (object with version, uri, type), events_filter (object with type, items)
 - Use var.* for ALL credentials, tokens, URLs, and IDs — NEVER hardcode any value that would differ between environments
 - For any user-supplied value (SSO URL, entity ID, ACS URL, client ID, etc.), declare a variable with a descriptive name and reference it with var.*
 - Do NOT generate self-referential depends_on (a resource must never depend on itself)
 - Do NOT reference computed attributes that do not exist on the resource type (e.g. acs_endpoints[0] is not a valid output of okta_app_saml)
+- Do NOT invent expression_value or group names — use var.* references for any values the user did not explicitly provide
 
 ---
 
@@ -139,36 +141,27 @@ Also include an aws_provider block with region = var.aws_region, and a variable 
 def handler(event, context):
 ```
 
-### For okta_event_hook resource type — include BOTH paths:
+### Lambda content rules by resource type
 
-**GET path (Okta verification challenge):**
-```python
-method = event.get("requestContext", {}).get("http", {}).get("method", "POST")
-if method == "GET":
-    challenge = event.get("headers", {}).get("x-okta-verification-challenge", "")
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"verification": challenge})
-    }
-```
+**Only generate event hook boilerplate when resource_type is okta_event_hook.**
 
-**POST path (event processing):**
-```python
-body = json.loads(event.get("body", "{}"))
-events = body.get("data", {}).get("events", [])
-for okta_event in events:
-    print(f"Processing event: {okta_event.get('eventType')}")
-    # process event here
-return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
-```
+For okta_event_hook — include GET verification path AND POST event processing path:
+- GET path: return {"verification": event["headers"]["x-okta-verification-challenge"]}
+- POST path: parse body, iterate data.events, print each eventType
+
+For ALL other resource types (okta_app_saml, okta_group, okta_group_rule, okta_user_profile_mapping):
+- Generate a simple Lambda that logs the event and returns 200
+- Do NOT include event hook verification logic — it is irrelevant to these resource types
+- Add a comment at the top explaining what automation this Lambda could perform for the resource type (e.g. for okta_app_saml: notify a Slack channel when a user is assigned to the app)
+
+For scheduled (EventBridge) triggers: include the cron expression as a comment at the top
+For API Gateway triggers: parse event.get("body") and return proper statusCode + headers
 
 ### General Lambda rules
 - Always `import json` at the top
 - Always `import os` if any environment variables are referenced
 - Use `print()` for all logging (CloudWatch-compatible, no logging module needed)
 - Include structured print statements at entry and exit of handler
-- For scheduled (EventBridge) triggers: include the cron expression as a comment at the top of the file
-- For API Gateway triggers: parse `event.get("body")` and return proper statusCode + headers
 
 ---
 
