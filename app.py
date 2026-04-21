@@ -42,8 +42,8 @@ def _get_client() -> anthropic.Anthropic:
     if not api_key:
         st.error("ANTHROPIC_API_KEY is not configured. Add it to .streamlit/secrets.toml or set it as an environment variable.")
         st.stop()
-    if not api_key.startswith("sk-ant-"):
-        st.error(f"ANTHROPIC_API_KEY looks wrong — it should start with 'sk-ant-' but starts with '{api_key[:8]}...'. Check your Streamlit secrets.")
+    if not api_key.startswith("sk-ant"):
+        st.error(f"ANTHROPIC_API_KEY looks wrong — it should start with 'sk-ant' but starts with '{api_key[:8]}...'. Check your Streamlit secrets.")
         st.stop()
     return anthropic.Anthropic(api_key=api_key)
 
