@@ -47,6 +47,9 @@ Do NOT flag:
 - The presence of Lambda code when the user selected "Okta Terraform only" — output_mode is a display filter, not a code correctness issue; Lambda is always generated regardless of display mode
 - Variables declared for future use
 - Inline comments explaining design decisions
+- For okta_event_hook: do not flag that "no Lambda endpoint exists" — the Lambda and its aws_lambda_function_url live in terraform_lambda_hcl which you are not shown; the event_hook_url variable is correctly left as a var.* for the user to fill in after deployment
+- For okta_event_hook: do not flag the absence of okta_app_group_assignment, okta_app_user_assignment, or similar Okta-side assignment resources when the intent is clearly event-driven (Lambda handles the API calls at runtime)
+- Variable declarations without a corresponding data source lookup — validating a var.* value at apply time is the user's responsibility, not a code error
 
 Only flag things that are technically wrong, produce incorrect behavior, or would cause terraform apply to fail or the Lambda to misbehave at runtime."""
 
@@ -149,7 +152,48 @@ Return ONLY a JSON object with exactly these four keys:
   "lambda_requirements": "..."
 }
 
-Rules:
+## Canonical okta_event_hook schema (use this EXACTLY when fixing event hook issues)
+
+Only these five top-level attributes are valid for okta_event_hook: name, status, channel, events_filter, headers.
+NEVER use: events, filters, auth_type, url, eventFilters, or any other attribute name.
+
+```hcl
+resource "okta_event_hook" "example" {
+  name   = "Hook Name"
+  status = "ACTIVE"
+
+  channel = {
+    version = "1.0.0"
+    uri     = var.event_hook_url
+    type    = "HTTP"
+  }
+
+  events_filter = {
+    type  = "EVENT_TYPE"
+    items = ["group.user_membership.add"]
+  }
+
+  headers = [{
+    key   = "Authorization"
+    value = "Bearer ${var.event_hook_auth_token}"
+  }]
+}
+```
+
+When fixing an event hook, also ensure terraform_lambda_hcl contains:
+```hcl
+resource "aws_lambda_function_url" "handler" {
+  function_name      = aws_lambda_function.handler.function_name
+  authorization_type = "NONE"
+}
+
+output "lambda_function_url" {
+  value       = aws_lambda_function_url.handler.function_url
+  description = "Paste this URL into var.event_hook_url"
+}
+```
+
+## General fix rules
 - Fix every issue listed. Do not leave any unfixed.
 - Do not add resources, attributes, or logic that was not in the original intent.
 - Do not remove resources that are correct and intentional.

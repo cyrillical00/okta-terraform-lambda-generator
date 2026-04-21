@@ -147,7 +147,55 @@ For resources NOT in the live context list, continue using var.* declarations as
 - For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps
 - For okta_group: include name and description
 - For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. The group_assignments field must reference okta_group resource IDs, NEVER app IDs
-- For okta_event_hook: include name, status, channel (object with version, uri, type), events_filter (object with type, items)
+- For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
+
+```hcl
+resource "okta_event_hook" "example" {
+  name   = "Example Hook Name"
+  status = "ACTIVE"
+
+  channel = {
+    version = "1.0.0"
+    uri     = var.event_hook_url
+    type    = "HTTP"
+  }
+
+  events_filter = {
+    type  = "EVENT_TYPE"
+    items = ["group.user_membership.add"]
+  }
+
+  headers = [{
+    key   = "Authorization"
+    value = "Bearer ${var.event_hook_auth_token}"
+  }]
+}
+
+variable "event_hook_url" {
+  type        = string
+  description = "HTTPS endpoint URL — use the aws_lambda_function_url output from terraform_lambda_hcl"
+}
+
+variable "event_hook_auth_token" {
+  type        = string
+  sensitive   = true
+  description = "Token sent in the Authorization header for Okta to authenticate to the endpoint"
+}
+```
+
+CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings (e.g. "group.user_membership.add", "user.lifecycle.deactivate"). When generating for event hooks, ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call:
+
+```hcl
+resource "aws_lambda_function_url" "handler" {
+  function_name      = aws_lambda_function.handler.function_name
+  authorization_type = "NONE"
+}
+
+output "lambda_function_url" {
+  value       = aws_lambda_function_url.handler.function_url
+  description = "Paste this URL into var.event_hook_url — it is the HTTPS endpoint for the Okta event hook"
+}
+```
 - For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
 - For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
 - For okta_factor: include provider_id (e.g. "GOOGLE", "OKTA", "DUO"), factor_type (e.g. "token:software:totp", "push"), status ("ACTIVE"). Do NOT wrap in a policy resource — okta_factor is a direct org-level enrollment setting
