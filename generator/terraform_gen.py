@@ -88,7 +88,7 @@ def generate_all(
     raw = response.content[0].text.strip()
 
     try:
-        return _parse_output(raw)
+        result = _parse_output(raw)
     except (json.JSONDecodeError, ValueError):
         retry_messages = messages + [
             {"role": "assistant", "content": raw},
@@ -105,9 +105,21 @@ def generate_all(
         )
         retry_raw = retry_response.content[0].text.strip()
         try:
-            return _parse_output(retry_raw)
+            result = _parse_output(retry_raw)
         except (json.JSONDecodeError, ValueError) as e:
             raise GenerationError(
                 f"Generation failed after retry: {e}",
                 raw_response=retry_raw,
             ) from e
+
+    # Hard-enforce output_mode constraints in code — prompt alone is not reliable enough.
+    if output_mode == "Okta Terraform only":
+        result["terraform_lambda_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Lambda only":
+        result["terraform_okta_hcl"] = ""
+        result["optional_tf"] = ""
+
+    return result

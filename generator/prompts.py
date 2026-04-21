@@ -81,9 +81,9 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 - Set terraform_lambda_hcl to exactly "" (empty string).
 - Set lambda_python to exactly "" (empty string).
 - Set lambda_requirements to exactly "" (empty string).
-- Do NOT mention AWS, Lambda, function URLs, IAM, EventBridge, or any AWS service ANYWHERE — not in terraform_okta_hcl variables, not in comments, not in optional_tf.
-- If the resource is okta_event_hook, include var.webhook_endpoint (a generic string variable) for the channel.uri instead of any AWS URL — do NOT add Lambda resources.
-- optional_tf must contain ONLY Okta resources (or be empty).
+- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS or Lambda resources in optional_tf. optional_tf is also forbidden from containing aws_ resources in this mode.
+- Do NOT reference aws_, Lambda, IAM, EventBridge, SNS, or any AWS service in ANY field — not in terraform_okta_hcl, not in optional_tf, not in variable descriptions, not in comments.
+- If the resource is okta_event_hook, use var.webhook_endpoint (a plain string variable) for channel.uri. The description of var.webhook_endpoint must only say it is an HTTPS endpoint — do NOT mention Lambda, AWS, or function URLs.
 
 **OUTPUT MODE: Lambda only**
 - Generate complete terraform_lambda_hcl with the Lambda function and IAM resources.
@@ -214,11 +214,21 @@ variable "event_hook_auth_token" {
 }
 ```
 
-CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid. The `items` list must contain Okta event type strings chosen from this reference table — pick the most specific match for the described use case:
+CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid.
+
+EVENT TYPE SELECTION — follow this decision tree before choosing items:
+1. Does the request involve a user being added to a group, joining a group, transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> use ONLY `group.user_membership.add`. STOP. Do not also include user.lifecycle.create or any other event alongside it.
+2. Does it involve a user being removed from a group? -> `group.user_membership.remove`. STOP.
+3. Does it involve user deactivation, offboarding, or suspension? -> `user.lifecycle.deactivate`.
+4. Does it involve a new user account being created? -> `user.lifecycle.create`.
+5. Does it involve profile attribute changes? -> `user.account.update_profile`.
+6. None of the above? -> consult the table below.
+
+The `items` list must contain Okta event type strings. Use this table — no exceptions:
 
 | Use case | Correct event type(s) |
 |---|---|
-| User added to a group / role transition | `group.user_membership.add` |
+| User added to a group / role transition / mutual exclusivity between groups | `group.user_membership.add` |
 | User removed from a group | `group.user_membership.remove` |
 | User account deactivated / offboarded | `user.lifecycle.deactivate` |
 | User account activated / onboarded | `user.lifecycle.activate` |
@@ -229,7 +239,9 @@ CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attri
 | App assigned to user | `application.user_membership.add` |
 | App removed from user | `application.user_membership.remove` |
 
-For group-membership-based automation (e.g. "when a user is added to role X, do Y") always use `group.user_membership.add`, NOT `user.lifecycle.create` or `user.lifecycle.update`. When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
+MANDATORY RULE — GROUP MEMBERSHIP: Any request involving a user being added to a group, removed from a group, transitioning between groups, or enforcing group mutual exclusivity MUST use `group.user_membership.add` (or `group.user_membership.remove`). Using `user.lifecycle.create` or `user.lifecycle.update` for these scenarios is ALWAYS wrong — those events fire on account creation/profile changes, not group membership changes.
+
+When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
 
 ```hcl
 resource "aws_lambda_function_url" "handler" {
@@ -321,6 +333,8 @@ For API Gateway triggers: parse event.get("body") and return proper statusCode +
 ---
 
 ## SECTION E — Optional extensions (optional key)
+
+CRITICAL OUTPUT MODE OVERRIDE: When output_mode is "Okta Terraform only", set optional_tf to exactly "" (empty string) unconditionally. Do not add any optional resources at all — not even Okta ones. Skip the evaluation below entirely.
 
 After generating the four required keys, evaluate whether the intent includes requirements that the generated Terraform and Lambda CANNOT fully satisfy on their own — such as behavioral enforcement, automated lifecycle management, notification triggers, or multi-step flows.
 
