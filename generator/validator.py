@@ -123,9 +123,12 @@ def refine_outputs(
             break
         try:
             optional_tf = outputs.get("optional_tf", "")
+            tfvars = outputs.get("terraform_tfvars_example", "")
             outputs = fix_outputs(intent, outputs, result, client, model)
             if optional_tf and not outputs.get("optional_tf"):
                 outputs["optional_tf"] = optional_tf
+            if tfvars and not outputs.get("terraform_tfvars_example"):
+                outputs["terraform_tfvars_example"] = tfvars
         except GenerationError:
             break
     return outputs

@@ -20,9 +20,10 @@ def _parse_output(raw: str) -> dict:
     missing = REQUIRED_OUTPUT_KEYS - set(parsed.keys())
     if missing:
         raise ValueError(f"Generated output missing required keys: {', '.join(sorted(missing))}")
-    # optional_tf is optional — normalize to string if present but wrong type
     if "optional_tf" in parsed and not isinstance(parsed["optional_tf"], str):
         parsed["optional_tf"] = ""
+    if "terraform_tfvars_example" in parsed and not isinstance(parsed["terraform_tfvars_example"], str):
+        parsed["terraform_tfvars_example"] = ""
     return parsed
 
 
@@ -43,13 +44,15 @@ def generate_all(
     client: anthropic.Anthropic,
     model: str = MODEL,
     env_context_section: str = "",
+    provider_version: str = "~> 4.0",
 ) -> dict:
     answers = intent.get("answers", {})
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
-        intent_json=json.dumps({k: v for k, v in intent.items() if k != "answers"}, indent=2),
+        intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         clarifications_section=_format_clarifications(answers),
         extra_instructions=extra_instructions or "None",
         env_context_section=env_context_section,
+        provider_version=provider_version,
     )
     messages = [{"role": "user", "content": user_content}]
 
@@ -68,7 +71,7 @@ def generate_all(
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
-                "content": "Your response was not valid JSON. Return only the JSON object with the four required keys (terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements), no other text.",
+                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements, terraform_tfvars_example), no other text.",
             },
         ]
         retry_response = client.messages.create(

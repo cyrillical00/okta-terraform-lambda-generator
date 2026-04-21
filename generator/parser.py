@@ -10,6 +10,12 @@ ALLOWED_RESOURCE_TYPES = {
     "okta_group_rule",
     "okta_event_hook",
     "okta_user_profile_mapping",
+    "okta_auth_server",
+    "okta_auth_server_policy",
+    "okta_factor",
+    "okta_network_zone",
+    "okta_brand",
+    "okta_email_customization",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}

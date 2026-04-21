@@ -22,14 +22,20 @@ def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_mes
         branch_ref = repo.get_branch(target_branch)
     except GithubException as e:
         if e.status == 404:
-            raise RuntimeError(
-                f"Branch '{target_branch}' not found in '{repo_name}'. Create it first or check the branch name."
-            ) from e
-        if e.status == 409:
+            try:
+                default = repo.get_branch(repo.default_branch)
+                repo.create_git_ref(f"refs/heads/{target_branch}", default.commit.sha)
+                branch_ref = repo.get_branch(target_branch)
+            except GithubException:
+                raise RuntimeError(
+                    f"Branch '{target_branch}' not found and could not be created in '{repo_name}'."
+                ) from e
+        elif e.status == 409:
             raise RuntimeError(
                 f"Repository '{repo_name}' appears to be empty — push an initial commit first."
             ) from e
-        raise
+        else:
+            raise
 
     latest_commit_sha = branch_ref.commit.sha
     base_tree = repo.get_git_commit(latest_commit_sha).tree

@@ -17,7 +17,8 @@ from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf
+from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example
+import history as _history
 from history import add_entry, get_entries
 from env_context import build_env_context, format_context_for_prompt
 
@@ -71,6 +72,9 @@ def _build_files(outputs: dict, mode: str) -> dict[str, str]:
     optional_tf = outputs.get("optional_tf", "")
     if optional_tf and optional_tf.strip():
         files["terraform/optional_extensions.tf"] = optional_tf
+    tfvars = outputs.get("terraform_tfvars_example", "")
+    if tfvars and tfvars.strip():
+        files["terraform/terraform.tfvars.example"] = tfvars
     return files
 
 
@@ -80,11 +84,12 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
     error = None
     should_rerun = False
     env_section = format_context_for_prompt(st.session_state.env_context or {})
+    provider_version = intent.get("provider_version", "~> 4.0")
 
     with st.status("Generating...", expanded=True) as status:
         try:
             st.write("Generating initial output...")
-            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section)
+            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section, provider_version=provider_version)
 
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
             if syntax_errors:
@@ -193,6 +198,10 @@ def _render_history_sidebar(email: str) -> None:
 
 
 _init_session_state()
+_history.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
 
 # Auth gate
 if not hasattr(st.user, "is_logged_in"):
@@ -279,6 +288,7 @@ if st.session_state.outputs:
     mode = st.session_state.output_mode
     render_code_panels(st.session_state.outputs, mode)
     render_optional_tf(st.session_state.outputs.get("optional_tf", ""))
+    render_tfvars_example(st.session_state.outputs.get("terraform_tfvars_example", ""))
 
     col_check, _ = st.columns([1, 3])
     with col_check:

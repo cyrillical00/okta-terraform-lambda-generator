@@ -24,6 +24,12 @@ Return exactly this JSON structure (all fields required):
 - okta_group_rule (group membership rule based on expression)
 - okta_event_hook (Okta event hook webhook to an external endpoint)
 - okta_user_profile_mapping (profile mapping between Okta user and an app)
+- okta_auth_server (custom authorization server with scopes and claims)
+- okta_auth_server_policy (access policy on a custom authorization server)
+- okta_factor (MFA factor enrollment policy for the org)
+- okta_network_zone (IP allowlist or blocklist network zone)
+- okta_brand (org branding — logo, colors, email sender)
+- okta_email_customization (custom email template for a lifecycle event)
 - unknown (use when the request cannot be mapped to a known resource)
 
 **resource_name** — snake_case identifier derived from the described resource (e.g., "hr_portal", "engineering_group")
@@ -142,6 +148,12 @@ For resources NOT in the live context list, continue using var.* declarations as
 - For okta_group: include name and description
 - For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. The group_assignments field must reference okta_group resource IDs, NEVER app IDs
 - For okta_event_hook: include name, status, channel (object with version, uri, type), events_filter (object with type, items)
+- For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
+- For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
+- For okta_factor: include provider_id (e.g. "GOOGLE", "OKTA", "DUO"), factor_type (e.g. "token:software:totp", "push"), status ("ACTIVE"). Do NOT wrap in a policy resource — okta_factor is a direct org-level enrollment setting
+- For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo), gateways (list of objects with type="CIDR" and value=var.*) for IP zones; for DYNAMIC zones use asns or dynamic_locations instead of gateways
+- For okta_brand: include name, agree_to_custom_privacy_policy (bool). Optionally include custom_privacy_policy_url, remove_powered_by_okta (bool). Note: logo upload is not supported in HCL — add an inline comment directing the user to do it in the Okta Admin Console
+- For okta_email_customization: include brand_id (reference var.brand_id), template_name (e.g. "UserActivation", "ForgotPassword", "PasswordChanged"), language, is_default (bool), subject, body. The body must be valid Okta email template HTML with ${} variable placeholders escaped as $${} in HCL heredoc strings
 - Use var.* for ALL credentials, tokens, URLs, and IDs — NEVER hardcode any value that would differ between environments
 - For any user-supplied value (SSO URL, entity ID, ACS URL, client ID, etc.), declare a variable with a descriptive name and reference it with var.*
 - Do NOT generate self-referential depends_on (a resource must never depend on itself)
@@ -165,10 +177,10 @@ For okta_event_hook — include GET verification path AND POST event processing 
 - GET path: return {"verification": event["headers"]["x-okta-verification-challenge"]}
 - POST path: parse body, iterate data.events, print each eventType
 
-For ALL other resource types (okta_app_saml, okta_group, okta_group_rule, okta_user_profile_mapping):
+For ALL other resource types (okta_app_saml, okta_group, okta_group_rule, okta_user_profile_mapping, okta_auth_server, okta_auth_server_policy, okta_factor, okta_network_zone, okta_brand, okta_email_customization):
 - Generate a simple Lambda that logs the event and returns 200
 - Do NOT include event hook verification logic — it is irrelevant to these resource types
-- Add a comment at the top explaining what automation this Lambda could perform for the resource type (e.g. for okta_app_saml: notify a Slack channel when a user is assigned to the app)
+- Add a comment at the top explaining what automation this Lambda could perform for the resource type (e.g. for okta_auth_server: rotate client secrets on a schedule; for okta_network_zone: sync IP blocklist from a threat intelligence feed; for okta_factor: alert on MFA enrollment spikes)
 
 For scheduled (EventBridge) triggers: include the cron expression as a comment at the top
 For API Gateway triggers: parse event.get("body") and return proper statusCode + headers
@@ -208,6 +220,39 @@ Rules for optional_tf:
 - Generate complete, working HCL — not pseudocode or placeholders
 - Omit this key entirely (or set to empty string "") when the four required outputs fully satisfy the intent
 
+---
+
+## SECTION F — terraform.tfvars.example (optional key)
+
+After generating the required outputs, produce a "terraform_tfvars_example" key containing a ready-to-fill `.tfvars` file that lists every `variable` declared across `terraform_okta_hcl` and `terraform_lambda_hcl`.
+
+Format rules:
+- First line must be: `# Fill in this file, rename to terraform.tfvars, and run terraform apply`
+- One variable per line: `variable_name = "placeholder_value"   # short description`
+- Group Okta variables first, then AWS variables, then app-specific variables
+- For sensitive variables (api_token, secret_key, client_secret): use `"YOUR_SECRET_HERE"` as placeholder
+- For URL variables: use `"https://..."` as placeholder
+- For region variables: use the default from the variable declaration if one exists
+- For boolean variables: use `true` or `false` without quotes
+- Omit variables that have a sensible default already set in the HCL (unless the user must override them)
+- If `terraform_lambda_hcl` is empty or "None", only include variables from `terraform_okta_hcl`
+
+Example:
+```
+# Fill in this file, rename to terraform.tfvars, and run terraform apply
+
+okta_org_name   = "dev-123456"           # Your Okta org subdomain
+okta_base_url   = "okta.com"             # Usually okta.com
+okta_api_token  = "YOUR_SECRET_HERE"     # Okta API token (sensitive)
+aws_region      = "us-east-1"
+saml_sso_url    = "https://..."          # ACS URL from your SP metadata
+saml_audience   = "https://..."          # Entity ID / Audience URI
+```
+
+Always include this key. Set to empty string only if there are genuinely no variables to fill in.
+
+---
+
 Common cases that warrant optional_tf:
 - Group membership enforcement that needs runtime logic → okta_event_hook + Lambda checking group.user_membership.add events
 - Scheduled access reviews or cleanup → aws_cloudwatch_event_rule + aws_cloudwatch_event_target
@@ -230,4 +275,6 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
-Return only the JSON object. Always include the four required keys. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
+Okta provider version constraint: {provider_version}
+
+Return only the JSON object. Always include the four required keys and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""

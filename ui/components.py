@@ -24,6 +24,13 @@ def render_intent_card(intent: dict) -> dict | None:
             horizontal=True,
         )
 
+        provider_version = st.radio(
+            "Okta provider version",
+            options=["~> 4.0 (tested stable)", "~> 6.0 (current stable)"],
+            horizontal=True,
+            help="6.x is the current stable release. 4.x is well-tested with this tool. Both are compatible with the generated HCL.",
+        )
+
         if ambiguities:
             st.markdown("**Answer the questions below before generating:**")
             answers = {}
@@ -38,7 +45,8 @@ def render_intent_card(intent: dict) -> dict | None:
     if not submitted:
         return None
 
-    return {**intent, "answers": answers, "output_mode": output_mode}
+    pv_constraint = provider_version.split(" ")[0]
+    return {**intent, "answers": answers, "output_mode": output_mode, "provider_version": pv_constraint}
 
 
 def render_code_panels(outputs: dict, mode: str):
@@ -86,7 +94,18 @@ def build_project_zip(outputs: dict, mode: str) -> bytes:
         optional_tf = outputs.get("optional_tf", "")
         if optional_tf and optional_tf.strip():
             zf.writestr("terraform/optional_extensions.tf", optional_tf)
+        tfvars = outputs.get("terraform_tfvars_example", "")
+        if tfvars and tfvars.strip():
+            zf.writestr("terraform/terraform.tfvars.example", tfvars)
     return buffer.getvalue()
+
+
+def render_tfvars_example(tfvars: str) -> None:
+    if not tfvars or not tfvars.strip():
+        return
+    with st.expander("terraform.tfvars.example — fill in and rename to terraform.tfvars"):
+        st.caption("Copy the values below into a file named terraform.tfvars before running terraform apply.")
+        st.code(tfvars, language="hcl")
 
 
 def render_optional_tf(optional_tf: str) -> None:
