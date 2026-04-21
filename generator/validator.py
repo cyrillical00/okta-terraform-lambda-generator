@@ -280,7 +280,7 @@ def fix_outputs(
 
     response = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=FIXER_SYSTEM_PROMPT,
         messages=messages,
     )
@@ -294,7 +294,7 @@ def fix_outputs(
         messages.append({"role": "user", "content": "Your response was not valid JSON. Return only the JSON object with the four required keys, no other text."})
         retry = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=8192,
             system=FIXER_SYSTEM_PROMPT,
             messages=messages,
         )
