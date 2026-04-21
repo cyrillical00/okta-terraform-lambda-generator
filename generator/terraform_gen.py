@@ -57,6 +57,14 @@ def generate_all(
         )
     else:
         multi_resource_section = ""
+    aws_types = intent.get("aws_resource_types", [])
+    if aws_types:
+        aws_resource_section = (
+            "AWS resources to include in terraform_lambda_hcl (in addition to the standard "
+            f"Lambda + IAM role): {', '.join(aws_types)}. Follow the rules for each in Section B."
+        )
+    else:
+        aws_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         clarifications_section=_format_clarifications(answers),
@@ -65,6 +73,7 @@ def generate_all(
         provider_version=provider_version,
         repo_context_section=repo_context_section,
         multi_resource_section=multi_resource_section,
+        aws_resource_section=aws_resource_section,
     )
     messages = [{"role": "user", "content": user_content}]
 

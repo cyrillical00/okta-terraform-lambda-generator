@@ -17,20 +17,31 @@ _APP_TYPE_TO_TF = {
     "OAuth / OIDC": "okta_app_oauth",
 }
 
+_AWS_RESOURCE_LABEL_TO_TF = {
+    "Lambda": "aws_lambda_function",
+    "EventBridge": "aws_cloudwatch_event_rule",
+    "API Gateway": "aws_api_gateway_rest_api",
+    "Lambda URL": "aws_lambda_function_url",
+    "SNS": "aws_sns_topic",
+}
 
-def render_resource_type_selector() -> list[str]:
-    """Checkbox selector for Okta resource types. Returns selected TF resource type strings."""
-    st.caption("What Okta objects does this involve? *(optional — helps the parser)*")
-    labels = list(_RESOURCE_LABEL_TO_TF.keys())
-    cols = st.columns(len(labels) + 1)
-    selected = []
 
-    for i, label in enumerate(labels):
-        with cols[i]:
+def render_resource_type_selector() -> tuple[list[str], list[str]]:
+    """Two-section checkbox selector. Returns (okta_types, aws_types)."""
+    okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
+    aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
+    okta_selected: list[str] = []
+    aws_selected: list[str] = []
+
+    # Okta row
+    okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
+    with okta_cols[0]:
+        st.markdown("**Okta**")
+    for i, label in enumerate(okta_labels):
+        with okta_cols[i + 1]:
             if st.checkbox(label, key=f"rsel_{label.lower().replace(' ', '_')}"):
-                selected.append(_RESOURCE_LABEL_TO_TF[label])
-
-    with cols[-1]:
+                okta_selected.append(_RESOURCE_LABEL_TO_TF[label])
+    with okta_cols[-1]:
         app_checked = st.checkbox("Application", key="rsel_application")
 
     if app_checked:
@@ -41,9 +52,18 @@ def render_resource_type_selector() -> list[str]:
             key="rsel_app_type",
             label_visibility="collapsed",
         )
-        selected.append(_APP_TYPE_TO_TF[app_type])
+        okta_selected.append(_APP_TYPE_TO_TF[app_type])
 
-    return selected
+    # AWS row
+    aws_cols = st.columns([0.7] + [1] * len(aws_labels))
+    with aws_cols[0]:
+        st.markdown("**AWS**")
+    for i, label in enumerate(aws_labels):
+        with aws_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_aws_{label.lower().replace(' ', '_')}"):
+                aws_selected.append(_AWS_RESOURCE_LABEL_TO_TF[label])
+
+    return okta_selected, aws_selected
 
 
 def render_intent_card(intent: dict) -> dict | None:
@@ -61,12 +81,6 @@ def render_intent_card(intent: dict) -> dict | None:
         st.info(note)
 
     with st.form("intent_form"):
-        output_mode = st.radio(
-            "What do you want to generate?",
-            options=OUTPUT_MODES,
-            horizontal=True,
-        )
-
         provider_version = st.radio(
             "Okta provider version",
             options=["~> 4.0 (tested stable)", "~> 6.0 (current stable)"],
@@ -89,7 +103,7 @@ def render_intent_card(intent: dict) -> dict | None:
         return None
 
     pv_constraint = provider_version.split(" ")[0]
-    return {**intent, "answers": answers, "output_mode": output_mode, "provider_version": pv_constraint}
+    return {**intent, "answers": answers, "provider_version": pv_constraint}
 
 
 def render_code_panels(outputs: dict, mode: str):

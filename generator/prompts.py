@@ -217,6 +217,28 @@ output "lambda_function_url" {
 - Do NOT declare variables in terraform_okta_hcl that are not referenced by any resource, data source, or output in that same file — dead variables cause confusion and validator warnings; if a value is only used by the Lambda, configure it as a Lambda environment variable in terraform_lambda_hcl instead
 - Do NOT add output blocks whose value is a plain string describing what else needs to be done (e.g. implementation_note = "you still need to..."). If the complementary automation belongs in optional_tf, put it there. An output block must only surface real Terraform resource attributes or computed values
 
+### Additional AWS resources (add to terraform_lambda_hcl only when listed in "AWS resources to include")
+
+**aws_cloudwatch_event_rule (EventBridge scheduled trigger)**:
+- Add aws_cloudwatch_event_rule with name and schedule_expression = var.schedule_expression (default "rate(1 day)")
+- Add aws_cloudwatch_event_target with rule = aws_cloudwatch_event_rule.handler.name, target_id = "lambda", arn = aws_lambda_function.handler.arn
+- Add aws_lambda_permission with statement_id = "AllowEventBridge", action = "lambda:InvokeFunction", principal = "events.amazonaws.com", source_arn = aws_cloudwatch_event_rule.handler.arn
+
+**aws_api_gateway_rest_api (REST API HTTP trigger)**:
+- Add aws_api_gateway_rest_api, aws_api_gateway_resource (path_part = "{proxy+}"), aws_api_gateway_method (POST, authorization = "NONE"), aws_api_gateway_integration (Lambda proxy, uri = aws_lambda_function.handler.invoke_arn), aws_api_gateway_deployment, aws_api_gateway_stage
+- Add aws_lambda_permission with principal = "apigateway.amazonaws.com", source_arn = "${aws_api_gateway_rest_api.handler.execution_arn}/*/*"
+- Add output block: invoke_url = "${aws_api_gateway_stage.handler.invoke_url}/"
+
+**aws_lambda_function_url (simple HTTPS endpoint — no auth)**:
+- Add resource "aws_lambda_function_url" "handler" with function_name = aws_lambda_function.handler.function_name, authorization_type = "NONE"
+- Add output block for function_url
+- Add inline comment: # Paste this URL into var.event_hook_url if wiring to an Okta event hook
+
+**aws_sns_topic (notification / alerting)**:
+- Add aws_sns_topic with a name variable
+- Add aws_lambda_permission with principal = "sns.amazonaws.com", source_arn = aws_sns_topic.handler.arn
+- Add SNS_TOPIC_ARN as an environment variable on aws_lambda_function.handler so the handler code can publish messages
+
 ---
 
 ## SECTION C — Lambda Rules
@@ -330,6 +352,7 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 
 {intent_json}
 {multi_resource_section}
+{aws_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}

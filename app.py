@@ -291,7 +291,7 @@ st.caption("Describe an Okta operation in plain English and get production-ready
 
 # Stage 1 — Input
 with st.container():
-    selected_types = render_resource_type_selector()
+    okta_types, aws_types = render_resource_type_selector()
     user_input = st.text_area(
         "Describe the Okta operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -311,9 +311,11 @@ if parse_clicked and user_input.strip():
     model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
         try:
-            intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=selected_types)
-            if selected_types:
-                intent["resource_types"] = selected_types
+            intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
+            if okta_types:
+                intent["resource_types"] = okta_types
+            if aws_types:
+                intent["aws_resource_types"] = aws_types
             errors = validate_intent(intent)
             if errors:
                 st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
