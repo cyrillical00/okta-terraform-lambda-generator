@@ -14,18 +14,14 @@ ALLOWED_RESOURCE_TYPES = {
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}
 
+MODEL = "claude-3-haiku-20240307"
+
 
 def parse_intent(user_input: str, client: anthropic.Anthropic) -> dict:
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
+        model=MODEL,
         max_tokens=1024,
-        system=[
-            {
-                "type": "text",
-                "text": INTENT_PARSER_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
+        system=INTENT_PARSER_SYSTEM_PROMPT,
         messages=[
             {
                 "role": "user",

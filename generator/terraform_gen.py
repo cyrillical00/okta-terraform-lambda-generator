@@ -4,6 +4,8 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 
+MODEL = "claude-3-5-sonnet-20240620"
+
 
 class GenerationError(Exception):
     def __init__(self, message: str, raw_response: str = ""):
@@ -27,15 +29,9 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
     messages = [{"role": "user", "content": user_content}]
 
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
+        model=MODEL,
         max_tokens=4096,
-        system=[
-            {
-                "type": "text",
-                "text": GENERATOR_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
+        system=GENERATOR_SYSTEM_PROMPT,
         messages=messages,
     )
     raw = response.content[0].text.strip()
@@ -51,15 +47,9 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
             },
         ]
         retry_response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model=MODEL,
             max_tokens=4096,
-            system=[
-                {
-                    "type": "text",
-                    "text": GENERATOR_SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
+            system=GENERATOR_SYSTEM_PROMPT,
             messages=retry_messages,
         )
         retry_raw = retry_response.content[0].text.strip()
