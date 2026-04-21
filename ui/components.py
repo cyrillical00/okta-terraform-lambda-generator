@@ -102,7 +102,7 @@ def render_optional_tf(optional_tf: str) -> None:
 
 
 def render_validation_result(result: dict) -> bool:
-    """Renders self-check result. Returns True if the Fix Issues button was clicked."""
+    """Renders self-check result. Returns True if Fix Issues was clicked."""
     overall = result.get("overall", "warn")
     tf_issues = result.get("terraform_issues", [])
     lambda_issues = result.get("lambda_issues", [])

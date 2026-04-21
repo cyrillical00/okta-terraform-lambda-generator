@@ -104,6 +104,33 @@ def validate_outputs(
     return result
 
 
+def refine_outputs(
+    intent: dict,
+    outputs: dict,
+    user_input: str,
+    client: anthropic.Anthropic,
+    model: str,
+    max_passes: int = 3,
+    on_pass: callable = None,
+) -> dict:
+    """Validate and auto-fix outputs up to max_passes times. Returns best-effort result."""
+    for pass_num in range(1, max_passes + 1):
+        result = validate_outputs(user_input, intent, outputs, client, model)
+        has_issues = bool(result.get("terraform_issues") or result.get("lambda_issues"))
+        if on_pass:
+            on_pass(pass_num, result, has_issues)
+        if result["overall"] == "pass" or not has_issues:
+            break
+        try:
+            optional_tf = outputs.get("optional_tf", "")
+            outputs = fix_outputs(intent, outputs, result, client, model)
+            if optional_tf and not outputs.get("optional_tf"):
+                outputs["optional_tf"] = optional_tf
+        except GenerationError:
+            break
+    return outputs
+
+
 FIXER_SYSTEM_PROMPT = """You are an expert Okta Terraform and AWS Lambda engineer. You will be given:
 1. The confirmed intent (what was requested)
 2. The current generated outputs (Terraform HCL and Lambda Python)

@@ -15,7 +15,7 @@ st.set_page_config(
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
-from generator.validator import validate_outputs, fix_outputs
+from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf
 from history import add_entry, get_entries
@@ -72,6 +72,51 @@ def _build_files(outputs: dict, mode: str) -> dict[str, str]:
     return files
 
 
+def _generate_and_refine(intent: dict, extra_instructions: str, client, model: str) -> dict:
+    """Generate outputs then run up to 3 validate→fix passes. Uses st.status for progress."""
+    outputs = None
+    error = None
+    should_rerun = False
+
+    with st.status("Generating...", expanded=True) as status:
+        try:
+            st.write("Generating initial output...")
+            outputs = generate_all(intent, extra_instructions, client, model=model)
+
+            syntax_errors = validate_lambda_python(outputs["lambda_python"])
+            if syntax_errors:
+                st.write(f"⚠️ Lambda syntax warning: {'; '.join(syntax_errors)}")
+
+            def _on_pass(pass_num, result, has_issues):
+                if has_issues:
+                    n = len(result.get("terraform_issues", [])) + len(result.get("lambda_issues", []))
+                    st.write(f"Pass {pass_num}/3: fixing {n} issue(s)...")
+                else:
+                    st.write(f"Pass {pass_num}/3: looks good.")
+
+            outputs = refine_outputs(
+                intent=intent,
+                outputs=outputs,
+                user_input=st.session_state.last_user_input,
+                client=client,
+                model=model,
+                on_pass=_on_pass,
+            )
+
+            status.update(label="Done", state="complete", expanded=False)
+        except GenerationError as e:
+            error = e
+            status.update(label="Generation failed", state="error", expanded=False)
+
+    if error:
+        st.session_state.gen_error = str(error)
+        with st.expander("Raw response from Claude"):
+            st.code(error.raw_response)
+        return None
+
+    return outputs
+
+
 def _render_history_sidebar(email: str) -> None:
     entries = get_entries(email)
     st.sidebar.divider()
@@ -83,7 +128,7 @@ def _render_history_sidebar(email: str) -> None:
     for i, entry in enumerate(entries[:30]):
         preview = entry["input"][:52] + ("…" if len(entry["input"]) > 52 else "")
         badge = f"`{entry['operation_type']}` · `{entry['resource_type']}`"
-        ts = entry.get("timestamp", "")[:10]  # YYYY-MM-DD
+        ts = entry.get("timestamp", "")[:10]
 
         with st.sidebar.container():
             col_text, col_btn = st.sidebar.columns([5, 1])
@@ -167,24 +212,16 @@ if st.session_state.intent and st.session_state.outputs is None:
         st.session_state.output_mode = confirmed.get("output_mode", "Both")
         st.session_state.generation_triggered = True
 
-# Stage 3 — Generation
+# Stage 3 — Generation with automatic 3-pass refinement
 if st.session_state.generation_triggered:
     st.session_state.generation_triggered = False
     st.session_state.gen_error = None
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
-    with st.spinner("Generating..."):
-        try:
-            outputs = generate_all(st.session_state.intent, "", client, model=model)
-            syntax_errors = validate_lambda_python(outputs["lambda_python"])
-            if syntax_errors:
-                st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
-            st.session_state.outputs = outputs
-            add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
-        except GenerationError as e:
-            st.session_state.gen_error = str(e)
-            with st.expander("Raw response from Claude"):
-                st.code(e.raw_response)
+    outputs = _generate_and_refine(st.session_state.intent, "", client, model)
+    if outputs is not None:
+        st.session_state.outputs = outputs
+        add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
 
 if st.session_state.gen_error:
     st.error(st.session_state.gen_error)
@@ -218,6 +255,7 @@ if st.session_state.outputs:
             model = _get_model("claude-haiku-4-5-20251001")
             with st.spinner("Fixing issues..."):
                 try:
+                    optional_tf = st.session_state.outputs.get("optional_tf", "")
                     fixed = fix_outputs(
                         intent=st.session_state.intent,
                         outputs=st.session_state.outputs,
@@ -225,6 +263,8 @@ if st.session_state.outputs:
                         client=client,
                         model=model,
                     )
+                    if optional_tf and not fixed.get("optional_tf"):
+                        fixed["optional_tf"] = optional_tf
                     st.session_state.outputs = fixed
                     st.session_state.validation_result = None
                     st.session_state.commit_url = None
@@ -239,25 +279,17 @@ if st.session_state.outputs:
         st.session_state.outputs, mode, default_repo
     )
 
-    # Regenerate
+    # Regenerate with automatic 3-pass refinement
     if regenerate_clicked:
         st.session_state.gen_error = None
         client = _get_client()
         model = _get_model("claude-haiku-4-5-20251001")
-        with st.spinner("Regenerating..."):
-            try:
-                outputs = generate_all(st.session_state.intent, extra_instructions, client, model=model)
-                syntax_errors = validate_lambda_python(outputs["lambda_python"])
-                if syntax_errors:
-                    st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
-                st.session_state.outputs = outputs
-                st.session_state.commit_url = None
-                st.session_state.validation_result = None
-                st.rerun()
-            except GenerationError as e:
-                st.session_state.gen_error = str(e)
-                with st.expander("Raw response from Claude"):
-                    st.code(e.raw_response)
+        outputs = _generate_and_refine(st.session_state.intent, extra_instructions, client, model)
+        if outputs is not None:
+            st.session_state.outputs = outputs
+            st.session_state.commit_url = None
+            st.session_state.validation_result = None
+            st.rerun()
 
     # GitHub push
     if push_clicked:
