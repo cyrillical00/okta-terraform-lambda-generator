@@ -15,8 +15,9 @@ st.set_page_config(
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
+from generator.validator import validate_outputs
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons
+from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result
 
 
 def _get_secret(key: str) -> str:
@@ -33,6 +34,7 @@ def _init_session_state():
         "gen_error": None,
         "commit_url": None,
         "generation_triggered": False,
+    "validation_result": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -85,6 +87,8 @@ if parse_clicked and user_input.strip():
     st.session_state.intent = None
     st.session_state.outputs = None
     st.session_state.commit_url = None
+    st.session_state.validation_result = None
+    st.session_state.last_user_input = user_input.strip()
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
@@ -135,6 +139,25 @@ if st.session_state.outputs:
     mode = st.session_state.output_mode
     render_code_panels(st.session_state.outputs, mode)
 
+    col_check, _ = st.columns([1, 3])
+    with col_check:
+        check_clicked = st.button("Run Self-Check", use_container_width=True)
+
+    if check_clicked:
+        client = _get_client()
+        model = _get_model("claude-haiku-4-5-20251001")
+        with st.spinner("Running independent review..."):
+            st.session_state.validation_result = validate_outputs(
+                user_input=st.session_state.get("last_user_input", ""),
+                intent=st.session_state.intent,
+                outputs=st.session_state.outputs,
+                client=client,
+                model=model,
+            )
+
+    if st.session_state.validation_result:
+        render_validation_result(st.session_state.validation_result)
+
     default_repo = _get_secret("GITHUB_REPO")
     push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override = render_action_buttons(
         st.session_state.outputs, mode, default_repo
@@ -153,6 +176,7 @@ if st.session_state.outputs:
                     st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
                 st.session_state.outputs = outputs
                 st.session_state.commit_url = None
+                st.session_state.validation_result = None
                 st.rerun()
             except GenerationError as e:
                 st.session_state.gen_error = str(e)
