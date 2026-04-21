@@ -1,5 +1,12 @@
 [
   {
+    "timestamp": "2026-04-21T20:22:38.535305+00:00",
+    "input": "When a user is added to the Tableau Creator group in Okta, remove them from the Tableau Viewer and Tableau Explorer groups",
+    "operation_type": "create",
+    "resource_type": "okta_group_rule",
+    "resource_name": "tableau_creator_group_rule"
+  },
+  {
     "timestamp": "2026-04-21T06:15:03.635162+00:00",
     "input": "build a rule or workflow that will add users to the creator role in tableau, but any time a user is added to that role they should be removed from their previous tableau role",
     "operation_type": "create",
