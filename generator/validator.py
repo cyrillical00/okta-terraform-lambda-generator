@@ -32,6 +32,8 @@ Check for these specific problems in Terraform:
 - Extra resources not present in the intent (e.g. okta_group_rule added when only okta_app_saml was requested)
 - Self-referential depends_on (resource depending on itself)
 - group_assignments referencing app IDs instead of group IDs
+- group_assignments used as a filter or source-group selector instead of as the DESTINATION group list — group_assignments specifies where matching users are ADDED TO, not what they are selected FROM
+- AWS Lambda resource labels other than "handler" (e.g. "tableau_role_transition_handler") — all Lambda resources must use "handler" as the Terraform label; cross-references in optional_tf that use a label other than "handler" will fail to resolve
 - Hardcoded credential values instead of var.* references
 - Invalid or non-existent attribute references on resource types
 - app_settings_json with null/placeholder values not required for this resource type
@@ -214,6 +216,17 @@ output "lambda_function_url" {
   description = "Paste this URL into var.event_hook_url"
 }
 ```
+
+## Lambda resource naming rule (CRITICAL — apply when fixing any name mismatch)
+Every AWS Lambda resource MUST use "handler" as the Terraform resource label — no other name is ever valid:
+- `resource "aws_lambda_function" "handler"` — always, never any other name
+- `resource "aws_lambda_function_url" "handler"` — always "handler"
+- `resource "aws_iam_role" "handler"` — always "handler"
+- `resource "aws_iam_role_policy" "handler"` — always "handler"
+When fixing a resource name mismatch, rename ALL occurrences in both terraform_lambda_hcl and optional_tf to use "handler". Use these exact cross-reference addresses everywhere: `aws_lambda_function.handler.arn`, `aws_lambda_function.handler.function_name`, `aws_lambda_function_url.handler.function_url`.
+
+## okta_group_rule group_assignments semantics
+group_assignments = the DESTINATION groups that matching users are ADDED TO. It is NOT a filter and NOT a source group. If the rule matches users who should be in the "tableau_creator" group, then group_assignments = [okta_group.tableau_creator.id]. Never put the "trigger" group or the group being filtered on in group_assignments.
 
 ## General fix rules
 - Fix every issue listed. Do not leave any unfixed.

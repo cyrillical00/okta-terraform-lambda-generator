@@ -117,6 +117,13 @@ Must include these three resources:
 2. aws_iam_role_policy — inline policy granting CloudWatch Logs write access
 3. aws_lambda_function — the function resource
 
+CRITICAL NAMING RULE: Every resource in terraform_lambda_hcl and optional_tf MUST use "handler" as the Terraform resource label, no exceptions:
+- `resource "aws_lambda_function" "handler"` — NEVER "tableau_role_transition_handler" or any other name
+- `resource "aws_lambda_function_url" "handler"` — always "handler"
+- `resource "aws_iam_role" "handler"` — always "handler"
+- `resource "aws_iam_role_policy" "handler"` — always "handler"
+All cross-references in optional_tf MUST use these exact addresses: `aws_lambda_function.handler.arn`, `aws_lambda_function.handler.function_name`, etc.
+
 The aws_lambda_function resource must use:
 - filename = "../lambda/lambda_function.zip"
 - handler  = "lambda_function.handler"
@@ -146,7 +153,7 @@ For resources NOT in the live context list, continue using var.* declarations as
 - Include all required arguments for every resource (never omit required fields)
 - For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps
 - For okta_group: include name and description
-- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. The group_assignments field must reference okta_group resource IDs, NEVER app IDs
+- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about")
 - For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
 
 ```hcl
