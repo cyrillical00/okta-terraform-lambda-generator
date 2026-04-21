@@ -45,6 +45,7 @@ def generate_all(
     model: str = MODEL,
     env_context_section: str = "",
     provider_version: str = "~> 4.0",
+    repo_context_section: str = "",
 ) -> dict:
     answers = intent.get("answers", {})
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
@@ -53,6 +54,7 @@ def generate_all(
         extra_instructions=extra_instructions or "None",
         env_context_section=env_context_section,
         provider_version=provider_version,
+        repo_context_section=repo_context_section,
     )
     messages = [{"role": "user", "content": user_content}]
 

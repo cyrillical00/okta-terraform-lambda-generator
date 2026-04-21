@@ -21,6 +21,7 @@ from ui.components import render_intent_card, render_code_panels, render_action_
 import history as _history
 from history import add_entry, get_entries
 from env_context import build_env_context, format_context_for_prompt
+from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
 
 def _get_secret(key: str) -> str:
@@ -40,6 +41,8 @@ def _init_session_state():
         "validation_result": None,
         "last_user_input": "",
         "env_context": None,
+        "repo_tf_files": None,
+        "repo_tf_error": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -84,12 +87,13 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
     error = None
     should_rerun = False
     env_section = format_context_for_prompt(st.session_state.env_context or {})
+    repo_section = format_repo_context_for_prompt(st.session_state.repo_tf_files or {})
     provider_version = intent.get("provider_version", "~> 4.0")
 
     with st.status("Generating...", expanded=True) as status:
         try:
             st.write("Generating initial output...")
-            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section, provider_version=provider_version)
+            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section, provider_version=provider_version, repo_context_section=repo_section)
 
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
             if syntax_errors:
@@ -168,6 +172,61 @@ def _render_env_sidebar() -> None:
         st.rerun()
 
 
+def _render_repo_sidebar(default_repo: str) -> None:
+    github_token = _get_secret("GITHUB_TOKEN")
+    st.sidebar.divider()
+    st.sidebar.markdown("**Connected Terraform Repo**")
+
+    if not github_token:
+        st.sidebar.caption("Add GITHUB_TOKEN to secrets to enable repo import.")
+        return
+
+    repo_input = st.sidebar.text_input(
+        "Repository (owner/repo)",
+        value=default_repo,
+        placeholder="owner/repo-name",
+        key="repo_tf_repo_input",
+    )
+    path_input = st.sidebar.text_input(
+        "Terraform path",
+        value="terraform",
+        placeholder="terraform",
+        key="repo_tf_path_input",
+        help="Directory inside the repo containing .tf files (e.g. 'terraform', 'infra', or leave blank for root)",
+    )
+
+    col_load, col_clear = st.sidebar.columns(2)
+    load_clicked = col_load.button("Load", use_container_width=True, key="repo_tf_load")
+    clear_clicked = col_clear.button("Clear", use_container_width=True, key="repo_tf_clear")
+
+    if load_clicked and repo_input.strip():
+        try:
+            files = fetch_terraform_files(github_token, repo_input.strip(), path_input.strip())
+            st.session_state.repo_tf_files = files
+            st.session_state.repo_tf_error = None
+        except RuntimeError as e:
+            st.session_state.repo_tf_files = None
+            st.session_state.repo_tf_error = str(e)
+        st.rerun()
+
+    if clear_clicked:
+        st.session_state.repo_tf_files = None
+        st.session_state.repo_tf_error = None
+        st.rerun()
+
+    if st.session_state.repo_tf_error:
+        st.sidebar.error(st.session_state.repo_tf_error)
+    elif st.session_state.repo_tf_files is not None:
+        files = st.session_state.repo_tf_files
+        if files:
+            st.sidebar.success(f"{len(files)} .tf file(s) loaded — generation will use this context")
+            for path in files:
+                lines = files[path].count("\n") + 1
+                st.sidebar.caption(f"· {path} ({lines} lines)")
+        else:
+            st.sidebar.warning("No .tf files found at that path.")
+
+
 def _render_history_sidebar(email: str) -> None:
     entries = get_entries(email)
     st.sidebar.divider()
@@ -223,6 +282,7 @@ with st.sidebar:
 
 _load_env_context()
 _render_env_sidebar()
+_render_repo_sidebar(_get_secret("GITHUB_REPO"))
 _render_history_sidebar(st.user.email)
 
 st.title("Okta Terraform + Lambda Generator")

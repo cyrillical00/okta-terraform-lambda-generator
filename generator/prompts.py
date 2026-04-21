@@ -276,5 +276,5 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}
-
+{repo_context_section}
 Return only the JSON object. Always include the four required keys and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
