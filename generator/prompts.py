@@ -185,6 +185,6 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 
 {intent_json}
 
-Additional instructions: {extra_instructions}
+{clarifications_section}Additional instructions: {extra_instructions}
 
 Return only the JSON object with the four required keys."""

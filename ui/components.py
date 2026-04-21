@@ -1,66 +1,36 @@
 import io
-import json
 import zipfile
 import streamlit as st
 
-from generator.parser import ALLOWED_OPERATION_TYPES, ALLOWED_RESOURCE_TYPES
-
 
 def render_intent_card(intent: dict) -> dict | None:
+    op = intent.get("operation_type", "create")
+    res = intent.get("resource_type", "resource")
+    name = intent.get("resource_name", "")
+    ambiguities = intent.get("ambiguities", [])
+    notes = intent.get("notes", [])
+
+    st.markdown(f"**{op.capitalize()}** · `{res}`" + (f" · `{name}`" if name else ""))
+
+    for note in notes:
+        st.info(note)
+
     with st.form("intent_form"):
-        st.subheader("Confirm parsed intent")
+        if ambiguities:
+            st.markdown("**Answer the questions below before generating:**")
+            answers = {}
+            for q in ambiguities:
+                answers[q] = st.text_input(q, placeholder="Your answer (leave blank to let Claude decide)")
+        else:
+            st.success("No ambiguities — ready to generate.")
+            answers = {}
 
-        if intent.get("ambiguities"):
-            for ambiguity in intent["ambiguities"]:
-                st.warning(f"Ambiguity: {ambiguity}")
-
-        if intent.get("notes"):
-            for note in intent["notes"]:
-                st.info(f"Note: {note}")
-
-        operation_type = st.selectbox(
-            "Operation type",
-            options=sorted(ALLOWED_OPERATION_TYPES),
-            index=sorted(ALLOWED_OPERATION_TYPES).index(intent.get("operation_type", "create"))
-            if intent.get("operation_type") in ALLOWED_OPERATION_TYPES
-            else 0,
-        )
-
-        resource_types = sorted(ALLOWED_RESOURCE_TYPES)
-        resource_type = st.selectbox(
-            "Resource type",
-            options=resource_types,
-            index=resource_types.index(intent.get("resource_type", "okta_group"))
-            if intent.get("resource_type") in ALLOWED_RESOURCE_TYPES
-            else 0,
-        )
-
-        resource_name = st.text_input("Resource name (snake_case)", value=intent.get("resource_name", ""))
-
-        attributes_str = st.text_area(
-            "Attributes (JSON)",
-            value=json.dumps(intent.get("attributes", {}), indent=2),
-            height=150,
-        )
-
-        submitted = st.form_submit_button("Confirm and Generate")
+        submitted = st.form_submit_button("Generate")
 
     if not submitted:
         return None
 
-    try:
-        attributes = json.loads(attributes_str)
-    except json.JSONDecodeError as e:
-        st.error(f"Attributes JSON is invalid: {e}")
-        return None
-
-    return {
-        **intent,
-        "operation_type": operation_type,
-        "resource_type": resource_type,
-        "resource_name": resource_name,
-        "attributes": attributes,
-    }
+    return {**intent, "answers": answers}
 
 
 def render_code_panels(outputs: dict):

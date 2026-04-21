@@ -23,9 +23,22 @@ def _parse_output(raw: str) -> dict:
     return parsed
 
 
+def _format_clarifications(answers: dict) -> str:
+    filled = {q: a for q, a in answers.items() if a.strip()}
+    if not filled:
+        return ""
+    lines = ["User clarifications:"]
+    for q, a in filled.items():
+        lines.append(f"Q: {q}")
+        lines.append(f"A: {a}")
+    return "\n".join(lines) + "\n\n"
+
+
 def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
+    answers = intent.get("answers", {})
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
-        intent_json=json.dumps(intent, indent=2),
+        intent_json=json.dumps({k: v for k, v in intent.items() if k != "answers"}, indent=2),
+        clarifications_section=_format_clarifications(answers),
         extra_instructions=extra_instructions or "None",
     )
     messages = [{"role": "user", "content": user_content}]
