@@ -18,6 +18,7 @@ from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result
+from history import add_entry, get_entries
 
 
 def _get_secret(key: str) -> str:
@@ -68,6 +69,35 @@ def _build_files(outputs: dict, mode: str) -> dict[str, str]:
     return files
 
 
+def _render_history_sidebar(email: str) -> None:
+    entries = get_entries(email)
+    st.sidebar.divider()
+    st.sidebar.markdown("**Command History**")
+    if not entries:
+        st.sidebar.caption("No history yet. Generate something to start building your library.")
+        return
+
+    for i, entry in enumerate(entries[:30]):
+        preview = entry["input"][:52] + ("…" if len(entry["input"]) > 52 else "")
+        badge = f"`{entry['operation_type']}` · `{entry['resource_type']}`"
+        ts = entry.get("timestamp", "")[:10]  # YYYY-MM-DD
+
+        with st.sidebar.container():
+            col_text, col_btn = st.sidebar.columns([5, 1])
+            with col_text:
+                st.caption(f"{badge}  {ts}")
+                st.markdown(f"<span style='font-size:0.85em'>{preview}</span>", unsafe_allow_html=True)
+            with col_btn:
+                if st.button("↺", key=f"reuse_{i}", help=entry["input"]):
+                    st.session_state.user_input_area = entry["input"]
+                    st.session_state.intent = None
+                    st.session_state.outputs = None
+                    st.session_state.validation_result = None
+                    st.session_state.commit_url = None
+                    st.session_state.parse_error = None
+                    st.rerun()
+
+
 _init_session_state()
 
 # Auth gate
@@ -87,6 +117,8 @@ if not st.user.is_logged_in:
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
     st.button("Sign out", on_click=st.logout)
+
+_render_history_sidebar(st.user.email)
 
 st.title("Okta Terraform + Lambda Generator")
 st.caption("Describe an Okta operation in plain English and get production-ready Terraform HCL and AWS Lambda Python.")
@@ -145,6 +177,7 @@ if st.session_state.generation_triggered:
             if syntax_errors:
                 st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
             st.session_state.outputs = outputs
+            add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
         except GenerationError as e:
             st.session_state.gen_error = str(e)
             with st.expander("Raw response from Claude"):
@@ -167,7 +200,7 @@ if st.session_state.outputs:
         model = _get_model("claude-haiku-4-5-20251001")
         with st.spinner("Running independent review..."):
             st.session_state.validation_result = validate_outputs(
-                user_input=st.session_state.get("last_user_input", ""),
+                user_input=st.session_state.last_user_input,
                 intent=st.session_state.intent,
                 outputs=st.session_state.outputs,
                 client=client,
