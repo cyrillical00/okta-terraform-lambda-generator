@@ -118,6 +118,22 @@ The aws_lambda_function resource must use:
 
 Also include an aws_provider block with region = var.aws_region, and a variable "aws_region" with default = "us-east-1".
 
+### Referencing live environment resources
+When a "Live environment context" section appears in the user message, it lists resources that already exist in the connected Okta/AWS environment. For any resource the intent references by name that appears in that list:
+- Generate a Terraform `data` source to look it up by name instead of a var.* for its ID
+- Add a comment above the data source with the actual ID or ARN shown in the context
+
+Example:
+```hcl
+# Resolved from live environment — id: 00g1abc2defGhIjkl3m4
+data "okta_group" "engineering" {
+  name = "Engineering"
+}
+```
+Then reference it as `data.okta_group.engineering.id` wherever the ID is needed.
+
+For resources NOT in the live context list, continue using var.* declarations as normal.
+
 ### General Terraform rules
 - Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
@@ -213,5 +229,5 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 {intent_json}
 
 {clarifications_section}Additional instructions: {extra_instructions}
-
+{env_context_section}
 Return only the JSON object. Always include the four required keys. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""

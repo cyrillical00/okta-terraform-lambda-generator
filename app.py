@@ -19,6 +19,7 @@ from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf
 from history import add_entry, get_entries
+from env_context import build_env_context, format_context_for_prompt
 
 
 def _get_secret(key: str) -> str:
@@ -37,6 +38,7 @@ def _init_session_state():
         "generation_triggered": False,
         "validation_result": None,
         "last_user_input": "",
+        "env_context": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -77,11 +79,12 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
     outputs = None
     error = None
     should_rerun = False
+    env_section = format_context_for_prompt(st.session_state.env_context or {})
 
     with st.status("Generating...", expanded=True) as status:
         try:
             st.write("Generating initial output...")
-            outputs = generate_all(intent, extra_instructions, client, model=model)
+            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section)
 
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
             if syntax_errors:
@@ -115,6 +118,49 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
         return None
 
     return outputs
+
+
+def _load_env_context() -> None:
+    """Fetch Okta/AWS context once per session. Skips if already loaded."""
+    if st.session_state.env_context is not None:
+        return
+    st.session_state.env_context = build_env_context(
+        okta_org_url=_get_secret("OKTA_ORG_URL"),
+        okta_api_token=_get_secret("OKTA_API_TOKEN"),
+        aws_region=_get_secret("AWS_REGION"),
+        aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
+        aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
+    )
+
+
+def _render_env_sidebar() -> None:
+    ctx = st.session_state.env_context or {}
+    okta = ctx.get("okta", {})
+    aws = ctx.get("aws", {})
+
+    st.sidebar.divider()
+    st.sidebar.markdown("**Environment**")
+
+    if okta.get("connected"):
+        n_groups = len(okta.get("groups", []))
+        n_apps = len(okta.get("apps", []))
+        n_hooks = len(okta.get("event_hooks", []))
+        st.sidebar.success(f"Okta: {n_groups} groups · {n_apps} apps · {n_hooks} hooks")
+    else:
+        err = okta.get("error", "Not configured")
+        st.sidebar.caption(f"Okta: {err}")
+
+    if aws.get("connected"):
+        n_fns = len(aws.get("lambda_functions", []))
+        n_roles = len(aws.get("iam_roles", []))
+        st.sidebar.success(f"AWS: {n_fns} functions · {n_roles} roles")
+    else:
+        err = aws.get("error", "Not configured")
+        st.sidebar.caption(f"AWS: {err}")
+
+    if st.sidebar.button("Refresh environment", use_container_width=True):
+        st.session_state.env_context = None
+        st.rerun()
 
 
 def _render_history_sidebar(email: str) -> None:
@@ -166,6 +212,8 @@ with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
     st.button("Sign out", on_click=st.logout)
 
+_load_env_context()
+_render_env_sidebar()
 _render_history_sidebar(st.user.email)
 
 st.title("Okta Terraform + Lambda Generator")

@@ -37,12 +37,19 @@ def _format_clarifications(answers: dict) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
+def generate_all(
+    intent: dict,
+    extra_instructions: str,
+    client: anthropic.Anthropic,
+    model: str = MODEL,
+    env_context_section: str = "",
+) -> dict:
     answers = intent.get("answers", {})
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k != "answers"}, indent=2),
         clarifications_section=_format_clarifications(answers),
         extra_instructions=extra_instructions or "None",
+        env_context_section=env_context_section,
     )
     messages = [{"role": "user", "content": user_content}]
 
