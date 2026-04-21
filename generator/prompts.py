@@ -418,6 +418,90 @@ Common cases that warrant optional_tf:
 Example — "create a terminated group where members can't be added to other groups or apps":
 
 "optional_tf": "# ============================================================\\n# OPTIONAL: Event hook to enforce Terminated group exclusivity\\n# Apply this if you want Okta to automatically call a Lambda\\n# whenever a user is added to any group, so the Lambda can\\n# check for Terminated membership and remove conflicting ones.\\n# ============================================================\\n\\nresource \\"okta_event_hook\\" \\"terminated_enforcer\\" {\\n  name   = \\"Terminated Group Membership Enforcer\\"\\n  status = \\"ACTIVE\\"\\n  channel = {\\n    version = \\"1.0.0\\"\\n    uri     = var.terminated_enforcer_endpoint\\n    type    = \\"HTTP\\"\\n  }\\n  events_filter = {\\n    type  = \\"EVENT_TYPE\\"\\n    items = [\\"group.user_membership.add\\"]\\n  }\\n}\\n\\nvariable \\"terminated_enforcer_endpoint\\" {\\n  type        = string\\n  description = \\"HTTPS endpoint of the Lambda function URL or API Gateway that handles the event hook\\"\\n}"
+
+---
+
+## SECTION G — Okta Resource Schema Reference
+
+Before generating any okta_* resource, look up its entry below and use ONLY the listed
+attributes. Do not invent attribute names not present in this list — invented names will
+fail terraform validate.
+
+**okta_app_oauth**
+Required: label, type ("web"|"native"|"browser"|"service"), grant_types (list of strings)
+Required when type != "service": redirect_uris (list), response_types (list)
+Note: type "service" (client credentials) does NOT use redirect_uris or response_types — omit them
+Optional: token_endpoint_auth_method ("client_secret_basic"|"client_secret_post"|"none"),
+  consent_method ("REQUIRED"|"TRUSTED"|"IMPLICIT"), login_uri, post_logout_redirect_uris,
+  wildcard_redirect, pkce_required (bool), status ("ACTIVE"|"INACTIVE"),
+  groups_claim { type, filter_type, name, value }
+FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy
+
+**okta_user_profile_mapping**
+Required: source_id (the app or directory source ID), always_apply (bool, usually false)
+Optional: delete_when_absent (bool)
+Child block — mappings { } (one block per attribute to sync):
+  id ("appuser.{attr}" or "user.{attr}"), expression (Okta expression string),
+  push_status ("PUSH"|"DONT_PUSH")
+FORBIDDEN: source_type, target_id, profile_attribute (use mappings block instead)
+
+**okta_auth_server**
+Required: name, description, audiences (list of strings), issuer_mode ("ORG_URL"|"DYNAMIC"|"CUSTOM_URL")
+Optional: status ("ACTIVE"|"INACTIVE"), credentials_rotation_mode ("AUTO"|"MANUAL")
+FORBIDDEN: issuer, org_url, audiences_type
+
+**okta_auth_server_scope**
+Required: auth_server_id, name, consent ("REQUIRED"|"IMPLICIT"|"FLEXIBLE"),
+  metadata_publish ("ALL_CLIENTS"|"NO_CLIENTS")
+Optional: description, default_scope (bool), display_name
+FORBIDDEN: scope_id, scope_type
+
+**okta_auth_server_claim**
+Required: auth_server_id, name, status ("ACTIVE"), claim_type ("RESOURCE"|"IDENTITY"),
+  value_type ("EXPRESSION"|"GROUPS"|"SYSTEM"), value (Okta expression string),
+  always_include_in_token (bool)
+Optional: group_filter_type ("STARTS_WITH"|"EQUALS"|"REGEX"|"CONTAINS"), scopes (list)
+FORBIDDEN: claim_id, token_type
+
+**okta_auth_server_policy**
+Required: auth_server_id, name, status ("ACTIVE"), description, priority (int),
+  client_whitelist (list — use ["ALL_CLIENTS"] to match all clients)
+FORBIDDEN: policy_id, clients
+
+**okta_auth_server_policy_rule**
+Required: auth_server_id, policy_id, name, status ("ACTIVE"), priority (int),
+  grant_type_whitelist (list: "authorization_code","implicit","client_credentials","password"),
+  scope_whitelist (list — ["*"] for all), group_whitelist (list — ["EVERYONE"] for all)
+Optional: access_token_lifetime_minutes (int), refresh_token_lifetime_minutes (int),
+  refresh_token_window_minutes (int), inline_hook_id
+FORBIDDEN: rule_id, token_lifetime, allowed_clients
+
+**okta_factor**
+Required: provider_id (string: "GOOGLE","OKTA","DUO","FIDO","RSA","SYMANTEC","YUBICO"),
+  status ("ACTIVE"|"INACTIVE")
+Optional: active (bool — deprecated, prefer status)
+FORBIDDEN: factor_type (not a top-level attribute), okta_policy, policy_id
+
+**okta_network_zone**
+Required: name, type ("IP"|"DYNAMIC")
+If type = "IP": gateways (list of objects: { type = "CIDR"|"RANGE", value = "x.x.x.x/n" })
+If type = "DYNAMIC": dynamic_locations (list of ISO-3166 country codes) OR asns (list of strings)
+Optional: status ("ACTIVE"|"INACTIVE"), proxies (list of gateway objects)
+FORBIDDEN: ip_list, allowed_ips, blocked_ips, cidr_ranges
+
+**okta_brand**
+Required: name, agree_to_custom_privacy_policy (bool)
+Optional: custom_privacy_policy_url (string), remove_powered_by_okta (bool),
+  default_app_app_instance_id, default_app_classic_application_uri
+FORBIDDEN: logo (logo upload is not supported in HCL — direct user to Admin Console),
+  primary_color, secondary_color
+
+**okta_email_customization**
+Required: brand_id, template_name (e.g. "UserActivation","ForgotPassword","PasswordChanged",
+  "EmailChallenge","ADForgotPassword"), language (e.g. "en"), is_default (bool),
+  subject (string), body (valid Okta HTML email template string)
+Note: in the body value, use $${variable} (double dollar sign) to escape Terraform interpolation
+FORBIDDEN: email_template_id, locale (use language instead), customization_id
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:

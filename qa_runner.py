@@ -298,6 +298,33 @@ TEST_CASES = [
              must_contain=["attribute_statements", "okta_app_group_assignment"],
              must_not_contain_okta=["okta_app_saml_attribute_statements"],
              notes="Regression for the hallucinated okta_app_saml_attribute_statements resource"),
+
+    # ── okta_app_oauth schema validation ──────────────────────────────────────
+    TestCase("OA01",
+             "Create an OAuth OIDC app for our internal React dashboard (single-page app)",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["okta_app_oauth", "grant_types", "redirect_uris"],
+             must_not_contain_okta=["client_id_scheme", "app_type"]),
+    TestCase("OA02",
+             "Set up a machine-to-machine OAuth client credentials app for our backend service",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["grant_types"],
+             must_not_contain_okta=["client_credentials {"]),
+    TestCase("OA03",
+             "Create an OAuth native mobile app with PKCE for iOS and Android",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["grant_types", "redirect_uris"],
+             must_not_contain_okta=["app_type"]),
+
+    # ── okta_auth_server schema validation ────────────────────────────────────
+    TestCase("AUTH04",
+             "Create a custom authorization server for the payments API with a custom role claim",
+             expected_resource_type="okta_auth_server",
+             must_contain=["okta_auth_server", "audiences", "issuer_mode"]),
+    TestCase("AUTH05",
+             "Add an auth server policy that restricts token lifetime to 1 hour for the payments auth server",
+             expected_resource_type="okta_auth_server_policy",
+             must_contain=["okta_auth_server_policy", "priority"]),
 ]
 
 
@@ -417,6 +444,39 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 "Hallucinated resource 'okta_app_saml_attribute_statements' — attribute "
                 "statements must be inline blocks inside okta_app_saml, not a separate resource"
             )
+
+    # ── 13. Required-attribute and forbidden-attribute guards (schema reference) ──
+    REQUIRED_ATTR_MAP = {
+        # redirect_uris not required for service-type apps (client_credentials flow)
+        "okta_app_oauth":           ["grant_types"],
+        # exact resource match only — avoid substring hits (e.g. okta_auth_server_policy)
+        "okta_auth_server":         ["audiences", "issuer_mode"],
+        "okta_auth_server_policy":  ["client_whitelist", "priority"],
+        "okta_factor":              ["provider_id", "status"],
+        "okta_network_zone":        ["type"],
+        "okta_email_customization": ["brand_id", "template_name", "body"],
+    }
+    for resource_type, attrs in REQUIRED_ATTR_MAP.items():
+        # Use exact resource declaration match to avoid substring false positives
+        if re.search(rf'resource\s+"{resource_type}"', okta_hcl):
+            for attr in attrs:
+                if not re.search(rf'\b{attr}\b\s*=', okta_hcl):
+                    issues.append(f"{resource_type} missing required attribute '{attr}'")
+
+    FORBIDDEN_ATTR_MAP = {
+        "okta_app_oauth":           [r"client_id_scheme", r"app_type\s*=", r"client_credentials\s*\{"],
+        "okta_auth_server":         [r"\bissuer\s*=", r"\borg_url\s*="],
+        "okta_factor":              [r"\bfactor_type\s*=", r"\bpolicy_id\s*="],
+        "okta_network_zone":        [r"\bip_list\s*=", r"\bcidr_ranges\s*="],
+        "okta_email_customization": [r"\blocale\s*="],
+    }
+    for resource_type, patterns in FORBIDDEN_ATTR_MAP.items():
+        if re.search(rf'resource\s+"{resource_type}"', okta_hcl):
+            for pattern in patterns:
+                if re.search(pattern, okta_hcl):
+                    issues.append(
+                        f"Hallucinated/forbidden attribute (pattern '{pattern}') in {resource_type}"
+                    )
 
     return issues
 
