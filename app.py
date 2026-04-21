@@ -69,6 +69,17 @@ def _build_files(outputs: dict, mode: str) -> dict[str, str]:
 
 _init_session_state()
 
+# Auth gate
+if not st.user.is_logged_in:
+    st.title("Okta Terraform + Lambda Generator")
+    st.markdown("Sign in with your Google account to continue.")
+    st.button("Sign in with Google", on_click=st.login, args=("google",))
+    st.stop()
+
+with st.sidebar:
+    st.markdown(f"Signed in as **{st.user.email}**")
+    st.button("Sign out", on_click=st.logout)
+
 st.title("Okta Terraform + Lambda Generator")
 st.caption("Describe an Okta operation in plain English and get production-ready Terraform HCL and AWS Lambda Python.")
 
