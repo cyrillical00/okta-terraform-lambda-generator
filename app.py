@@ -17,7 +17,7 @@ from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example
+from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
 import history as _history
 from history import add_entry, get_entries
 from env_context import build_env_context, format_context_for_prompt
@@ -291,6 +291,7 @@ st.caption("Describe an Okta operation in plain English and get production-ready
 
 # Stage 1 — Input
 with st.container():
+    selected_types = render_resource_type_selector()
     user_input = st.text_area(
         "Describe the Okta operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -310,7 +311,9 @@ if parse_clicked and user_input.strip():
     model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
         try:
-            intent = parse_intent(user_input.strip(), client, model=model)
+            intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=selected_types)
+            if selected_types:
+                intent["resource_types"] = selected_types
             errors = validate_intent(intent)
             if errors:
                 st.session_state.parse_error = "Validation errors: " + "; ".join(errors)

@@ -329,7 +329,7 @@ INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and 
 GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for the following confirmed intent:
 
 {intent_json}
-
+{multi_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}

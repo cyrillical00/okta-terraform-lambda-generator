@@ -48,6 +48,15 @@ def generate_all(
     repo_context_section: str = "",
 ) -> dict:
     answers = intent.get("answers", {})
+    resource_types = intent.get("resource_types", [])
+    if len(resource_types) > 1:
+        multi_resource_section = (
+            f"MULTI-RESOURCE: Generate terraform_okta_hcl with complete resource blocks for ALL of these "
+            f"Okta resource types: {', '.join(resource_types)}. Apply every individual resource type rule "
+            "for each. All resources belong in a single terraform_okta_hcl string."
+        )
+    else:
+        multi_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         clarifications_section=_format_clarifications(answers),
@@ -55,6 +64,7 @@ def generate_all(
         env_context_section=env_context_section,
         provider_version=provider_version,
         repo_context_section=repo_context_section,
+        multi_resource_section=multi_resource_section,
     )
     messages = [{"role": "user", "content": user_content}]
 

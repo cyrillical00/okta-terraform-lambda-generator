@@ -4,15 +4,58 @@ import streamlit as st
 
 OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only"]
 
+_RESOURCE_LABEL_TO_TF = {
+    "Workflow": "okta_event_hook",
+    "Rule": "okta_group_rule",
+    "Group": "okta_group",
+    "Policy": "okta_auth_server_policy",
+    "User Object": "okta_user_profile_mapping",
+}
+
+_APP_TYPE_TO_TF = {
+    "SAML 2.0": "okta_app_saml",
+    "OAuth / OIDC": "okta_app_oauth",
+}
+
+
+def render_resource_type_selector() -> list[str]:
+    """Checkbox selector for Okta resource types. Returns selected TF resource type strings."""
+    st.caption("What Okta objects does this involve? *(optional — helps the parser)*")
+    labels = list(_RESOURCE_LABEL_TO_TF.keys())
+    cols = st.columns(len(labels) + 1)
+    selected = []
+
+    for i, label in enumerate(labels):
+        with cols[i]:
+            if st.checkbox(label, key=f"rsel_{label.lower().replace(' ', '_')}"):
+                selected.append(_RESOURCE_LABEL_TO_TF[label])
+
+    with cols[-1]:
+        app_checked = st.checkbox("Application", key="rsel_application")
+
+    if app_checked:
+        app_type = st.radio(
+            "Application type",
+            options=list(_APP_TYPE_TO_TF.keys()),
+            horizontal=True,
+            key="rsel_app_type",
+            label_visibility="collapsed",
+        )
+        selected.append(_APP_TYPE_TO_TF[app_type])
+
+    return selected
+
 
 def render_intent_card(intent: dict) -> dict | None:
     op = intent.get("operation_type", "create")
     res = intent.get("resource_type", "resource")
+    resource_types = intent.get("resource_types", [res])
     name = intent.get("resource_name", "")
     ambiguities = intent.get("ambiguities", [])
     notes = intent.get("notes", [])
 
-    st.markdown(f"**{op.capitalize()}** · `{res}`" + (f" · `{name}`" if name else ""))
+    types_display = " · ".join(f"`{rt}`" for rt in resource_types)
+    st.markdown(f"**{op.capitalize()}** · {types_display}" + (f" · `{name}`" if name else ""))
 
     for note in notes:
         st.info(note)

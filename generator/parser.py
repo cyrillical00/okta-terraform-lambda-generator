@@ -33,7 +33,10 @@ def _extract_json(text: str) -> str:
     return text
 
 
-def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
+def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODEL, resource_type_hints: list[str] | None = None) -> dict:
+    hint_section = ""
+    if resource_type_hints:
+        hint_section = f"\n\nResource types explicitly selected by the user: {', '.join(resource_type_hints)}. Use these to inform resource_type selection — prefer one of these types over guessing."
     response = client.messages.create(
         model=model,
         max_tokens=1024,
@@ -41,7 +44,7 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
         messages=[
             {
                 "role": "user",
-                "content": INTENT_USER_PROMPT_TEMPLATE.format(user_input=user_input),
+                "content": INTENT_USER_PROMPT_TEMPLATE.format(user_input=user_input) + hint_section,
             }
         ],
     )
