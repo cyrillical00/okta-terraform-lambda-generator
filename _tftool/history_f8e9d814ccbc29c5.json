@@ -1,5 +1,12 @@
 [
   {
+    "timestamp": "2026-04-21T23:33:38.757797+00:00",
+    "input": "Create an OAuth 2.0 OIDC app for our internal developer portal (single-page app). It should use the authorization code flow with PKCE. Also create a custom authorization server called \"Developer Portal\" with a custom scope named portal:read and a claim that passes the user's department. Restrict token lifetime to 2 hours.",
+    "operation_type": "create",
+    "resource_type": "okta_app_oauth",
+    "resource_name": "developer_portal"
+  },
+  {
     "timestamp": "2026-04-21T22:29:47.222371+00:00",
     "input": "Create a SAML 2.0 application for Workday. Assign three groups to it: HR Full Access, HR Read Only, and Payroll Admins. HR Full Access and Payroll Admins should have a SAML attribute statement passing the user's role. The app should only be accessible to members of those three groups \u2014 no individual user assignments.",
     "operation_type": "create",
