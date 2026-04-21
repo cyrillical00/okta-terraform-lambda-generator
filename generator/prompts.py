@@ -174,28 +174,34 @@ For API Gateway triggers: parse event.get("body") and return proper statusCode +
 
 ---
 
-## SECTION E — Suggestions (optional key)
+## SECTION E — Optional extensions (optional key)
 
-After generating the four required keys, evaluate whether the intent contains requirements that the generated Terraform and Lambda CANNOT fully satisfy on their own. If yes, include a "suggestions" key containing a list of plain-English recommendation strings.
+After generating the four required keys, evaluate whether the intent includes requirements that the generated Terraform and Lambda CANNOT fully satisfy on their own — such as behavioral enforcement, automated lifecycle management, notification triggers, or multi-step flows.
 
-Each suggestion must:
-- State specifically what is missing or unenforceable in the generated code
-- Explain why it cannot be handled by the current resources
-- Propose a concrete next step (Okta Workflows, a second Lambda + event hook, an additional Terraform resource, a manual admin policy, etc.)
+If yes, include an "optional_tf" key containing valid Terraform HCL for the additional resources that would complete the implementation. Each resource block must be preceded by this exact comment pattern:
 
-**Only include "suggestions" when something meaningful is missing.** Omit the key entirely for straightforward requests that the generated code fully implements.
+# ============================================================
+# OPTIONAL: <one-line description of what this resource adds>
+# <One sentence explaining why it is not applied by default.>
+# ============================================================
 
-Common cases that warrant a suggestion:
-- A behavioral constraint that requires runtime enforcement (e.g. "block users from being added to other groups" — the group resource cannot enforce this)
-- Provisioning/deprovisioning automation that needs Okta Workflows or a separate event-driven Lambda
-- Notification or alerting requirements not expressed in the generated code
-- Multi-step flows where only the first step is captured in the generated resource
-- Requirements that depend on external systems (Slack, HR system, ticketing) not configured here
+Rules for optional_tf:
+- Reference existing resources from terraform_okta_hcl by their full Terraform address (e.g. okta_group.terminated.id)
+- Declare any new var.* variables the optional resources need
+- Do not duplicate any resource already present in terraform_okta_hcl or terraform_lambda_hcl
+- Generate complete, working HCL — not pseudocode or placeholders
+- Omit this key entirely (or set to empty string "") when the four required outputs fully satisfy the intent
 
-Example — "create a terminated group where members can't be added elsewhere":
-"suggestions": [
-  "The okta_group resource creates the group but cannot enforce membership exclusivity at the Okta level. To auto-remove Terminated users from other groups when they're added, consider: (1) an Okta Workflow triggered on 'User added to group' that checks for Terminated membership and removes conflicting assignments, or (2) a second okta_event_hook + Lambda that listens for group.user_membership.add events and calls the Okta API to remove the user from non-Terminated groups."
-]
+Common cases that warrant optional_tf:
+- Group membership enforcement that needs runtime logic → okta_event_hook + Lambda checking group.user_membership.add events
+- Scheduled access reviews or cleanup → aws_cloudwatch_event_rule + aws_cloudwatch_event_target
+- App assignment automation → okta_group_rule assigning users to the app based on a profile attribute
+- Deprovisioning notification → additional Lambda + SNS/Slack call triggered by user lifecycle events
+- Profile sync → okta_user_profile_mapping between the app and Okta Universal Directory
+
+Example — "create a terminated group where members can't be added to other groups or apps":
+
+"optional_tf": "# ============================================================\\n# OPTIONAL: Event hook to enforce Terminated group exclusivity\\n# Apply this if you want Okta to automatically call a Lambda\\n# whenever a user is added to any group, so the Lambda can\\n# check for Terminated membership and remove conflicting ones.\\n# ============================================================\\n\\nresource \\"okta_event_hook\\" \\"terminated_enforcer\\" {\\n  name   = \\"Terminated Group Membership Enforcer\\"\\n  status = \\"ACTIVE\\"\\n  channel = {\\n    version = \\"1.0.0\\"\\n    uri     = var.terminated_enforcer_endpoint\\n    type    = \\"HTTP\\"\\n  }\\n  events_filter = {\\n    type  = \\"EVENT_TYPE\\"\\n    items = [\\"group.user_membership.add\\"]\\n  }\\n}\\n\\nvariable \\"terminated_enforcer_endpoint\\" {\\n  type        = string\\n  description = \\"HTTPS endpoint of the Lambda function URL or API Gateway that handles the event hook\\"\\n}"
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:
@@ -208,4 +214,4 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for
 
 {clarifications_section}Additional instructions: {extra_instructions}
 
-Return only the JSON object. Include the four required keys always. Include the optional "suggestions" key only if the generated code cannot fully satisfy the intent."""
+Return only the JSON object. Always include the four required keys. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""

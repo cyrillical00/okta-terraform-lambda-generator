@@ -42,7 +42,13 @@ Check for these specific problems in Lambda:
 - Lambda does not match the resource type in any meaningful way
 - Syntax errors or obvious runtime errors
 
-Do not flag style preferences or minor formatting choices. Only flag things that are wrong, misleading, or would cause failures."""
+Do NOT flag:
+- Style preferences or minor formatting choices
+- The presence of Lambda code when the user selected "Okta Terraform only" — output_mode is a display filter, not a code correctness issue; Lambda is always generated regardless of display mode
+- Variables declared for future use
+- Inline comments explaining design decisions
+
+Only flag things that are technically wrong, produce incorrect behavior, or would cause terraform apply to fail or the Lambda to misbehave at runtime."""
 
 VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 

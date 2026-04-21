@@ -83,16 +83,22 @@ def build_project_zip(outputs: dict, mode: str) -> bytes:
         if mode in ("Both", "Lambda only"):
             zf.writestr("lambda/lambda_function.py", outputs["lambda_python"])
             zf.writestr("lambda/requirements.txt", outputs.get("lambda_requirements", ""))
+        optional_tf = outputs.get("optional_tf", "")
+        if optional_tf and optional_tf.strip():
+            zf.writestr("terraform/optional_extensions.tf", optional_tf)
     return buffer.getvalue()
 
 
-def render_suggestions(suggestions: list[str]) -> None:
-    if not suggestions:
+def render_optional_tf(optional_tf: str) -> None:
+    if not optional_tf or not optional_tf.strip():
         return
     st.divider()
-    st.markdown("**Suggested additions**")
-    for s in suggestions:
-        st.info(s)
+    with st.expander("Optional extensions — add to your Terraform directory to enable"):
+        st.caption(
+            "These resources complement the main configuration but are not applied by default. "
+            "Copy them into a separate `.tf` file and run `terraform apply` when ready."
+        )
+        st.code(optional_tf, language="hcl")
 
 
 def render_validation_result(result: dict) -> bool:
