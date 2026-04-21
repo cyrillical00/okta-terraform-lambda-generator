@@ -15,7 +15,7 @@ st.set_page_config(
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
-from github.push import push_to_github, build_commit_message
+from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons
 
 
