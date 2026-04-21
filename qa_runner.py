@@ -275,6 +275,29 @@ TEST_CASES = [
              aws_types=["aws_lambda_function", "aws_sns_topic"],
              must_contain=["user.lifecycle.create"],
              notes="SNS resources in optional_tf must not redefine Lambda or duplicate IAM policy"),
+
+    # ── okta_app_saml attribute statements — must be inline, not separate resource ──
+    TestCase("SA01",
+             "Create a SAML 2.0 app for Workday with an attribute statement mapping the user's role",
+             okta_types=["okta_app_saml"],
+             expected_resource_type="okta_app_saml",
+             must_contain=["attribute_statements"],
+             must_not_contain_okta=["okta_app_saml_attribute_statements"],
+             notes="Attribute statements must be inline blocks, not a separate resource"),
+    TestCase("SA02",
+             "Create a SAML app for Salesforce and assign three groups: Sales, Sales Managers, and Sales Ops. Sales Managers get a role attribute statement.",
+             okta_types=["okta_app_saml"],
+             expected_resource_type="okta_app_saml",
+             must_contain=["okta_app_group_assignment", "attribute_statements"],
+             must_not_contain_okta=["okta_app_saml_attribute_statements"],
+             notes="Group assignments via okta_app_group_assignment; attribute statements inline in okta_app_saml"),
+    TestCase("SA03",
+             "Set up a SAML 2.0 app for ServiceNow. Assign HR Full Access, HR Read Only, and Payroll Admins groups. HR Full Access and Payroll Admins need a role SAML attribute.",
+             okta_types=["okta_app_saml"],
+             expected_resource_type="okta_app_saml",
+             must_contain=["attribute_statements", "okta_app_group_assignment"],
+             must_not_contain_okta=["okta_app_saml_attribute_statements"],
+             notes="Regression for the hallucinated okta_app_saml_attribute_statements resource"),
 ]
 
 
@@ -385,6 +408,14 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             issues.append(
                 "optional_tf uses aws_iam_role_policy name 'handler' which conflicts with "
                 "the existing policy in terraform_lambda_hcl — use a unique name"
+            )
+
+    # ── 12. okta_app_saml must not use hallucinated separate attribute resource ──
+    if "okta_app_saml" in okta_hcl:
+        if re.search(r'resource\s+"okta_app_saml_attribute_statements"', okta_hcl):
+            issues.append(
+                "Hallucinated resource 'okta_app_saml_attribute_statements' — attribute "
+                "statements must be inline blocks inside okta_app_saml, not a separate resource"
             )
 
     return issues

@@ -175,7 +175,22 @@ For resources NOT in the live context list, continue using var.* declarations as
 - Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
-- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps
+- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource — there is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. Example of the only valid pattern:
+```hcl
+resource "okta_app_saml" "workday" {
+  label   = "Workday"
+  sso_url = var.workday_sso_url
+  # ... other required fields ...
+  attribute_statements {
+    name      = "role"
+    namespace = "urn:oasis:names:tc:SAML:2.0:attrname-format:basic"
+    type      = "EXPRESSION"
+    values    = ["user.role"]
+  }
+}
+```
+For group-scoped attribute statements, set `filter_type` and `filter_value` inside the `attribute_statements` block. Do NOT create a separate resource.
+- For okta_app_group_assignment: use `app_id` and `group_id`. To assign multiple groups, create one `okta_app_group_assignment` resource per group — there is no bulk assignment resource. Do NOT use `okta_app_group_assignments` (plural) as a separate resource type.
 - For okta_group: include name and description
 - For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
 - For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
