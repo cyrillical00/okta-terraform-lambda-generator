@@ -28,6 +28,7 @@ def _init_session_state():
     defaults = {
         "intent": None,
         "outputs": None,
+        "output_mode": "Both",
         "parse_error": None,
         "gen_error": None,
         "commit_url": None,
@@ -53,6 +54,17 @@ def _get_model(default: str) -> str:
     return _get_secret("ANTHROPIC_MODEL") or default
 
 
+def _build_files(outputs: dict, mode: str) -> dict[str, str]:
+    files = {}
+    if mode in ("Both", "Okta Terraform only"):
+        files["terraform/okta.tf"] = outputs["terraform_okta_hcl"]
+        files["terraform/lambda.tf"] = outputs["terraform_lambda_hcl"]
+    if mode in ("Both", "Lambda only"):
+        files["lambda/lambda_function.py"] = outputs["lambda_python"]
+        files["lambda/requirements.txt"] = outputs.get("lambda_requirements", "")
+    return files
+
+
 _init_session_state()
 
 st.title("Okta Terraform + Lambda Generator")
@@ -74,7 +86,7 @@ if parse_clicked and user_input.strip():
     st.session_state.outputs = None
     st.session_state.commit_url = None
     client = _get_client()
-    model = _get_model("claude-3-haiku-20240307")
+    model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
         try:
             intent = parse_intent(user_input.strip(), client, model=model)
@@ -89,11 +101,12 @@ if parse_clicked and user_input.strip():
 if st.session_state.parse_error:
     st.error(st.session_state.parse_error)
 
-# Stage 2 — Confirmation card
+# Stage 2 — Clarifying questions
 if st.session_state.intent and st.session_state.outputs is None:
     confirmed = render_intent_card(st.session_state.intent)
     if confirmed is not None:
         st.session_state.intent = confirmed
+        st.session_state.output_mode = confirmed.get("output_mode", "Both")
         st.session_state.generation_triggered = True
 
 # Stage 3 — Generation
@@ -101,8 +114,8 @@ if st.session_state.generation_triggered:
     st.session_state.generation_triggered = False
     st.session_state.gen_error = None
     client = _get_client()
-    model = _get_model("claude-3-5-sonnet-20240620")
-    with st.spinner("Generating Terraform HCL and Lambda Python..."):
+    model = _get_model("claude-haiku-4-5-20251001")
+    with st.spinner("Generating..."):
         try:
             outputs = generate_all(st.session_state.intent, "", client, model=model)
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
@@ -119,15 +132,19 @@ if st.session_state.gen_error:
 
 # Stage 4 — Display + actions
 if st.session_state.outputs:
-    render_code_panels(st.session_state.outputs)
+    mode = st.session_state.output_mode
+    render_code_panels(st.session_state.outputs, mode)
 
-    push_clicked, regenerate_clicked, extra_instructions = render_action_buttons(st.session_state.outputs)
+    default_repo = _get_secret("GITHUB_REPO")
+    push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override = render_action_buttons(
+        st.session_state.outputs, mode, default_repo
+    )
 
     # Regenerate
     if regenerate_clicked:
         st.session_state.gen_error = None
         client = _get_client()
-        model = _get_model("claude-3-5-sonnet-20240620")
+        model = _get_model("claude-haiku-4-5-20251001")
         with st.spinner("Regenerating..."):
             try:
                 outputs = generate_all(st.session_state.intent, extra_instructions, client, model=model)
@@ -145,20 +162,18 @@ if st.session_state.outputs:
     # GitHub push
     if push_clicked:
         github_token = _get_secret("GITHUB_TOKEN")
-        github_repo = _get_secret("GITHUB_REPO")
-        if not github_token or not github_repo:
-            st.error("GITHUB_TOKEN and GITHUB_REPO must be configured in secrets to push to GitHub.")
+        if not github_token:
+            st.error("GITHUB_TOKEN must be configured in secrets to push to GitHub.")
+        elif not repo_override:
+            st.error("Repository name is required to push to GitHub.")
         else:
-            files = {
-                "terraform/okta.tf": st.session_state.outputs["terraform_okta_hcl"],
-                "terraform/lambda.tf": st.session_state.outputs["terraform_lambda_hcl"],
-                "lambda/lambda_function.py": st.session_state.outputs["lambda_python"],
-                "lambda/requirements.txt": st.session_state.outputs.get("lambda_requirements", ""),
-            }
+            files = _build_files(st.session_state.outputs, mode)
             commit_message = build_commit_message(st.session_state.intent)
             with st.spinner("Pushing to GitHub..."):
                 try:
-                    commit_url = push_to_github(files, github_repo, github_token, commit_message)
+                    commit_url = push_to_github(
+                        files, repo_override, github_token, commit_message, branch=branch_override
+                    )
                     st.session_state.commit_url = commit_url
                 except RuntimeError as e:
                     st.error(str(e))

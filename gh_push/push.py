@@ -8,22 +8,26 @@ def build_commit_message(intent: dict) -> str:
     return f"feat: generate {resource_type} {resource_name} via TF Tool"
 
 
-def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_message: str) -> str:
+def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_message: str, branch: str = "") -> str:
     g = Github(token)
     try:
         repo = g.get_repo(repo_name)
     except GithubException as e:
         if e.status == 404:
-            raise RuntimeError(f"Repository '{repo_name}' not found. Check GITHUB_REPO in your secrets.") from e
+            raise RuntimeError(f"Repository '{repo_name}' not found. Check the repo name and your GitHub token permissions.") from e
         raise
 
+    target_branch = branch or repo.default_branch
     try:
-        default_branch = repo.default_branch
-        branch_ref = repo.get_branch(default_branch)
+        branch_ref = repo.get_branch(target_branch)
     except GithubException as e:
-        if e.status in (404, 409):
+        if e.status == 404:
             raise RuntimeError(
-                f"Repository '{repo_name}' appears to be empty — push an initial commit first, then try again."
+                f"Branch '{target_branch}' not found in '{repo_name}'. Create it first or check the branch name."
+            ) from e
+        if e.status == 409:
+            raise RuntimeError(
+                f"Repository '{repo_name}' appears to be empty — push an initial commit first."
             ) from e
         raise
 
@@ -38,6 +42,6 @@ def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_mes
     new_tree = repo.create_git_tree(tree_elements, base_tree)
     parent_commit = repo.get_git_commit(latest_commit_sha)
     new_commit = repo.create_git_commit(commit_message, new_tree, [parent_commit])
-    repo.get_git_ref(f"heads/{default_branch}").edit(new_commit.sha)
+    repo.get_git_ref(f"heads/{target_branch}").edit(new_commit.sha)
 
     return new_commit.html_url

@@ -125,7 +125,10 @@ Also include an aws_provider block with region = var.aws_region, and a variable 
 - For okta_group: include name and description
 - For okta_group_rule: include name, status, expression_type, expression_value, group_assignments
 - For okta_event_hook: include name, status, channel (object with version, uri, type), events_filter (object with type, items)
-- Use var.* for all credentials — never hardcode secrets
+- Use var.* for ALL credentials, tokens, URLs, and IDs — NEVER hardcode any value that would differ between environments
+- For any user-supplied value (SSO URL, entity ID, ACS URL, client ID, etc.), declare a variable with a descriptive name and reference it with var.*
+- Do NOT generate self-referential depends_on (a resource must never depend on itself)
+- Do NOT reference computed attributes that do not exist on the resource type (e.g. acs_endpoints[0] is not a valid output of okta_app_saml)
 
 ---
 
