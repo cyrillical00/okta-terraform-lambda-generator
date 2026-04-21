@@ -21,7 +21,7 @@ def _parse_output(raw: str) -> dict:
     return parsed
 
 
-def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthropic) -> dict:
+def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps(intent, indent=2),
         extra_instructions=extra_instructions or "None",
@@ -29,7 +29,7 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
     messages = [{"role": "user", "content": user_content}]
 
     response = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=4096,
         system=GENERATOR_SYSTEM_PROMPT,
         messages=messages,
@@ -47,7 +47,7 @@ def generate_all(intent: dict, extra_instructions: str, client: anthropic.Anthro
             },
         ]
         retry_response = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=4096,
             system=GENERATOR_SYSTEM_PROMPT,
             messages=retry_messages,

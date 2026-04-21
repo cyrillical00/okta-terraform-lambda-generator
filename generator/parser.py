@@ -17,9 +17,9 @@ REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes
 MODEL = "claude-3-haiku-20240307"
 
 
-def parse_intent(user_input: str, client: anthropic.Anthropic) -> dict:
+def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODEL) -> dict:
     response = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=1024,
         system=INTENT_PARSER_SYSTEM_PROMPT,
         messages=[

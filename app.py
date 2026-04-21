@@ -49,6 +49,10 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _get_model(default: str) -> str:
+    return _get_secret("ANTHROPIC_MODEL") or default
+
+
 _init_session_state()
 
 st.title("Okta Terraform + Lambda Generator")
@@ -70,9 +74,10 @@ if parse_clicked and user_input.strip():
     st.session_state.outputs = None
     st.session_state.commit_url = None
     client = _get_client()
+    model = _get_model("claude-3-haiku-20240307")
     with st.spinner("Parsing intent..."):
         try:
-            intent = parse_intent(user_input.strip(), client)
+            intent = parse_intent(user_input.strip(), client, model=model)
             errors = validate_intent(intent)
             if errors:
                 st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
@@ -96,9 +101,10 @@ if st.session_state.generation_triggered:
     st.session_state.generation_triggered = False
     st.session_state.gen_error = None
     client = _get_client()
+    model = _get_model("claude-3-5-sonnet-20240620")
     with st.spinner("Generating Terraform HCL and Lambda Python..."):
         try:
-            outputs = generate_all(st.session_state.intent, "", client)
+            outputs = generate_all(st.session_state.intent, "", client, model=model)
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
             if syntax_errors:
                 st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
@@ -121,9 +127,10 @@ if st.session_state.outputs:
     if regenerate_clicked:
         st.session_state.gen_error = None
         client = _get_client()
+        model = _get_model("claude-3-5-sonnet-20240620")
         with st.spinner("Regenerating..."):
             try:
-                outputs = generate_all(st.session_state.intent, extra_instructions, client)
+                outputs = generate_all(st.session_state.intent, extra_instructions, client, model=model)
                 syntax_errors = validate_lambda_python(outputs["lambda_python"])
                 if syntax_errors:
                     st.warning(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
