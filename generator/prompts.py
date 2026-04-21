@@ -207,6 +207,8 @@ output "lambda_function_url" {
 - Do NOT generate self-referential depends_on (a resource must never depend on itself)
 - Do NOT reference computed attributes that do not exist on the resource type (e.g. acs_endpoints[0] is not a valid output of okta_app_saml)
 - Do NOT invent expression_value or group names — use var.* references for any values the user did not explicitly provide
+- Do NOT declare variables in terraform_okta_hcl that are not referenced by any resource, data source, or output in that same file — dead variables cause confusion and validator warnings; if a value is only used by the Lambda, configure it as a Lambda environment variable in terraform_lambda_hcl instead
+- Do NOT add output blocks whose value is a plain string describing what else needs to be done (e.g. implementation_note = "you still need to..."). If the complementary automation belongs in optional_tf, put it there. An output block must only surface real Terraform resource attributes or computed values
 
 ---
 

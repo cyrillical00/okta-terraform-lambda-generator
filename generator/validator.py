@@ -45,11 +45,12 @@ Check for these specific problems in Lambda:
 Do NOT flag:
 - Style preferences or minor formatting choices
 - The presence of Lambda code when the user selected "Okta Terraform only" — output_mode is a display filter, not a code correctness issue; Lambda is always generated regardless of display mode
-- Variables declared for future use
 - Inline comments explaining design decisions
-- For okta_event_hook: do not flag that "no Lambda endpoint exists" — the Lambda and its aws_lambda_function_url live in terraform_lambda_hcl which you are not shown; the event_hook_url variable is correctly left as a var.* for the user to fill in after deployment
+- For okta_event_hook: do not flag that "no Lambda endpoint exists" — the Lambda and its aws_lambda_function_url live in terraform_lambda_hcl; the event_hook_url variable is correctly left as a var.* for the user to fill in after deployment
 - For okta_event_hook: do not flag the absence of okta_app_group_assignment, okta_app_user_assignment, or similar Okta-side assignment resources when the intent is clearly event-driven (Lambda handles the API calls at runtime)
 - Variable declarations without a corresponding data source lookup — validating a var.* value at apply time is the user's responsibility, not a code error
+- Missing event hooks or automation triggers when the optional_tf section already contains them — optional_tf is a separate file the user can apply; treat it as part of the complete solution when evaluating whether the intent is fully addressed
+- Architectural gaps that are fully addressed by resources in optional_tf — if the missing piece (e.g., event hook, scheduled rule) is present in optional_tf, do not flag it as absent
 
 Only flag things that are technically wrong, produce incorrect behavior, or would cause terraform apply to fail or the Lambda to misbehave at runtime."""
 
@@ -64,8 +65,14 @@ VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 ## Generated terraform_okta_hcl
 {terraform_okta_hcl}
 
+## Generated terraform_lambda_hcl
+{terraform_lambda_hcl}
+
 ## Generated lambda_python
 {lambda_python}
+
+## Generated optional_tf (complementary resources marked OPTIONAL — not applied by default)
+{optional_tf}
 
 Return only the JSON review object."""
 
@@ -81,7 +88,9 @@ def validate_outputs(
         user_input=user_input,
         intent_json=json.dumps({k: v for k, v in intent.items() if k != "answers"}, indent=2),
         terraform_okta_hcl=outputs.get("terraform_okta_hcl", ""),
+        terraform_lambda_hcl=outputs.get("terraform_lambda_hcl", ""),
         lambda_python=outputs.get("lambda_python", ""),
+        optional_tf=outputs.get("optional_tf", "") or "(none)",
     )
 
     response = client.messages.create(
@@ -199,6 +208,8 @@ output "lambda_function_url" {
 - Do not remove resources that are correct and intentional.
 - Keep all var.* references for credentials — never hardcode values.
 - If a Lambda issue says event hook boilerplate is wrong, remove it and replace with simple logging/processing logic appropriate for the resource type.
+- Remove any variable declarations in terraform_okta_hcl that are not referenced by any resource, data source, or output in that file — move them to terraform_lambda_hcl as Lambda environment variable declarations instead.
+- Remove any output block whose value is a string literal (not a resource attribute reference) — these are implementation notes masquerading as outputs and are invalid design.
 - Return complete, valid HCL and Python — not snippets or diffs.
 - No markdown fences. No prose. Only the JSON object."""
 
