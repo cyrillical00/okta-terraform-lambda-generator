@@ -70,6 +70,13 @@ def _build_files(outputs: dict, mode: str) -> dict[str, str]:
 _init_session_state()
 
 # Auth gate
+if not hasattr(st.user, "is_logged_in"):
+    st.error(
+        "Google auth is not configured. "
+        "Add `[auth]` and `[auth.google]` sections to your Streamlit secrets and restart the app."
+    )
+    st.stop()
+
 if not st.user.is_logged_in:
     st.title("Okta Terraform + Lambda Generator")
     st.markdown("Sign in with your Google account to continue.")
