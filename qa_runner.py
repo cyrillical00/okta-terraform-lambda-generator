@@ -20,8 +20,12 @@ import anthropic
 from dotenv import load_dotenv
 load_dotenv()
 
+from pathlib import Path
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
+
+_OUTPUT_CACHE: dict = {}
+CACHE_PATH = Path(__file__).parent / "qa_outputs_cache.json"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,7 +172,8 @@ TEST_CASES = [
              expected_resource_type="okta_auth_server_policy",
              must_contain=["okta_auth_server_policy"]),
     TestCase("AP02", "Add an auth server policy rule limiting token lifetime to 1 hour",
-             expected_resource_type="okta_auth_server_policy"),
+             expected_resource_type="okta_auth_server_policy_rule",
+             must_contain=["okta_auth_server_policy_rule"]),
 
     # ── okta_factor ───────────────────────────────────────────────────────────
     TestCase("MFA01", "Enable Google Authenticator as an MFA factor for the org",
@@ -249,6 +254,20 @@ TEST_CASES = [
              expected_resource_type="okta_event_hook",
              must_contain=["group.user_membership.add"],
              must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+
+    # ── Compound multi-resource requests ─────────────────────────────────────
+    TestCase("COMP01",
+             "Create an OAuth 2.0 app for our developer portal and a custom auth server called Developer API with a read:data scope",
+             expected_resource_type="okta_app_oauth",
+             must_contain=["okta_app_oauth", "okta_auth_server", "okta_auth_server_scope"]),
+    TestCase("COMP02",
+             "Create a SAML app for Workday and assign three groups: HR, Finance, and Executives",
+             expected_resource_type="okta_app_saml",
+             must_contain=["okta_app_saml", "okta_group"]),
+    TestCase("COMP03",
+             "Create an auth server for our payments API with a payments:write scope and a role claim",
+             expected_resource_type="okta_auth_server",
+             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim"]),
 
     # ── optional_tf collision tests (Both mode) ───────────────────────────────
     TestCase("OPT01",
@@ -478,6 +497,12 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                         f"Hallucinated/forbidden attribute (pattern '{pattern}') in {resource_type}"
                     )
 
+    # ── 14. No okta_* resources in terraform_lambda_hcl ─────────────────────
+    lambda_hcl = outputs.get("terraform_lambda_hcl", "") or ""
+    okta_in_lambda = re.findall(r'resource\s+"(okta_[^"]+)"', lambda_hcl)
+    if okta_in_lambda:
+        issues.append(f"okta_* resource(s) found in terraform_lambda_hcl: {okta_in_lambda}")
+
     return issues
 
 
@@ -497,20 +522,40 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     return intent
 
 
-def run_test(tc: TestCase, client, model: str) -> dict:
+def run_test(tc: TestCase, client, model: str, replay_mode: bool = False) -> dict:
     start = time.time()
     try:
-        intent = build_intent(tc, client, model)
-        val_errors = validate_intent(intent)
-        if val_errors:
-            return {
-                "id": tc.id, "status": "FAIL",
-                "issues": [f"Intent validation: {e}" for e in val_errors],
-                "resource_type": intent.get("resource_type"),
-                "output_mode": intent.get("output_mode"),
-                "elapsed": round(time.time() - start, 1),
-            }
-        outputs = generate_all(intent, extra_instructions="", client=client, model=model)
+        if replay_mode:
+            if not CACHE_PATH.exists():
+                return {
+                    "id": tc.id, "status": "ERROR",
+                    "issues": ["No cache — run without --replay first"],
+                    "elapsed": round(time.time() - start, 1),
+                }
+            with open(CACHE_PATH) as f:
+                cache = json.load(f)
+            if tc.id not in cache:
+                return {
+                    "id": tc.id, "status": "ERROR",
+                    "issues": [f"No cached output for {tc.id}"],
+                    "elapsed": round(time.time() - start, 1),
+                }
+            entry = cache[tc.id]
+            outputs = entry["outputs"]
+            intent = entry["intent"]
+        else:
+            intent = build_intent(tc, client, model)
+            val_errors = validate_intent(intent)
+            if val_errors:
+                return {
+                    "id": tc.id, "status": "FAIL",
+                    "issues": [f"Intent validation: {e}" for e in val_errors],
+                    "resource_type": intent.get("resource_type"),
+                    "output_mode": intent.get("output_mode"),
+                    "elapsed": round(time.time() - start, 1),
+                }
+            outputs = generate_all(intent, extra_instructions="", client=client, model=model)
+            _OUTPUT_CACHE[tc.id] = {"outputs": outputs, "intent": intent, "parsed_as": intent.get("resource_type", "")}
         issues = run_checks(tc, intent, outputs)
         return {
             "id": tc.id,
@@ -552,18 +597,22 @@ def _read_api_key() -> str:
 
 
 def main():
-    filter_ids = set(a.upper() for a in sys.argv[1:])
+    replay_mode = "--replay" in sys.argv
+    filter_ids = set(a.upper() for a in sys.argv[1:] if not a.startswith("--"))
     cases = [tc for tc in TEST_CASES if not filter_ids or tc.id.upper() in filter_ids]
 
-    api_key = _read_api_key()
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY not found. Set it in the environment or .streamlit/secrets.toml")
-        sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=api_key)
-    model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-
-    print(f"QA runner — {len(cases)} tests — model: {model}")
+    if replay_mode:
+        client = None
+        model = None
+        print(f"QA runner — REPLAY MODE — {len(cases)} tests — reading from qa_outputs_cache.json")
+    else:
+        api_key = _read_api_key()
+        if not api_key:
+            print("ERROR: ANTHROPIC_API_KEY not found. Set it in the environment or .streamlit/secrets.toml")
+            sys.exit(1)
+        client = anthropic.Anthropic(api_key=api_key)
+        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+        print(f"QA runner — {len(cases)} tests — model: {model}")
     print("=" * 72)
 
     results = []
@@ -572,7 +621,7 @@ def main():
     for i, tc in enumerate(cases, 1):
         label = f"[{i:02d}/{len(cases)}] {tc.id:<6} {tc.prompt[:55]:<55}"
         print(f"{label} ...", end="", flush=True)
-        r = run_test(tc, client, model)
+        r = run_test(tc, client, model, replay_mode=replay_mode)
         results.append(r)
         elapsed = r.get("elapsed", 0)
         if r["status"] == "PASS":
@@ -604,6 +653,10 @@ def main():
                 print(f"  {r['id']:<6} [{r['status']}]  parsed_as={rt}")
                 for iss in r.get("issues", []):
                     print(f"         -> {iss}")
+
+    if not replay_mode and _OUTPUT_CACHE:
+        with open(CACHE_PATH, "w") as f:
+            json.dump(_OUTPUT_CACHE, f, indent=2)
 
     report_path = os.path.join(os.path.dirname(__file__), "qa_report.json")
     with open(report_path, "w") as f:

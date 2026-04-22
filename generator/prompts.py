@@ -255,7 +255,7 @@ variable "event_hook_auth_token" {
 CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid.
 
 EVENT TYPE SELECTION — follow this decision tree before choosing items:
-1. Does the request involve a user being added to a group, joining a group, transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> use ONLY `group.user_membership.add`. STOP. Do not also include user.lifecycle.create or any other event alongside it.
+1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> use ONLY `group.user_membership.add`. STOP. Do not also include user.lifecycle.create or any other event alongside it.
 2. Does it involve a user being removed from a group? -> `group.user_membership.remove`. STOP.
 3. Does it involve user deactivation, offboarding, or suspension? -> `user.lifecycle.deactivate`.
 4. Does it involve a new user account being created? -> `user.lifecycle.create`.
@@ -278,6 +278,24 @@ The `items` list must contain Okta event type strings. Use this table — no exc
 | App removed from user | `application.user_membership.remove` |
 
 MANDATORY RULE — GROUP MEMBERSHIP: Any request involving a user being added to a group, removed from a group, transitioning between groups, or enforcing group mutual exclusivity MUST use `group.user_membership.add` (or `group.user_membership.remove`). Using `user.lifecycle.create` or `user.lifecycle.update` for these scenarios is ALWAYS wrong — those events fire on account creation/profile changes, not group membership changes.
+
+LANGUAGE VARIANTS — map natural language to the correct event type:
+ADD variants (use group.user_membership.add):
+- "whenever a user joins the X group" -> group.user_membership.add
+- "when a user becomes a member of X" -> group.user_membership.add
+- "when a user is added to the X group" -> group.user_membership.add
+- "when a user enters the X group" -> group.user_membership.add
+- "user transitions to the X group" -> group.user_membership.add
+REMOVE variants (use group.user_membership.remove):
+- "when a user is removed from the X group" -> group.user_membership.remove
+- "when users are removed from the X group" -> group.user_membership.remove
+- "when a user leaves the X group" -> group.user_membership.remove
+- "when a user exits the X group" -> group.user_membership.remove
+PROFILE variants (use user.account.update_profile):
+- "when a user's profile is updated" -> user.account.update_profile
+- "when a user's Okta profile is updated" -> user.account.update_profile
+- "when profile attributes change" -> user.account.update_profile
+user.lifecycle.create fires ONLY when a brand-new Okta account is provisioned for the first time — it has NOTHING to do with group membership changes. Never use it for group join/leave events.
 
 When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
 
