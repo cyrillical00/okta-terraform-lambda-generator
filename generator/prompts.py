@@ -6,7 +6,8 @@ Return exactly this JSON structure (all fields required):
 
 {
   "operation_type": "<string>",
-  "resource_type": "<string>",
+  "resource_type": "<string — the primary resource type>",
+  "resource_types": ["<all resource types needed to fully implement the request>"],
   "resource_name": "<string>",
   "attributes": {},
   "notes": [],
@@ -17,7 +18,28 @@ Return exactly this JSON structure (all fields required):
 
 **operation_type** — must be one of: create, update, delete, import
 
-**resource_type** — must be one of:
+**resource_type** — the primary resource type (must be one of the values below)
+
+**resource_types** — list of ALL resource types needed to fully implement the request. For a
+single-resource request this is a list with one item. For compound requests include every type
+required. Common compound patterns:
+
+- "OAuth app" + "authorization server / scopes / claims / token lifetime":
+  ["okta_app_oauth", "okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
+   "okta_auth_server_policy", "okta_auth_server_policy_rule"]
+  Include only the sub-types actually mentioned — e.g. omit okta_auth_server_scope if no
+  custom scope is requested.
+
+- "SAML app" + "assign groups":
+  ["okta_app_saml", "okta_group"]
+
+- "Group" + "enforce mutual exclusivity / remove from other groups":
+  ["okta_group", "okta_event_hook"]
+
+- "Event hook" + "Lambda" (when AWS resources are implied):
+  ["okta_event_hook"] — AWS types are handled separately, do not include them here
+
+Allowed values for resource_type and every item in resource_types:
 - okta_app_saml (SAML 2.0 application integration)
 - okta_app_oauth (OIDC/OAuth 2.0 application)
 - okta_group (Okta group)

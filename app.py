@@ -23,6 +23,14 @@ from history import add_entry, get_entries
 from env_context import build_env_context, format_context_for_prompt
 from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
+_OKTA_RESOURCE_TYPES = {
+    "okta_app_saml", "okta_app_oauth", "okta_group", "okta_group_rule",
+    "okta_event_hook", "okta_user_profile_mapping", "okta_auth_server",
+    "okta_auth_server_scope", "okta_auth_server_claim",
+    "okta_auth_server_policy", "okta_auth_server_policy_rule",
+    "okta_factor", "okta_network_zone", "okta_brand", "okta_email_customization",
+}
+
 
 def _get_secret(key: str) -> str:
     val = st.secrets.get(key) or os.getenv(key, "")
@@ -313,7 +321,11 @@ if parse_clicked and user_input.strip():
         try:
             intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
             if okta_types:
+                # UI selection takes priority over parser detection
                 intent["resource_types"] = okta_types
+            elif not intent.get("resource_types"):
+                # Parser didn't return a list — fall back to single type
+                intent["resource_types"] = [intent.get("resource_type", "")]
             if aws_types:
                 intent["aws_resource_types"] = aws_types
             intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
@@ -381,16 +393,47 @@ if st.session_state.outputs:
             model = _get_model("claude-haiku-4-5-20251001")
             with st.spinner("Fixing issues..."):
                 try:
-                    optional_tf = st.session_state.outputs.get("optional_tf", "")
-                    fixed = fix_outputs(
-                        intent=st.session_state.intent,
-                        outputs=st.session_state.outputs,
-                        validation_result=st.session_state.validation_result,
-                        client=client,
-                        model=model,
-                    )
-                    if optional_tf and not fixed.get("optional_tf"):
-                        fixed["optional_tf"] = optional_tf
+                    vr = st.session_state.validation_result
+                    all_issues = vr.get("terraform_issues", []) + vr.get("lambda_issues", [])
+                    issues_text = "\n".join(f"- {i}" for i in all_issues)
+
+                    # Detect resource types mentioned in issues that are absent from current output
+                    okta_hcl = st.session_state.outputs.get("terraform_okta_hcl", "")
+                    current_types = set(st.session_state.intent.get("resource_types", []))
+                    missing_types = [
+                        rt for rt in _OKTA_RESOURCE_TYPES
+                        if rt in issues_text and rt not in okta_hcl
+                    ]
+
+                    if missing_types:
+                        # Expand resource_types and do a full regeneration
+                        expanded_intent = {
+                            **st.session_state.intent,
+                            "resource_types": list(current_types | set(missing_types)),
+                        }
+                        fixed = generate_all(
+                            intent=expanded_intent,
+                            extra_instructions=(
+                                f"The previous generation was missing these resources — "
+                                f"include them now:\n{issues_text}"
+                            ),
+                            client=client,
+                            model=model,
+                        )
+                        st.session_state.intent = expanded_intent
+                    else:
+                        # No missing resources — use targeted fix_outputs
+                        optional_tf = st.session_state.outputs.get("optional_tf", "")
+                        fixed = fix_outputs(
+                            intent=st.session_state.intent,
+                            outputs=st.session_state.outputs,
+                            validation_result=vr,
+                            client=client,
+                            model=model,
+                        )
+                        if optional_tf and not fixed.get("optional_tf"):
+                            fixed["optional_tf"] = optional_tf
+
                     st.session_state.outputs = fixed
                     st.session_state.validation_result = None
                     st.session_state.commit_url = None

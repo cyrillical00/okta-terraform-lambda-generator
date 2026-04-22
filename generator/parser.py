@@ -11,7 +11,10 @@ ALLOWED_RESOURCE_TYPES = {
     "okta_event_hook",
     "okta_user_profile_mapping",
     "okta_auth_server",
+    "okta_auth_server_scope",
+    "okta_auth_server_claim",
     "okta_auth_server_policy",
+    "okta_auth_server_policy_rule",
     "okta_factor",
     "okta_network_zone",
     "okta_brand",
@@ -71,4 +74,12 @@ def validate_intent(intent: dict) -> list[str]:
         errors.append("'ambiguities' must be a list")
     if not isinstance(intent.get("notes"), list):
         errors.append("'notes' must be a list")
+    # resource_types is optional metadata — validate items if present
+    if "resource_types" in intent:
+        if not isinstance(intent["resource_types"], list):
+            errors.append("'resource_types' must be a list")
+        else:
+            invalid = [rt for rt in intent["resource_types"] if rt not in ALLOWED_RESOURCE_TYPES]
+            if invalid:
+                errors.append(f"resource_types contains invalid values: {', '.join(invalid)}")
     return errors
