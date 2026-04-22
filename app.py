@@ -321,8 +321,9 @@ if parse_clicked and user_input.strip():
         try:
             intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
             if okta_types:
-                # UI selection takes priority over parser detection
-                intent["resource_types"] = okta_types
+                # Merge: UI types set the primary type(s); parser adds any compound supporting types
+                parser_extras = [t for t in intent.get("resource_types", []) if t not in set(okta_types)]
+                intent["resource_types"] = list(okta_types) + parser_extras
             elif not intent.get("resource_types"):
                 # Parser didn't return a list — fall back to single type
                 intent["resource_types"] = [intent.get("resource_type", "")]

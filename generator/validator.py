@@ -156,6 +156,13 @@ def refine_outputs(
                 outputs["optional_tf"] = optional_tf
             if tfvars and not outputs.get("terraform_tfvars_example"):
                 outputs["terraform_tfvars_example"] = tfvars
+            # Re-apply output_mode enforcement — fix_outputs doesn't enforce it
+            if output_mode == "Okta Terraform only":
+                outputs["terraform_lambda_hcl"] = ""
+                outputs["lambda_python"] = ""
+                outputs["lambda_requirements"] = ""
+            elif output_mode == "Lambda only":
+                outputs["terraform_okta_hcl"] = ""
         except GenerationError:
             break
     return outputs

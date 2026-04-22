@@ -194,6 +194,7 @@ Then reference it as `data.okta_group.engineering.id` wherever the ID is needed.
 For resources NOT in the live context list, continue using var.* declarations as normal.
 
 ### General Terraform rules
+- CRITICAL FILE SEPARATION: terraform_okta_hcl is for ALL okta_* resources. terraform_lambda_hcl is for ALL aws_* resources. NEVER put okta_auth_server, okta_auth_server_scope, okta_auth_server_claim, okta_auth_server_policy, okta_auth_server_policy_rule, or any other okta_* resource in terraform_lambda_hcl. If you have multiple Okta resource types to generate, they ALL go in terraform_okta_hcl as separate resource blocks.
 - Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
