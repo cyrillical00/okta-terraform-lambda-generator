@@ -1,5 +1,12 @@
 [
   {
+    "timestamp": "2026-04-23T05:19:20.110831+00:00",
+    "input": "i want to move all users from group-test-1 to group-test-2",
+    "operation_type": "update",
+    "resource_type": "okta_event_hook",
+    "resource_name": "move_users_group_test_1_to_group_test_2"
+  },
+  {
     "timestamp": "2026-04-21T23:33:38.757797+00:00",
     "input": "Create an OAuth 2.0 OIDC app for our internal developer portal (single-page app). It should use the authorization code flow with PKCE. Also create a custom authorization server called \"Developer Portal\" with a custom scope named portal:read and a claim that passes the user's department. Restrict token lifetime to 2 hours.",
     "operation_type": "create",
