@@ -1,4 +1,5 @@
 import requests
+from difflib import get_close_matches
 
 
 class OktaError(Exception):
@@ -70,27 +71,47 @@ class OktaClient:
     def get_group_by_name(self, name: str) -> dict | None:
         resp = self.session.get(
             f"{self.base}/api/v1/groups",
-            params={"q": name, "limit": 10},
+            params={"q": name, "limit": 25},
             timeout=10,
         )
         if not resp.ok:
             raise OktaError(f"Okta API error {resp.status_code}: {resp.text[:200]}")
-        for g in resp.json():
-            if g["profile"]["name"].lower() == name.lower():
+        groups = resp.json()
+        names = [g["profile"]["name"] for g in groups]
+        needle = name.lower()
+        # Exact match first
+        for g in groups:
+            if g["profile"]["name"].lower() == needle:
                 return {"id": g["id"], "name": g["profile"]["name"]}
+        # Fuzzy fallback
+        matches = get_close_matches(needle, [n.lower() for n in names], n=1, cutoff=0.7)
+        if matches:
+            for g in groups:
+                if g["profile"]["name"].lower() == matches[0]:
+                    return {"id": g["id"], "name": g["profile"]["name"]}
         return None
 
     def get_app_by_name(self, name: str) -> dict | None:
         resp = self.session.get(
             f"{self.base}/api/v1/apps",
-            params={"q": name, "limit": 10},
+            params={"q": name, "limit": 25},
             timeout=10,
         )
         if not resp.ok:
             raise OktaError(f"Okta API error {resp.status_code}: {resp.text[:200]}")
-        for a in resp.json():
-            if a["label"].lower() == name.lower():
+        apps = resp.json()
+        labels = [a["label"] for a in apps]
+        needle = name.lower()
+        # Exact match first
+        for a in apps:
+            if a["label"].lower() == needle:
                 return {"id": a["id"], "name": a["label"], "sign_on_mode": a.get("signOnMode", "")}
+        # Fuzzy fallback
+        matches = get_close_matches(needle, [l.lower() for l in labels], n=1, cutoff=0.7)
+        if matches:
+            for a in apps:
+                if a["label"].lower() == matches[0]:
+                    return {"id": a["id"], "name": a["label"], "sign_on_mode": a.get("signOnMode", "")}
         return None
 
     def get_user_by_login(self, login: str) -> dict | None:

@@ -259,8 +259,9 @@ EVENT TYPE SELECTION — follow this decision tree before choosing items:
 2. Does it involve a user being removed from a group? -> `group.user_membership.remove`. STOP.
 3. Does it involve user deactivation, offboarding, or suspension? -> `user.lifecycle.deactivate`.
 4. Does it involve a new user account being created? -> `user.lifecycle.create`.
-5. Does it involve profile attribute changes? -> `user.account.update_profile`.
-6. None of the above? -> consult the table below.
+5. Does it involve a user changing, updating, or resetting their password? -> `user.account.update_password`. STOP. Password changes are NOT profile attribute changes — do not use user.account.update_profile for password scenarios.
+6. Does it involve profile attribute changes (name, department, job title, custom attributes)? -> `user.account.update_profile`.
+7. None of the above? -> consult the table below.
 
 The `items` list must contain Okta event type strings. Use this table — no exceptions:
 
@@ -277,7 +278,9 @@ The `items` list must contain Okta event type strings. Use this table — no exc
 | App assigned to user | `application.user_membership.add` |
 | App removed from user | `application.user_membership.remove` |
 
-MANDATORY RULE — GROUP MEMBERSHIP: Any request involving a user being added to a group, removed from a group, transitioning between groups, or enforcing group mutual exclusivity MUST use `group.user_membership.add` (or `group.user_membership.remove`). Using `user.lifecycle.create` or `user.lifecycle.update` for these scenarios is ALWAYS wrong — those events fire on account creation/profile changes, not group membership changes.
+MANDATORY RULE — GROUP MEMBERSHIP ADD: Any request where a user is being ADDED TO a group, joins a group, transitions INTO a group, or where group mutual exclusivity must be enforced (the add fires the hook; Lambda removes from conflicting groups) MUST use `group.user_membership.add`. Using `user.lifecycle.create` or `user.lifecycle.update` for these scenarios is ALWAYS wrong — those events fire on account creation/profile changes, not group membership changes.
+
+MANDATORY RULE — GROUP MEMBERSHIP REMOVE: Any request where a user is being REMOVED FROM a group, leaves a group, or exits a group MUST use `group.user_membership.remove`. NEVER use `group.user_membership.add` for remove language. The event type describes what TRIGGERS the hook, not what the Lambda does afterward.
 
 LANGUAGE VARIANTS — map natural language to the correct event type:
 ADD variants (use group.user_membership.add):
@@ -286,15 +289,23 @@ ADD variants (use group.user_membership.add):
 - "when a user is added to the X group" -> group.user_membership.add
 - "when a user enters the X group" -> group.user_membership.add
 - "user transitions to the X group" -> group.user_membership.add
-REMOVE variants (use group.user_membership.remove):
-- "when a user is removed from the X group" -> group.user_membership.remove
-- "when users are removed from the X group" -> group.user_membership.remove
-- "when a user leaves the X group" -> group.user_membership.remove
-- "when a user exits the X group" -> group.user_membership.remove
+REMOVE variants — CRITICAL: these MUST use group.user_membership.remove, NEVER .add:
+- "when users are removed from the X group"      -> group.user_membership.remove
+- "when a user is removed from the X group"      -> group.user_membership.remove
+- "for when users are removed from the X group"  -> group.user_membership.remove
+- "when a user leaves the X group"               -> group.user_membership.remove
+- "when a user exits the X group"                -> group.user_membership.remove
+DISAMBIGUATION — "remove from group" language in mutual-exclusivity requests:
+If the request says "when a user joins group A, remove them from group B", the event hook trigger is ALWAYS group.user_membership.add — because the hook fires when the user JOINS group A, not when they leave group B. The Lambda then calls the Okta API to remove them from group B. Only use group.user_membership.remove when the hook must fire specifically because a user was directly removed/kicked from a group.
 PROFILE variants (use user.account.update_profile):
 - "when a user's profile is updated" -> user.account.update_profile
 - "when a user's Okta profile is updated" -> user.account.update_profile
 - "when profile attributes change" -> user.account.update_profile
+PASSWORD variants (use user.account.update_password):
+- "when a user changes their password"  -> user.account.update_password
+- "when a user updates their password"  -> user.account.update_password
+- "when a user resets their password"   -> user.account.update_password
+- "triggered by a password change"      -> user.account.update_password
 user.lifecycle.create fires ONLY when a brand-new Okta account is provisioned for the first time — it has NOTHING to do with group membership changes. Never use it for group join/leave events.
 
 When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
@@ -312,7 +323,7 @@ output "lambda_function_url" {
 ```
 - For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
 - For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
-- For okta_factor: include provider_id (e.g. "GOOGLE", "OKTA", "DUO"), factor_type (e.g. "token:software:totp", "push"), status ("ACTIVE"). Do NOT wrap in a policy resource — okta_factor is a direct org-level enrollment setting
+- For `okta_factor`: include `provider_id` (e.g. "GOOGLE", "OKTA", "DUO") and `status` ("ACTIVE"). CRITICAL: Do NOT wrap in an `okta_policy` resource — `okta_factor` is a standalone org-level enrollment setting. Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
 - For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo), gateways (list of objects with type="CIDR" and value=var.*) for IP zones; for DYNAMIC zones use asns or dynamic_locations instead of gateways
 - For okta_brand: include name, agree_to_custom_privacy_policy (bool). Optionally include custom_privacy_policy_url, remove_powered_by_okta (bool). Note: logo upload is not supported in HCL — add an inline comment directing the user to do it in the Okta Admin Console
 - For okta_email_customization: include brand_id (reference var.brand_id), template_name (e.g. "UserActivation", "ForgotPassword", "PasswordChanged"), language, is_default (bool), subject, body. The body must be valid Okta email template HTML with ${} variable placeholders escaped as $${} in HCL heredoc strings

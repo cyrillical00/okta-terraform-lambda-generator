@@ -9,6 +9,7 @@ outputs, wrong event types, bad resource type selection, invalid schemas.
 import json
 import os
 import re
+import statistics
 import sys
 import time
 from dataclasses import dataclass, field
@@ -344,6 +345,212 @@ TEST_CASES = [
              "Add an auth server policy that restricts token lifetime to 1 hour for the payments auth server",
              expected_resource_type="okta_auth_server_policy",
              must_contain=["okta_auth_server_policy", "priority"]),
+
+    # ── okta_user_profile_mapping ─────────────────────────────────────────────
+    TestCase("PM01", "Map the department attribute from the Workday app to the Okta user profile",
+             expected_resource_type="okta_user_profile_mapping",
+             must_contain=["okta_user_profile_mapping"]),
+    TestCase("PM02", "Sync the user role attribute from Salesforce to the Okta Universal Directory",
+             expected_resource_type="okta_user_profile_mapping"),
+    TestCase("PM03", "Create a profile mapping that pushes the manager field from Okta to the HR portal app",
+             expected_resource_type="okta_user_profile_mapping",
+             must_contain=["okta_user_profile_mapping"]),
+    TestCase("PM04", "Map custom department and costCenter attributes from our HRIS app to Okta user profiles",
+             expected_resource_type="okta_user_profile_mapping"),
+    TestCase("PM05", "Set up attribute mapping so the user's job title in Okta stays in sync with the HCM system",
+             expected_resource_type="okta_user_profile_mapping"),
+
+    # ── okta_auth_server_scope standalone ────────────────────────────────────
+    TestCase("SC01", "Add a read:invoices scope to the payments authorization server",
+             expected_resource_type="okta_auth_server_scope",
+             must_contain=["okta_auth_server_scope"]),
+    TestCase("SC02", "Create two scopes on the developer API auth server: read:data and write:data",
+             expected_resource_type="okta_auth_server_scope",
+             must_contain=["okta_auth_server_scope"]),
+    TestCase("SC03", "Add a default openid scope to the mobile auth server",
+             expected_resource_type="okta_auth_server_scope"),
+
+    # ── okta_auth_server_claim standalone ────────────────────────────────────
+    TestCase("CL01", "Add a groups claim to the payments auth server that includes the user's Okta groups",
+             expected_resource_type="okta_auth_server_claim",
+             must_contain=["okta_auth_server_claim"]),
+    TestCase("CL02", "Create a custom role claim on the developer API auth server using a user profile expression",
+             expected_resource_type="okta_auth_server_claim",
+             must_contain=["okta_auth_server_claim", "claim_type"]),
+    TestCase("CL03", "Add a department claim to the identity token on our internal auth server",
+             expected_resource_type="okta_auth_server_claim"),
+
+    # ── okta_network_zone dynamic ─────────────────────────────────────────────
+    TestCase("NZD01", "Create a dynamic network zone that restricts access to users in the United States and Canada",
+             expected_resource_type="okta_network_zone",
+             must_contain=["okta_network_zone", "DYNAMIC"]),
+    TestCase("NZD02", "Block access from ASNs associated with known VPN providers",
+             expected_resource_type="okta_network_zone",
+             must_contain=["okta_network_zone"]),
+    TestCase("NZD03", "Create a geo-based network zone allowing only EU countries",
+             expected_resource_type="okta_network_zone",
+             must_contain=["okta_network_zone"]),
+
+    # ── okta_email_customization additional templates ─────────────────────────
+    TestCase("EMX01", "Customize the password changed notification email for our org",
+             expected_resource_type="okta_email_customization",
+             must_contain=["okta_email_customization", "PasswordChanged"]),
+    TestCase("EMX02", "Create a custom email challenge template with our brand colors and logo link",
+             expected_resource_type="okta_email_customization",
+             must_contain=["okta_email_customization"]),
+    TestCase("EMX03", "Customize the AD forgot password email template",
+             expected_resource_type="okta_email_customization",
+             must_contain=["okta_email_customization"]),
+    TestCase("EMX04", "Write a custom account locked email template that includes our support contact",
+             expected_resource_type="okta_email_customization",
+             must_contain=["okta_email_customization"]),
+
+    # ── okta_factor additional types ──────────────────────────────────────────
+    TestCase("MFA03", "Enable Duo Security as a supported MFA factor for the org",
+             expected_resource_type="okta_factor",
+             must_contain=["okta_factor", "DUO"],
+             must_not_contain_okta=["okta_policy"]),
+    TestCase("MFA04", "Enable FIDO2 WebAuthn as an MFA factor",
+             expected_resource_type="okta_factor",
+             must_contain=["okta_factor"],
+             must_not_contain_okta=["okta_policy"]),
+    TestCase("MFA05", "Enable YubiKey OTP as an MFA enrollment option for the org",
+             expected_resource_type="okta_factor",
+             must_contain=["okta_factor"],
+             must_not_contain_okta=["okta_policy"]),
+
+    # ── okta_event_hook additional scenarios ──────────────────────────────────
+    TestCase("EHX01", "Create a hook that fires when a user's Okta profile attributes are updated",
+             expected_resource_type="okta_event_hook",
+             must_contain=["user.account.update_profile"],
+             must_not_contain_okta=["user.lifecycle.create", "user.lifecycle.update"]),
+    TestCase("EHX02", "Set up a webhook that triggers when a user changes their password",
+             expected_resource_type="okta_event_hook",
+             must_contain=["user.account.update_password"]),
+    TestCase("EHX03",
+             "Enforce that a user can only be in one Tableau role group at a time: Creator, Explorer, or Viewer",
+             expected_resource_type="okta_event_hook",
+             must_contain=["group.user_membership.add"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("EHX04",
+             "Fire an event hook when a user is added to the Contractors group and notify an external HR system",
+             expected_resource_type="okta_event_hook",
+             must_contain=["group.user_membership.add"]),
+    TestCase("EHX05", "Create a webhook triggered when a user account is activated in Okta",
+             expected_resource_type="okta_event_hook",
+             must_contain=["user.lifecycle.activate"]),
+
+    # ── okta_group_rule additional scenarios ──────────────────────────────────
+    TestCase("GRX01", "Create a group rule that adds users to the VP group when their title starts with VP",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("GRX02", "Assign all full-time employees to the FTE group based on their employmentType attribute",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("GRX03", "Rule: add users to the EMEA group when their region attribute equals EMEA",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("GRX04", "Automatically assign premium tier users to the Premium group based on their subscriptionTier attribute",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+
+    # ── okta_app_oauth additional schema validation ───────────────────────────
+    TestCase("OAX01",
+             "Create an OAuth PKCE app for a public mobile client with no client secret",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["grant_types", "redirect_uris"],
+             must_not_contain_okta=["client_credentials {"]),
+    TestCase("OAX02",
+             "Set up an OAuth web app with authorization code grant and post-logout redirect",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["grant_types", "redirect_uris"],
+             must_not_contain_okta=["client_id_scheme", "app_type"]),
+    TestCase("OAX03",
+             "Create an OAuth service account app using client credentials grant for a backend microservice",
+             okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
+             must_contain=["grant_types"],
+             must_not_contain_okta=["redirect_uris", "client_credentials {"]),
+
+    # ── AWS mode additional scenarios ─────────────────────────────────────────
+    TestCase("AWX01",
+             "Create an event hook for user deactivation with a REST API Gateway endpoint instead of a direct Lambda URL",
+             aws_types=["aws_lambda_function", "aws_api_gateway_rest_api"],
+             must_contain=["user.lifecycle.deactivate"],
+             notes="API Gateway resources must appear in terraform_lambda_hcl"),
+    TestCase("AWX02",
+             "Build a daily scheduled Lambda that reviews inactive Okta users and sends an SNS alert",
+             aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule", "aws_sns_topic"],
+             notes="EventBridge + SNS must both appear in terraform_lambda_hcl"),
+    TestCase("AWX03",
+             "Set up a Lambda that fires when a user is added to the Offboarding group and sends an SNS notification to the security team",
+             aws_types=["aws_lambda_function", "aws_sns_topic"],
+             must_contain=["group.user_membership.add"],
+             notes="output_mode=Both: lambda_python and SNS topic must be present"),
+    TestCase("AWX04",
+             "Create a scheduled Lambda that runs weekly to deprovision Okta users whose access end date has passed",
+             aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule"],
+             notes="EventBridge schedule must appear; lambda must be non-empty"),
+
+    # ── Compound multi-resource additional ────────────────────────────────────
+    TestCase("COMP04",
+             "Create an OIDC web app and restrict it to users in a US network zone",
+             expected_resource_type="okta_app_oauth",
+             must_contain=["okta_app_oauth", "okta_network_zone"]),
+    TestCase("COMP05",
+             "Create a Terminated group and an event hook that removes terminated users from all other groups when they join it",
+             expected_resource_type="okta_group",
+             must_contain=["okta_group", "okta_event_hook", "group.user_membership.add"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("COMP06",
+             "Create an authorization server for the mobile API with two scopes: read:profile and write:settings, and an access policy limiting token lifetime to 30 minutes",
+             expected_resource_type="okta_auth_server",
+             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_policy"]),
+    TestCase("COMP07",
+             "Create a SAML app for Workday and map the costCenter and department attributes from Workday to the Okta user profile",
+             expected_resource_type="okta_app_saml",
+             must_contain=["okta_app_saml", "okta_user_profile_mapping"]),
+    TestCase("COMP08",
+             "Set up the complete onboarding email sequence: customize the activation email and the welcome email template",
+             expected_resource_type="okta_email_customization",
+             must_contain=["okta_email_customization"]),
+
+    # ── Okta-only mode additional ─────────────────────────────────────────────
+    TestCase("OOX01",
+             "Create a custom authorization server for the internal API with a read scope",
+             notes="Okta-only: no aws_ references in any output"),
+    TestCase("OOX02",
+             "Set up a network zone allowing only office IP ranges",
+             notes="Okta-only: lambda fields must be empty"),
+    TestCase("OOX03",
+             "Create a user profile mapping from Workday to Okta",
+             notes="Okta-only: no aws_ references"),
+    TestCase("OOX04",
+             "Customize the user activation and password changed email templates",
+             notes="Okta-only: no Lambda or AWS in output"),
+
+    # ── Edge / regression additional ──────────────────────────────────────────
+    TestCase("EDX01",
+             "Create a rule that moves users to the Archive group, but the rule should only add, not remove",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS,
+             notes="Regression: 'move' language must not produce hallucinated remove attrs"),
+    TestCase("EDX02",
+             "When a user transitions from the Free tier to the Pro tier group, remove them from Free",
+             expected_resource_type="okta_event_hook",
+             must_contain=["group.user_membership.add"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS,
+             notes="Transition language must route to event_hook, not group_rule"),
+    TestCase("EDX03",
+             "Create a group rule that assigns users to the Beta Testers group when their betaAccess attribute is true",
+             expected_resource_type="okta_group_rule",
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+    TestCase("EDX04",
+             "Set up a SAML app for Greenhouse and make sure attribute statements for the hiring manager field are inline",
+             okta_types=["okta_app_saml"],
+             expected_resource_type="okta_app_saml",
+             must_contain=["attribute_statements"],
+             must_not_contain_okta=["okta_app_saml_attribute_statements"],
+             notes="Regression: no hallucinated separate attribute resource"),
 ]
 
 
@@ -522,7 +729,7 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     return intent
 
 
-def run_test(tc: TestCase, client, model: str, replay_mode: bool = False) -> dict:
+def run_test(tc: TestCase, client, model: str, replay_mode: bool = False, passes: int = 1) -> dict:
     start = time.time()
     try:
         if replay_mode:
@@ -531,6 +738,7 @@ def run_test(tc: TestCase, client, model: str, replay_mode: bool = False) -> dic
                     "id": tc.id, "status": "ERROR",
                     "issues": ["No cache — run without --replay first"],
                     "elapsed": round(time.time() - start, 1),
+                    "attempt_count": 0,
                 }
             with open(CACHE_PATH) as f:
                 cache = json.load(f)
@@ -539,44 +747,78 @@ def run_test(tc: TestCase, client, model: str, replay_mode: bool = False) -> dic
                     "id": tc.id, "status": "ERROR",
                     "issues": [f"No cached output for {tc.id}"],
                     "elapsed": round(time.time() - start, 1),
+                    "attempt_count": 0,
                 }
             entry = cache[tc.id]
             outputs = entry["outputs"]
             intent = entry["intent"]
-        else:
-            intent = build_intent(tc, client, model)
-            val_errors = validate_intent(intent)
-            if val_errors:
-                return {
-                    "id": tc.id, "status": "FAIL",
-                    "issues": [f"Intent validation: {e}" for e in val_errors],
-                    "resource_type": intent.get("resource_type"),
-                    "output_mode": intent.get("output_mode"),
-                    "elapsed": round(time.time() - start, 1),
-                }
+            issues = run_checks(tc, intent, outputs)
+            return {
+                "id": tc.id,
+                "prompt": tc.prompt,
+                "status": "PASS" if not issues else "FAIL",
+                "issues": issues,
+                "resource_type": intent.get("resource_type"),
+                "output_mode": intent.get("output_mode"),
+                "elapsed": round(time.time() - start, 1),
+                "attempt_count": 1,
+            }
+
+        intent = build_intent(tc, client, model)
+        val_errors = validate_intent(intent)
+        if val_errors:
+            return {
+                "id": tc.id, "status": "FAIL",
+                "issues": [f"Intent validation: {e}" for e in val_errors],
+                "resource_type": intent.get("resource_type"),
+                "output_mode": intent.get("output_mode"),
+                "elapsed": round(time.time() - start, 1),
+                "attempt_count": 0,
+            }
+
+        best_issues = None
+        best_outputs = None
+        winning_attempt = passes  # pessimistic default — updated on first pass or on success
+
+        for attempt in range(1, passes + 1):
             outputs = generate_all(intent, extra_instructions="", client=client, model=model)
-            _OUTPUT_CACHE[tc.id] = {"outputs": outputs, "intent": intent, "parsed_as": intent.get("resource_type", "")}
-        issues = run_checks(tc, intent, outputs)
+            issues = run_checks(tc, intent, outputs)
+            if best_issues is None or len(issues) < len(best_issues):
+                best_issues = issues
+                best_outputs = outputs
+                winning_attempt = attempt
+            if not issues:
+                winning_attempt = attempt
+                break
+
+        _OUTPUT_CACHE[tc.id] = {
+            "outputs": best_outputs,
+            "intent": intent,
+            "parsed_as": intent.get("resource_type", ""),
+        }
         return {
             "id": tc.id,
             "prompt": tc.prompt,
-            "status": "PASS" if not issues else "FAIL",
-            "issues": issues,
+            "status": "PASS" if not best_issues else "FAIL",
+            "issues": best_issues or [],
             "resource_type": intent.get("resource_type"),
             "output_mode": intent.get("output_mode"),
             "elapsed": round(time.time() - start, 1),
+            "attempt_count": winning_attempt,
         }
     except GenerationError as e:
         return {
             "id": tc.id, "status": "ERROR",
             "issues": [f"GenerationError: {e}"],
             "elapsed": round(time.time() - start, 1),
+            "attempt_count": 0,
         }
     except Exception as e:
         return {
             "id": tc.id, "status": "ERROR",
             "issues": [f"{type(e).__name__}: {e}"],
             "elapsed": round(time.time() - start, 1),
+            "attempt_count": 0,
         }
 
 
@@ -596,9 +838,25 @@ def _read_api_key() -> str:
     return ""
 
 
+def _parse_passes(argv: list[str]) -> tuple[int, set[int]]:
+    """Return (passes_value, indices_of_flag_values_to_skip_in_filter_parsing)."""
+    for i, a in enumerate(argv):
+        if a == "--passes" and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1]), {i + 1}
+            except ValueError:
+                pass
+    return 1, set()
+
+
 def main():
-    replay_mode = "--replay" in sys.argv
-    filter_ids = set(a.upper() for a in sys.argv[1:] if not a.startswith("--"))
+    argv = sys.argv[1:]
+    replay_mode = "--replay" in argv
+    passes, skip_indices = _parse_passes(argv)
+    filter_ids = set(
+        a.upper() for i, a in enumerate(argv)
+        if not a.startswith("--") and i not in skip_indices
+    )
     cases = [tc for tc in TEST_CASES if not filter_ids or tc.id.upper() in filter_ids]
 
     if replay_mode:
@@ -612,7 +870,8 @@ def main():
             sys.exit(1)
         client = anthropic.Anthropic(api_key=api_key)
         model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-        print(f"QA runner — {len(cases)} tests — model: {model}")
+        passes_label = f" — passes: {passes}" if passes > 1 else ""
+        print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}")
     print("=" * 72)
 
     results = []
@@ -621,12 +880,13 @@ def main():
     for i, tc in enumerate(cases, 1):
         label = f"[{i:02d}/{len(cases)}] {tc.id:<6} {tc.prompt[:55]:<55}"
         print(f"{label} ...", end="", flush=True)
-        r = run_test(tc, client, model, replay_mode=replay_mode)
+        r = run_test(tc, client, model, replay_mode=replay_mode, passes=passes)
         results.append(r)
         elapsed = r.get("elapsed", 0)
+        attempt_tag = f" [#{r.get('attempt_count', 1)}]" if passes > 1 and r["status"] == "PASS" else ""
         if r["status"] == "PASS":
             passed += 1
-            print(f"\r{label} PASS  ({elapsed}s)")
+            print(f"\r{label} PASS{attempt_tag}  ({elapsed}s)")
         elif r["status"] == "FAIL":
             failed += 1
             print(f"\r{label} FAIL  ({elapsed}s)")
@@ -643,6 +903,18 @@ def main():
     print(f"  FAILED : {failed}")
     print(f"  ERRORS : {errored}")
     print(f"  TOTAL  : {len(cases)}")
+
+    if passes > 1:
+        pass_at_1 = sum(1 for r in results if r["status"] == "PASS" and r.get("attempt_count", 1) == 1)
+        pass_at_n = passed
+        never_passed = failed + errored
+        winning_counts = [r["attempt_count"] for r in results if r["status"] == "PASS" and r.get("attempt_count", 0) > 0]
+        med = statistics.median(winning_counts) if winning_counts else 0
+        print(f"\n  pass@1  : {pass_at_1}/{len(cases)} ({100*pass_at_1/len(cases):.1f}%)")
+        print(f"  pass@{passes} : {pass_at_n}/{len(cases)} ({100*pass_at_n/len(cases):.1f}%)")
+        print(f"  median attempts to first pass: {med}")
+        print(f"  never passed: {never_passed}")
+
     print("=" * 72)
 
     if failed or errored:
