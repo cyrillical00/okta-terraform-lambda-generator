@@ -556,7 +556,9 @@ TEST_CASES = [
              must_contain=["okta_app_oauth", "okta_network_zone"]),
     TestCase("COMP05",
              "Create a Terminated group and an event hook that removes terminated users from all other groups when they join it",
-             expected_resource_type="okta_group",
+             # Genuinely-compound prompt: both okta_group and okta_event_hook are defensible
+             # primaries. Validate via must_contain (both resources present + correct event
+             # type) instead of asserting which one the parser calls "primary".
              must_contain=["okta_group", "okta_event_hook", "group.user_membership.add"],
              must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
     TestCase("COMP06",
