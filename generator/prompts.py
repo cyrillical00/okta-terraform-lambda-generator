@@ -46,13 +46,23 @@ Allowed values for resource_type and every item in resource_types:
 - okta_group_rule (group membership rule that ADDS users to groups based on a profile expression — cannot remove users from groups)
 - okta_event_hook (webhook triggered by Okta events — use this when the request involves removing users from a group, enforcing mutual exclusivity between groups, or any action that cannot be expressed as a simple "add to group" rule)
 - okta_user_profile_mapping (profile mapping between Okta user and an app)
-- okta_auth_server (custom authorization server with scopes and claims)
+- okta_auth_server (custom authorization server, top-level resource only — does NOT include scopes/claims/policies as attributes)
+- okta_auth_server_scope (a single scope on an existing authorization server — use this as the primary resource_type when the request is "add a scope to <server>" or "create a scope")
+- okta_auth_server_claim (a single claim on an existing authorization server — use this as the primary resource_type when the request is "add a claim to <server>" or "create a claim")
 - okta_auth_server_policy (access policy on a custom authorization server)
+- okta_auth_server_policy_rule (a single rule within an authorization server policy — use as the primary resource_type when the request is "add a policy rule" or "create an auth server rule")
 - okta_factor (MFA factor enrollment policy for the org)
 - okta_network_zone (IP allowlist or blocklist network zone)
 - okta_brand (org branding — logo, colors, email sender)
 - okta_email_customization (custom email template for a lifecycle event)
 - unknown (use when the request cannot be mapped to a known resource)
+
+ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
+- "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
+- "Add a default openid scope" / "Create a read:data scope" -> resource_type = okta_auth_server_scope
+- "Add a <name> claim to <server>" -> resource_type = okta_auth_server_claim
+- "Add an auth server policy rule" -> resource_type = okta_auth_server_policy_rule
+Only use okta_auth_server as primary resource_type when the request creates a NEW authorization server itself.
 
 **resource_name** — snake_case identifier derived from the described resource (e.g., "hr_portal", "engineering_group")
 
@@ -253,6 +263,8 @@ variable "event_hook_auth_token" {
 ```
 
 CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid.
+
+PARSER OVERRIDE — `intent.attributes.events`, `intent.attributes.event_type`, and any other parser-supplied event names are UNRELIABLE and FREQUENTLY HALLUCINATED (the parser has been observed emitting fake names like `user.lifecycle.change_password`, `user.lifecycle.update`, etc., none of which are real Okta events). IGNORE these fields completely. Always derive the event type from `intent.resource_name`, `intent.notes`, and the original natural-language description by applying the EVENT TYPE SELECTION decision tree below. The decision tree is the only authoritative source for the contents of `events_filter.items`.
 
 EVENT TYPE SELECTION — follow this decision tree before choosing items:
 1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> use ONLY `group.user_membership.add`. STOP. Do not also include user.lifecycle.create or any other event alongside it.
