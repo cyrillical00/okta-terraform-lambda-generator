@@ -28,6 +28,64 @@ from generator.terraform_gen import generate_all, GenerationError
 _OUTPUT_CACHE: dict = {}
 CACHE_PATH = Path(__file__).parent / "qa_outputs_cache.json"
 
+_USAGE_TOTALS = {
+    "calls": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+}
+
+# Rates assume claude-haiku-4-5; adjust if ANTHROPIC_MODEL is overridden.
+HAIKU_4_5_RATES_PER_M = {
+    "input": 1.0,
+    "output": 5.0,
+    "cache_write": 1.25,
+    "cache_read": 0.10,
+}
+
+
+def _wrap_client_for_usage_tracking(client):
+    """Monkey-patch client.messages.create to accumulate usage totals."""
+    original_create = client.messages.create
+
+    def wrapped(*args, **kwargs):
+        resp = original_create(*args, **kwargs)
+        u = resp.usage
+        _USAGE_TOTALS["calls"] += 1
+        _USAGE_TOTALS["input_tokens"] += u.input_tokens
+        _USAGE_TOTALS["output_tokens"] += u.output_tokens
+        _USAGE_TOTALS["cache_creation_input_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+        _USAGE_TOTALS["cache_read_input_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
+        return resp
+
+    client.messages.create = wrapped
+    return client
+
+
+def _print_usage_totals():
+    t = _USAGE_TOTALS
+    if t["calls"] == 0:
+        return
+    cost = (
+        t["input_tokens"] * HAIKU_4_5_RATES_PER_M["input"]
+        + t["output_tokens"] * HAIKU_4_5_RATES_PER_M["output"]
+        + t["cache_creation_input_tokens"] * HAIKU_4_5_RATES_PER_M["cache_write"]
+        + t["cache_read_input_tokens"] * HAIKU_4_5_RATES_PER_M["cache_read"]
+    ) / 1_000_000
+    cached_total = t["cache_creation_input_tokens"] + t["cache_read_input_tokens"]
+    cache_hit_pct = (
+        100.0 * t["cache_read_input_tokens"] / cached_total
+        if cached_total else 0.0
+    )
+    print()
+    print(f"  API calls            : {t['calls']:,}")
+    print(f"  Input (uncached)     : {t['input_tokens']:>10,} tokens")
+    print(f"  Output               : {t['output_tokens']:>10,} tokens")
+    print(f"  Cache writes         : {t['cache_creation_input_tokens']:>10,} tokens")
+    print(f"  Cache reads          : {t['cache_read_input_tokens']:>10,} tokens  ({cache_hit_pct:.1f}% hit on cached prefix)")
+    print(f"  Estimated cost       : ${cost:.3f}  (Haiku 4.5: $1/$5/$1.25/$0.10 per M tokens)")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Test case definitions
@@ -868,7 +926,7 @@ def main():
         if not api_key:
             print("ERROR: ANTHROPIC_API_KEY not found. Set it in the environment or .streamlit/secrets.toml")
             sys.exit(1)
-        client = anthropic.Anthropic(api_key=api_key)
+        client = _wrap_client_for_usage_tracking(anthropic.Anthropic(api_key=api_key))
         model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         passes_label = f" — passes: {passes}" if passes > 1 else ""
         print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}")
@@ -903,6 +961,8 @@ def main():
     print(f"  FAILED : {failed}")
     print(f"  ERRORS : {errored}")
     print(f"  TOTAL  : {len(cases)}")
+
+    _print_usage_totals()
 
     if passes > 1:
         pass_at_1 = sum(1 for r in results if r["status"] == "PASS" and r.get("attempt_count", 1) == 1)
