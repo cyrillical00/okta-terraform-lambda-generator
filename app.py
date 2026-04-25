@@ -320,21 +320,31 @@ if parse_clicked and user_input.strip():
     with st.spinner("Parsing intent..."):
         try:
             intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
-            if okta_types:
-                # Merge: UI types set the primary type(s); parser adds any compound supporting types
-                parser_extras = [t for t in intent.get("resource_types", []) if t not in set(okta_types)]
-                intent["resource_types"] = list(okta_types) + parser_extras
-            elif not intent.get("resource_types"):
-                # Parser didn't return a list — fall back to single type
-                intent["resource_types"] = [intent.get("resource_type", "")]
-            if aws_types:
-                intent["aws_resource_types"] = aws_types
-            intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
-            errors = validate_intent(intent)
-            if errors:
-                st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
+            # Friendly rejection: parser returned 'unknown' and the user gave no UI hints to override.
+            if intent.get("resource_type") == "unknown" and not okta_types:
+                notes = intent.get("notes") or []
+                reason = notes[0] if notes else "The prompt does not appear to describe an Okta infrastructure operation."
+                st.session_state.parse_error = (
+                    f"This does not look like an Okta operation. {reason} "
+                    "Try describing a specific Okta resource: a group, app, event hook, "
+                    "auth server, MFA factor, network zone, brand, or email template."
+                )
             else:
-                st.session_state.intent = intent
+                if okta_types:
+                    # Merge: UI types set the primary type(s); parser adds any compound supporting types
+                    parser_extras = [t for t in intent.get("resource_types", []) if t not in set(okta_types)]
+                    intent["resource_types"] = list(okta_types) + parser_extras
+                elif not intent.get("resource_types"):
+                    # Parser didn't return a list — fall back to single type
+                    intent["resource_types"] = [intent.get("resource_type", "")]
+                if aws_types:
+                    intent["aws_resource_types"] = aws_types
+                intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
+                errors = validate_intent(intent)
+                if errors:
+                    st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
+                else:
+                    st.session_state.intent = intent
         except ValueError as e:
             st.session_state.parse_error = str(e)
 
