@@ -8,3 +8,4 @@ __pycache__/
 venv/
 *.zip
 qa_outputs_cache.json
+qa_report.json
