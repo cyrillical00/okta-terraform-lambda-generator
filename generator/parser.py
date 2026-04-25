@@ -1,4 +1,6 @@
 import json
+from difflib import get_close_matches
+
 import anthropic
 from .prompts import INTENT_PARSER_SYSTEM_PROMPT, INTENT_USER_PROMPT_TEMPLATE
 
@@ -43,7 +45,13 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
     response = client.messages.create(
         model=model,
         max_tokens=1024,
-        system=INTENT_PARSER_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": INTENT_PARSER_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[
             {
                 "role": "user",
@@ -58,28 +66,53 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
         raise ValueError(f"Intent parsing failed: Claude returned non-JSON. Raw response: {raw[:500]}") from e
 
 
+def _fuzzy_correct(value: str, valid: set[str], cutoff: float = 0.7) -> str:
+    if value in valid:
+        return value
+    matches = get_close_matches(value, list(valid), n=1, cutoff=cutoff)
+    return matches[0] if matches else value
+
+
 def validate_intent(intent: dict) -> list[str]:
     errors = []
     missing = REQUIRED_KEYS - set(intent.keys())
     if missing:
         errors.append(f"Missing required fields: {', '.join(sorted(missing))}")
         return errors
+
+    # Auto-correct near-misses before hard-failing
+    op = _fuzzy_correct(intent["operation_type"], ALLOWED_OPERATION_TYPES)
+    if op != intent["operation_type"]:
+        intent["operation_type"] = op
     if intent["operation_type"] not in ALLOWED_OPERATION_TYPES:
         errors.append(f"operation_type '{intent['operation_type']}' is not valid. Must be one of: {', '.join(sorted(ALLOWED_OPERATION_TYPES))}")
+
+    rt = _fuzzy_correct(intent["resource_type"], ALLOWED_RESOURCE_TYPES)
+    if rt != intent["resource_type"]:
+        intent["resource_type"] = rt
     if intent["resource_type"] not in ALLOWED_RESOURCE_TYPES:
         errors.append(f"resource_type '{intent['resource_type']}' is not valid. Must be one of: {', '.join(sorted(ALLOWED_RESOURCE_TYPES))}")
+
     if not isinstance(intent.get("attributes"), dict):
         errors.append("'attributes' must be a dict")
     if not isinstance(intent.get("ambiguities"), list):
         errors.append("'ambiguities' must be a list")
     if not isinstance(intent.get("notes"), list):
         errors.append("'notes' must be a list")
-    # resource_types is optional metadata — validate items if present
+
     if "resource_types" in intent:
         if not isinstance(intent["resource_types"], list):
             errors.append("'resource_types' must be a list")
         else:
-            invalid = [rt for rt in intent["resource_types"] if rt not in ALLOWED_RESOURCE_TYPES]
+            corrected = []
+            invalid = []
+            for rt in intent["resource_types"]:
+                fixed = _fuzzy_correct(rt, ALLOWED_RESOURCE_TYPES)
+                corrected.append(fixed)
+                if fixed not in ALLOWED_RESOURCE_TYPES:
+                    invalid.append(rt)
+            intent["resource_types"] = corrected
             if invalid:
                 errors.append(f"resource_types contains invalid values: {', '.join(invalid)}")
+
     return errors

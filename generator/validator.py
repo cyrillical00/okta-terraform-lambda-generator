@@ -110,7 +110,13 @@ def validate_outputs(
     response = client.messages.create(
         model=model,
         max_tokens=1024,
-        system=VALIDATOR_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": VALIDATOR_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -301,7 +307,13 @@ def fix_outputs(
     response = client.messages.create(
         model=model,
         max_tokens=8192,
-        system=FIXER_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": FIXER_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=messages,
     )
 
@@ -315,7 +327,13 @@ def fix_outputs(
         retry = client.messages.create(
             model=model,
             max_tokens=8192,
-            system=FIXER_SYSTEM_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": FIXER_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=messages,
         )
         raw = _extract_json(retry.content[0].text)

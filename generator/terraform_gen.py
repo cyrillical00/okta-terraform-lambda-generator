@@ -82,7 +82,13 @@ def generate_all(
     response = client.messages.create(
         model=model,
         max_tokens=8192,
-        system=GENERATOR_SYSTEM_PROMPT,
+        system=[
+            {
+                "type": "text",
+                "text": GENERATOR_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=messages,
     )
     raw = response.content[0].text.strip()
@@ -100,7 +106,13 @@ def generate_all(
         retry_response = client.messages.create(
             model=model,
             max_tokens=8192,
-            system=GENERATOR_SYSTEM_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": GENERATOR_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=retry_messages,
         )
         retry_raw = retry_response.content[0].text.strip()
