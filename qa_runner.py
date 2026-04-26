@@ -113,6 +113,19 @@ HALLUCINATED_REMOVE_ATTRS = [
     "unassign_group_ids",
 ]
 
+# Wrong attribute names / values that have shipped in real generations and would
+# fail terraform validate against okta/okta ~> 4.0. Block in QA so the regression
+# cannot return.
+FORBIDDEN_GROUP_RULE_ATTRS = [
+    # Match the bad attribute as an assignment, not as a substring of a variable
+    # name like `group_ids_for_rule` which is legitimate.
+    "group_ids =",
+    "group_ids=",
+    'type = "group_rule"',
+    "urn:okta:expression:GroupRule",
+    "urn:okta:expression:group:pred:expression",
+]
+
 FORBIDDEN_EVENT_HOOK_ATTRS = ['"events"', '"filters"', '"auth_type"']
 
 TEST_CASES = [
@@ -132,19 +145,24 @@ TEST_CASES = [
     # ── okta_group_rule (add-only — never remove) ─────────────────────────────
     TestCase("GR01", "Create a rule that adds users with department=Engineering to the Engineering group",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR02", "Automatically add contractors to the Contractors group based on their job title",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR03", "Create a group rule assigning US employees when their country attribute is US",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR04", "Rule: add users to the Management group when their title contains Manager",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR05", "Assign all sales department users to the Sales group automatically",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
 
     # ── okta_event_hook — group membership scenarios (must use group.user_membership.add) ──
     TestCase("EH01",
@@ -527,7 +545,9 @@ TEST_CASES = [
              "Create an OAuth service account app using client credentials grant for a backend microservice",
              okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
              must_contain=["grant_types"],
-             must_not_contain_okta=["redirect_uris", "client_credentials {"]),
+             # Match the bad attribute as an assignment (not as a substring of a
+             # legitimate explanatory comment like "does not require redirect_uris").
+             must_not_contain_okta=["redirect_uris =", "redirect_uris=", "client_credentials {"]),
 
     # ── AWS mode additional scenarios ─────────────────────────────────────────
     TestCase("AWX01",

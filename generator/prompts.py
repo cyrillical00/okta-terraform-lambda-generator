@@ -166,6 +166,8 @@ variable "okta_api_token" {
 }
 ```
 
+**Live-environment override:** When the user message contains a `Live environment context` section that includes `Okta org metadata` with literal `org_name` and `base_url` values, replace `var.okta_org_name` and `var.okta_base_url` in the provider block above with those literal string values, AND remove the `variable "okta_org_name"` and `variable "okta_base_url"` declarations entirely (they would be dead variables). Keep `api_token = var.okta_api_token` and its variable declaration intact — the token is always sensitive and per-deployment. The provider block then becomes self-contained for the user's specific Okta org with no manual tfvars editing required for org identity.
+
 ### AWS Lambda Terraform (always include in terraform_lambda_hcl)
 
 Must include these three resources:
@@ -225,7 +227,7 @@ resource "okta_app_saml" "workday" {
 For group-scoped attribute statements, set `filter_type` and `filter_value` inside the `attribute_statements` block. Do NOT create a separate resource.
 - For okta_app_group_assignment: use `app_id` and `group_id`. To assign multiple groups, create one `okta_app_group_assignment` resource per group — there is no bulk assignment resource. Do NOT use `okta_app_group_assignments` (plural) as a separate resource type.
 - For okta_group: include name and description
-- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
+- For okta_group_rule: see SECTION G for the EXACT schema. The most common hallucinations to avoid: `group_ids` is NOT a real attribute (use `group_assignments`); bare `expression` is NOT a real attribute (use `expression_value`); there is NO top-level `type` attribute; `expression_type` MUST be `urn:okta:expression:1.0` (no other value is valid). SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
 - For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
 
 ```hcl
@@ -500,6 +502,36 @@ Optional: token_endpoint_auth_method ("client_secret_basic"|"client_secret_post"
   wildcard_redirect, pkce_required (bool), status ("ACTIVE"|"INACTIVE"),
   groups_claim { type, filter_type, name, value }
 FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy
+
+**okta_group**
+Required: name (string, the group's display name)
+Optional: description (string), custom_profile_attributes (JSON-encoded string for custom attributes)
+FORBIDDEN: type (no top-level type attribute exists for okta_group), users (the okta_group resource does not manage memberships; use okta_group_rule or okta_group_memberships)
+
+**okta_group_rule**
+Required: name (string), expression_value (Okta expression string like `user.department == "Engineering"`),
+  group_assignments (list of okta_group resource IDs that matching users will be ADDED to)
+Optional: status (`ACTIVE` or `INACTIVE`, default `ACTIVE`),
+  expression_type (default and ONLY valid value: `urn:okta:expression:1.0`),
+  users_excluded (list of user IDs to exclude when the rule is processed),
+  remove_assigned_users (bool, default false)
+FORBIDDEN — these are common hallucinations that fail terraform validate:
+  - `type` (no top-level `type = "group_rule"` attribute exists; the rule type is implicit)
+  - `group_ids` (use `group_assignments` — `group_ids` is invalid in the v4.x schema)
+  - `expression` (use `expression_value` — bare `expression` is invalid in the v4.x schema)
+  - Any expression_type value other than `urn:okta:expression:1.0` — NOT `urn:okta:expression:GroupRule`,
+    NOT `urn:okta:expression:group:pred:expression`, NOT any other variant
+
+Canonical example:
+```hcl
+resource "okta_group_rule" "engineering_auto_assign" {
+  name              = "engineering_auto_assign"
+  status            = "ACTIVE"
+  expression_type   = "urn:okta:expression:1.0"
+  expression_value  = "user.department == \"Engineering\""
+  group_assignments = [okta_group.engineering.id]
+}
+```
 
 **okta_user_profile_mapping**
 Required: source_id (the app or directory source ID), always_apply (bool, usually false)

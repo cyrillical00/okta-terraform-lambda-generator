@@ -1,5 +1,26 @@
+from urllib.parse import urlparse
+
 from okta_client import OktaClient, OktaError
 from aws_client import AWSClient, AWSError
+
+
+def _parse_org_url(url: str) -> tuple[str, str]:
+    """Parse 'https://integrator-2720791.okta.com' -> ('integrator-2720791', 'okta.com').
+
+    Handles okta.com, oktapreview.com, okta-emea.com, and any custom subdomain.
+    Returns ('', '') if the URL cannot be parsed.
+    """
+    if not url:
+        return ("", "")
+    try:
+        host = urlparse(url).netloc or url
+        host = host.replace("https://", "").replace("http://", "").rstrip("/")
+        parts = host.split(".", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return (parts[0], parts[1])
+    except Exception:
+        pass
+    return ("", "")
 
 
 def fetch_okta_context(org_url: str, api_token: str) -> dict:
@@ -60,6 +81,12 @@ def format_context_for_prompt(env_context: dict) -> str:
 
     if okta.get("connected"):
         lines = ["### Okta live resources"]
+        org_url = okta.get("org_url", "")
+        org_name, base_url = _parse_org_url(org_url)
+        if org_name and base_url:
+            lines.append("**Okta org metadata** (use these literal values in the provider block — see Live-environment override in SECTION B):")
+            lines.append(f'  - org_name: "{org_name}"')
+            lines.append(f'  - base_url: "{base_url}"')
         groups = okta.get("groups", [])
         if groups:
             lines.append("**Groups** (reference via data \"okta_group\"):")
