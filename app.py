@@ -8,7 +8,7 @@ load_dotenv()
 
 st.set_page_config(
     page_title="Okta TF+Lambda Generator",
-    page_icon="",
+    page_icon="🔐",
     layout="wide",
 )
 
