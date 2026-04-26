@@ -1,0 +1,5 @@
+# Fill in this file, rename to terraform.tfvars, and run terraform apply
+
+okta_org_name   = "dev-123456"           # Your Okta org subdomain
+okta_base_url   = "okta.com"             # Usually okta.com
+okta_api_token  = "YOUR_SECRET_HERE"     # Okta API token (sensitive)
