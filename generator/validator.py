@@ -44,6 +44,18 @@ Check for these specific problems in Lambda:
 - Lambda does not match the resource type in any meaningful way
 - Syntax errors or obvious runtime errors
 
+## Canonical okta_group_rule schema (Okta provider v4.x — current, authoritative)
+
+The okta_group_rule resource uses these EXACT attribute names:
+- name (required)
+- status (required, "ACTIVE" or "INACTIVE")
+- expression_type (required, must be "urn:okta:expression:1.0")
+- expression_value (required, the expression body)
+- group_assignments (required, list of group IDs that matching users are ADDED TO)
+- remove_assigned_users (optional, bool)
+
+`group_assignments` is the CORRECT attribute name in v4.x. NEVER recommend replacing it with `group_ids`, `assignments`, `group_assignment`, or any other variant — those are wrong. Likewise the expression body must be `expression_value` (never `expression`) and the type must be `expression_type` (never `type`). If you see `group_assignments`, `expression_value`, or `expression_type` in the generated HCL, those are correct — do not flag them.
+
 Do NOT flag:
 - Style preferences or minor formatting choices
 - The presence of Lambda code when the user selected "Okta Terraform only" — output_mode is a display filter, not a code correctness issue; Lambda is always generated regardless of display mode
@@ -51,6 +63,8 @@ Do NOT flag:
 - For okta_event_hook: do not flag that "no Lambda endpoint exists" — the Lambda and its aws_lambda_function_url live in terraform_lambda_hcl; the event_hook_url variable is correctly left as a var.* for the user to fill in after deployment
 - For okta_event_hook: do not flag the absence of okta_app_group_assignment, okta_app_user_assignment, or similar Okta-side assignment resources when the intent is clearly event-driven (Lambda handles the API calls at runtime)
 - Variable declarations without a corresponding data source lookup — validating a var.* value at apply time is the user's responsibility, not a code error
+- The use of `group_assignments` on okta_group_rule — this is the correct v4.x attribute name; never recommend `group_ids` or any other variant
+- The use of `expression_value` or `expression_type` on okta_group_rule — these are correct v4.x attribute names; never recommend `expression` or `type`
 - Missing event hooks or automation triggers when the optional_tf section already contains them — optional_tf is a separate file the user can apply; treat it as part of the complete solution when evaluating whether the intent is fully addressed
 - Architectural gaps that are fully addressed by resources in optional_tf — if the missing piece (e.g., event hook, scheduled rule) is present in optional_tf, do not flag it as absent
 
