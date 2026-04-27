@@ -509,13 +509,15 @@ Optional: description (string), custom_profile_attributes (JSON-encoded string f
 FORBIDDEN: type (no top-level type attribute exists for okta_group), users (the okta_group resource does not manage memberships; use okta_group_rule or okta_group_memberships)
 
 **okta_group_rule**
-Required: name (string), expression_value (Okta expression string like `user.department == "Engineering"`),
+Required: name (string, MAXIMUM 50 CHARACTERS — the Okta provider rejects longer names with `[name] cannot be longer than 50 characters` at terraform validate time. Pick a SHORT identifier like `engineering_auto_assign` or `Engineering Auto-Assign` — do NOT echo the user's full sentence as the rule name),
+  expression_value (Okta expression string like `user.department == "Engineering"`),
   group_assignments (list of okta_group resource IDs that matching users will be ADDED to)
 Optional: status (`ACTIVE` or `INACTIVE`, default `ACTIVE`),
   expression_type (default and ONLY valid value: `urn:okta:expression:1.0`),
   users_excluded (list of user IDs to exclude when the rule is processed),
   remove_assigned_users (bool, default false)
 FORBIDDEN — these are common hallucinations that fail terraform validate:
+  - name attribute longer than 50 characters — Okta enforces a 50-char limit; if the user's prompt is verbose, abbreviate to a short identifier rather than copying the prompt verbatim
   - `type` (no top-level `type = "group_rule"` attribute exists; the rule type is implicit)
   - `group_ids` (use `group_assignments` — `group_ids` is invalid in the v4.x schema)
   - `expression` (use `expression_value` — bare `expression` is invalid in the v4.x schema)

@@ -692,6 +692,20 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         if "group.user_membership" not in okta_hcl:
             issues.append("Group-membership scenario missing group.user_membership.* event — check event types")
 
+    # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
+    if "okta_group_rule" in okta_hcl:
+        rule_name_pattern = re.compile(
+            r'resource\s+"okta_group_rule"\s+"[^"]+"\s*\{[^}]*?name\s*=\s*"([^"]+)"',
+            re.DOTALL,
+        )
+        for m in rule_name_pattern.finditer(okta_hcl):
+            name_val = m.group(1)
+            if len(name_val) > 50:
+                issues.append(
+                    f"okta_group_rule name '{name_val}' exceeds 50 chars "
+                    f"(length {len(name_val)}) — Okta provider limit"
+                )
+
     # ── 5. must_contain checks ─────────────────────────────────────────────
     for s in tc.must_contain:
         if s not in okta_hcl:
