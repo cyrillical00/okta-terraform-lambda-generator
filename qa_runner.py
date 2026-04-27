@@ -721,9 +721,42 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         for attr in FORBIDDEN_APP_SCIM_ATTRS:
             if attr in non_comment_hcl:
                 issues.append(
-                    f"Hallucinated SCIM/provisioning attribute '{attr}' on app resource — "
+                    f"Hallucinated SCIM/provisioning attribute '{attr}' on app resource, "
                     f"the v4.x Okta provider has no provisioning block; SCIM is UI-only"
                 )
+
+    # ── 4c. Unescaped Okta Expression Language in HCL string literals ──────
+    # `${user.email}` is interpolation in Terraform. Okta Expression Language
+    # placeholders must be escaped as `$${user.email}` in source so the literal
+    # `${user.email}` ships to Okta. Bare `${...}` fails terraform validate
+    # with "Reference to undeclared resource".
+    bad_expr_pattern = re.compile(
+        r'(subject_name_id_template|user_name_template)\s*=\s*"\$\{[^$][^}]*\}"'
+    )
+    for m in bad_expr_pattern.finditer(okta_hcl):
+        issues.append(
+            f"Unescaped Okta Expression Language: `{m.group(0)}`. "
+            f"Use `$$` (double dollar) so Terraform does not parse it as an interpolation."
+        )
+
+    # ── 4d. SCIM prompt must include the NOTE comment block ───────────────
+    # If the prompt mentions SCIM and the output includes okta_app_saml or
+    # okta_app_oauth, the output must include a `# NOTE:` comment block that
+    # references the Admin Console Provisioning tab (per SECTION F.5 and
+    # commit 47a3de6).
+    prompt_mentions_scim = "scim" in tc.prompt.lower()
+    output_has_app = "okta_app_saml" in okta_hcl or "okta_app_oauth" in okta_hcl
+    if prompt_mentions_scim and output_has_app:
+        scim_note = re.search(
+            r"#\s*NOTE:.*SCIM.*Admin Console.*Provisioning",
+            okta_hcl,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not scim_note:
+            issues.append(
+                "SCIM prompt missing required `# NOTE:` comment block referencing "
+                "Admin Console Provisioning tab (regression of commit 47a3de6)."
+            )
 
     # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
     if "okta_group_rule" in okta_hcl:
