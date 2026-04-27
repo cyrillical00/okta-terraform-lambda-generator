@@ -16,6 +16,7 @@ from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
+from generator.okta_group_sanitizer import sanitize_okta_group_refs
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
 import history as _history
@@ -159,6 +160,12 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 on_pass=_on_pass,
                 output_mode=intent.get("output_mode", "Both"),
             )
+
+            # Deterministic post-refinement cleanup: rewrite hallucinated
+            # `data "okta_group"` blocks (name not in live org) into
+            # `resource "okta_group"` blocks. No-op when Okta is not connected.
+            live_groups = (st.session_state.env_context or {}).get("okta", {}).get("groups") or []
+            outputs = sanitize_okta_group_refs(outputs, live_groups)
 
             status.update(label="Done", state="complete", expanded=False)
         except GenerationError as e:
