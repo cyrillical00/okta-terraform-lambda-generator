@@ -758,6 +758,33 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 "Admin Console Provisioning tab (regression of commit 47a3de6)."
             )
 
+    # ── 4f. SCIM SAML prompt must not produce over-scope secondary resources
+    # Today's regression: model added okta_group_rule and
+    # okta_user_profile_mapping to a "SAML + assign to group" prompt.
+    # Per prompts.py:210 allow-list, neither is permitted as a secondary
+    # resource for an okta_app_saml intent unless the prompt explicitly
+    # asks for them. SCIM substitution via okta_user_profile_mapping is
+    # specifically called out as forbidden in SECTION F.5.
+    if "okta_app_saml" in okta_hcl and "scim" in tc.prompt.lower():
+        prompt_asks_for_rule = bool(re.search(
+            r"\b(rule|auto[- ]?assign|matching|for users where)\b",
+            tc.prompt,
+            re.IGNORECASE,
+        ))
+        prompt_asks_for_mapping = "profile mapping" in tc.prompt.lower()
+        if not prompt_asks_for_rule and "okta_group_rule" in okta_hcl:
+            issues.append(
+                "Over-scope: okta_group_rule emitted on a SAML+assign prompt "
+                "that did not ask for an auto-assignment rule. Group assignment "
+                "for a SAML app uses okta_app_group_assignment, never a rule."
+            )
+        if not prompt_asks_for_mapping and "okta_user_profile_mapping" in okta_hcl:
+            issues.append(
+                "Over-scope: okta_user_profile_mapping emitted as a SCIM "
+                "substitute. SCIM provisioning is UI-only per SECTION F.5 and "
+                "the NOTE comment is the only valid response."
+            )
+
     # ── 4e. okta_app_saml must include API-required fields (L2 layer) ─────
     # The Okta backend rejects creates that omit these fields, even though
     # the Terraform provider schema marks them optional. See SECTION G.5.
