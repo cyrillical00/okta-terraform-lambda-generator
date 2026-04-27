@@ -72,20 +72,56 @@ def _get_model(default: str) -> str:
     return _get_secret("ANTHROPIC_MODEL") or default
 
 
-def _build_files(outputs: dict, mode: str) -> dict[str, str]:
+def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
+    """Build the file map for GitHub push.
+
+    base: optional filename base used to namespace generated files so that
+    multiple prompts can coexist in the same target repo without overwriting
+    each other (e.g. prompt #1 -> base="engineering" -> terraform/engineering.tf;
+    prompt #2 -> base="hr_portal" -> terraform/hr_portal.tf). When empty, the
+    legacy fixed paths (terraform/okta.tf, terraform/lambda.tf, etc.) are used
+    so single-prompt usage is unchanged.
+
+    Empty-content outputs are skipped so an Okta-only generation does not push
+    a zero-byte terraform/lambda.tf placeholder.
+    """
     files = {}
-    if mode in ("Both", "Okta Terraform only"):
-        files["terraform/okta.tf"] = outputs["terraform_okta_hcl"]
-        files["terraform/lambda.tf"] = outputs["terraform_lambda_hcl"]
-    if mode in ("Both", "Lambda only"):
-        files["lambda/lambda_function.py"] = outputs["lambda_python"]
-        files["lambda/requirements.txt"] = outputs.get("lambda_requirements", "")
+    okta_hcl = outputs.get("terraform_okta_hcl", "")
+    lambda_hcl = outputs.get("terraform_lambda_hcl", "")
+    lambda_py = outputs.get("lambda_python", "")
+    lambda_reqs = outputs.get("lambda_requirements", "")
     optional_tf = outputs.get("optional_tf", "")
-    if optional_tf and optional_tf.strip():
-        files["terraform/optional_extensions.tf"] = optional_tf
     tfvars = outputs.get("terraform_tfvars_example", "")
+
+    if base:
+        okta_path = f"terraform/{base}.tf"
+        lambda_tf_path = f"terraform/{base}_lambda.tf"
+        lambda_py_path = f"lambda/{base}.py"
+        lambda_reqs_path = f"lambda/{base}_requirements.txt"
+        optional_path = f"terraform/{base}_optional_extensions.tf"
+        tfvars_path = f"terraform/{base}.tfvars.example"
+    else:
+        okta_path = "terraform/okta.tf"
+        lambda_tf_path = "terraform/lambda.tf"
+        lambda_py_path = "lambda/lambda_function.py"
+        lambda_reqs_path = "lambda/requirements.txt"
+        optional_path = "terraform/optional_extensions.tf"
+        tfvars_path = "terraform/terraform.tfvars.example"
+
+    if mode in ("Both", "Okta Terraform only"):
+        if okta_hcl and okta_hcl.strip():
+            files[okta_path] = okta_hcl
+        if lambda_hcl and lambda_hcl.strip():
+            files[lambda_tf_path] = lambda_hcl
+    if mode in ("Both", "Lambda only"):
+        if lambda_py and lambda_py.strip():
+            files[lambda_py_path] = lambda_py
+        if lambda_reqs and lambda_reqs.strip():
+            files[lambda_reqs_path] = lambda_reqs
+    if optional_tf and optional_tf.strip():
+        files[optional_path] = optional_tf
     if tfvars and tfvars.strip():
-        files["terraform/terraform.tfvars.example"] = tfvars
+        files[tfvars_path] = tfvars
     return files
 
 
@@ -455,7 +491,7 @@ if st.session_state.outputs:
                         st.code(e.raw_response)
 
     default_repo = _get_secret("GITHUB_REPO")
-    push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override = render_action_buttons(
+    push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override, file_basename = render_action_buttons(
         st.session_state.outputs, mode, default_repo
     )
 
@@ -479,7 +515,7 @@ if st.session_state.outputs:
         elif not repo_override:
             st.error("Repository name is required to push to GitHub.")
         else:
-            files = _build_files(st.session_state.outputs, mode)
+            files = _build_files(st.session_state.outputs, mode, base=file_basename)
             commit_message = build_commit_message(st.session_state.intent)
             with st.spinner("Pushing to GitHub..."):
                 try:

@@ -203,7 +203,7 @@ def render_validation_result(result: dict) -> bool:
     return st.button("Fix Issues", type="primary")
 
 
-def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[bool, bool, str, str, str]:
+def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[bool, bool, str, str, str, str]:
     st.divider()
 
     with st.expander("GitHub push settings"):
@@ -216,6 +216,18 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             "Branch",
             value="main",
             placeholder="main",
+        )
+        file_basename = st.text_input(
+            "Resource basename (optional)",
+            value="",
+            placeholder="e.g. hr_portal — leave blank for legacy 'okta.tf'",
+            help=(
+                "Filename base for generated files. Use distinct names per prompt to "
+                "avoid overwriting prior pushes (e.g. 'hr_portal' produces "
+                "terraform/hr_portal.tf instead of terraform/okta.tf). Leave blank "
+                "to use the legacy fixed paths (terraform/okta.tf, terraform/lambda.tf, "
+                "lambda/lambda_function.py)."
+            ),
         )
 
     extra_instructions = st.text_area(
@@ -242,4 +254,11 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             use_container_width=True,
         )
 
-    return push_clicked, regenerate_clicked, extra_instructions, repo_override.strip(), branch_override.strip()
+    return (
+        push_clicked,
+        regenerate_clicked,
+        extra_instructions,
+        repo_override.strip(),
+        branch_override.strip(),
+        file_basename.strip(),
+    )

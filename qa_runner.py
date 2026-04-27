@@ -758,6 +758,39 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 "Admin Console Provisioning tab (regression of commit 47a3de6)."
             )
 
+    # ── 4e. okta_app_saml must include API-required fields (L2 layer) ─────
+    # The Okta backend rejects creates that omit these fields, even though
+    # the Terraform provider schema marks them optional. See SECTION G.5.
+    # Discovered via apply failure on run 25023847132 (2026-04-27).
+    if "okta_app_saml" in okta_hcl:
+        saml_blocks = re.findall(
+            r'resource\s+"okta_app_saml"\s+"[^"]+"\s*\{[^}]*?\n\}',
+            okta_hcl,
+            re.DOTALL,
+        )
+        # Fallback for nested attribute_statements blocks: take everything
+        # between the resource opener and the first `^}` at column 0.
+        if not saml_blocks:
+            saml_blocks = re.findall(
+                r'resource\s+"okta_app_saml"\s+"[^"]+"\s*\{.*?\n\}',
+                okta_hcl,
+                re.DOTALL,
+            )
+        api_required = [
+            "authn_context_class_ref",
+            "signature_algorithm",
+            "digest_algorithm",
+            "honor_force_authn",
+        ]
+        for block in saml_blocks:
+            for field in api_required:
+                if field not in block:
+                    issues.append(
+                        f"okta_app_saml missing API-required field `{field}` "
+                        f"(SECTION G.5; apply will fail with 'missing conditionally "
+                        f"required fields')."
+                    )
+
     # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
     if "okta_group_rule" in okta_hcl:
         rule_name_pattern = re.compile(

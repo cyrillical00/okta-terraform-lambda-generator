@@ -210,16 +210,23 @@ For resources NOT in the live context list, continue using var.* declarations as
 - Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
-- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration; omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource. There is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. CRITICAL (escape Okta Expression Language): any HCL string literal that contains an Okta Expression Language placeholder of the form `${user.foo}` (most commonly `subject_name_id_template`) MUST escape the dollar sign as `$$` so Terraform does not interpret it as an interpolation. Correct source: `subject_name_id_template = "$${user.email}"`, which Terraform renders as the literal `${user.email}` for Okta. Bare `"${user.email}"` fails terraform validate with `Reference to undeclared resource "user"`. This applies anywhere `${...}` appears inside a quoted string, not just `subject_name_id_template`. CRITICAL (SCIM): if the prompt mentions "SCIM" or "SCIM provisioning", do NOT add a `provisioning {}` block (see SECTION F.5). The Okta provider v4.x does not support SCIM provisioning on app resources. You MUST emit the SAML app with NO provisioning block AND a `# NOTE:` comment block placed immediately above the `resource "okta_app_saml"` line, pointing to the Admin Console Provisioning tab. The NOTE comment is mandatory; omitting it is a regression of commit 47a3de6 and will be flagged by qa_runner. Example of the only valid pattern:
+- For okta_app_saml: REQUIRED at create time (the Okta backend rejects creates that omit any of these, even though the Terraform provider schema marks them as optional): `label`, `sso_url`, `recipient`, `destination`, `audience`, `signature_algorithm`, `digest_algorithm`, `honor_force_authn`, `authn_context_class_ref`. See SECTION G.5 for the full list of API-required-but-schema-optional fields. Strongly recommended (include unless there is a clear reason not to): `subject_name_id_template`, `subject_name_id_format`, `response_signed`, at least one `attribute_statements` block. Only include `app_settings_json` if it is required for the specific integration; omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource. There is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. CRITICAL (escape Okta Expression Language): any HCL string literal that contains an Okta Expression Language placeholder of the form `${user.foo}` (most commonly `subject_name_id_template`) MUST escape the dollar sign as `$$` so Terraform does not interpret it as an interpolation. Correct source: `subject_name_id_template = "$${user.email}"`, which Terraform renders as the literal `${user.email}` for Okta. Bare `"${user.email}"` fails terraform validate with `Reference to undeclared resource "user"`. This applies anywhere `${...}` appears inside a quoted string, not just `subject_name_id_template`. CRITICAL (SCIM): if the prompt mentions "SCIM" or "SCIM provisioning", do NOT add a `provisioning {}` block (see SECTION F.5). The Okta provider v4.x does not support SCIM provisioning on app resources. You MUST emit the SAML app with NO provisioning block AND a `# NOTE:` comment block placed immediately above the `resource "okta_app_saml"` line, pointing to the Admin Console Provisioning tab. The NOTE comment is mandatory; omitting it is a regression of commit 47a3de6 and will be flagged by qa_runner. Example of the only valid pattern:
 ```hcl
 # NOTE: SCIM provisioning for this SAML app cannot be configured via the v4.x Okta Terraform provider.
 # Configure it in the Okta Admin Console: Applications -> [App Label] -> Provisioning tab.
 resource "okta_app_saml" "workday" {
   label                    = "Workday"
   sso_url                  = var.workday_sso_url
+  recipient                = var.workday_sso_url
+  destination              = var.workday_sso_url
+  audience                 = var.workday_audience
+  signature_algorithm      = "RSA_SHA256"
+  digest_algorithm          = "SHA256"
+  honor_force_authn         = false
+  authn_context_class_ref   = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
   subject_name_id_template = "$${user.email}"  # $$ escapes Terraform interpolation; Okta receives literal ${user.email}
   subject_name_id_format   = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
-  # ... other required fields ...
+  response_signed          = true
   attribute_statements {
     name      = "role"
     namespace = "urn:oasis:names:tc:SAML:2.0:attrname-format:basic"
@@ -517,9 +524,39 @@ Before generating any okta_* resource, look up its entry below and use ONLY the 
 attributes. Do not invent attribute names not present in this list — invented names will
 fail terraform validate.
 
+### SECTION G.5 — Okta API runtime requirements (schema-optional, API-required)
+
+The Okta Terraform provider's schema marks many fields as optional, but the Okta backend
+rejects `terraform apply` if certain fields are missing on create. These are the L2
+runtime requirements (terraform validate will pass; terraform apply will fail). Always
+include the fields listed below for each resource type:
+
+  - **okta_app_saml**: `authn_context_class_ref` is required at create. Typical value:
+    `"urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"`. Apply error
+    when missing: `failed to create SAML application: missing conditionally required
+    fields, missing fields: authn_context_class_ref`. Also required by the API:
+    `signature_algorithm`, `digest_algorithm`, `honor_force_authn`. The `sso_url`,
+    `recipient`, `destination`, and `audience` fields are required for any non-
+    preconfigured SAML app even though the schema marks them optional.
+
+  - **okta_group_rule**: the `name` field has a 50-character provider-enforced limit.
+    Apply error when exceeded: `[name] cannot be longer than 50 characters`. Keep names
+    short and descriptive (e.g. "Engineering Auto-Assign", not "Engineering Department
+    Members Auto-Assignment Rule for HR Workflow").
+
+  - **okta_app_saml / okta_app_oauth — SCIM provisioning**: not Terraform-able at all,
+    must be configured in the Admin Console UI. See SECTION F.5 for the comment template.
+
+This list grows as we discover more L2 requirements through real apply runs. When a
+field appears here, treat it as REQUIRED, not optional, even if the per-resource entry
+below the section says "Optional".
+
+---
+
 **okta_app_saml**
-Required: label
-Optional (most common for custom SAML): sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref, response_signed (bool), attribute_statements { } (inline block — see line 213 rules)
+Required by Terraform schema: label
+Required by Okta API at create time (always include — see G.5): sso_url, recipient, destination, audience, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref
+Optional but strongly recommended: subject_name_id_template, subject_name_id_format, response_signed (bool), attribute_statements { } (inline block — see line 213 rules)
 Optional (advanced): assertion_signed (bool), saml_signed_request_enabled (bool), inline_hook_id, idp_issuer, sp_issuer, single_logout_url, single_logout_issuer, single_logout_certificate, default_relay_state, request_compressed (bool), saml_version ("2.0"|"1.1"), key_name, key_years_valid, preconfigured_app, app_settings_json, app_links_json, status ("ACTIVE"|"INACTIVE"), user_name_template, user_name_template_type, user_name_template_suffix, user_name_template_push_status, acs_endpoints (list, max 100), authentication_policy, hide_ios (bool), hide_web (bool), auto_submit_toolbar (bool), implicit_assignment (bool), enduser_note, admin_note
 FORBIDDEN — these blocks/attributes do NOT exist on okta_app_saml v4.x and fail terraform validate with "Unsupported argument" or "Unsupported block type":
   - `provisioning { }` block (does NOT exist; SCIM provisioning on SAML apps is configured via the Okta Admin Console UI, NOT Terraform)
