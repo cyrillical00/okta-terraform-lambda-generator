@@ -128,6 +128,19 @@ FORBIDDEN_GROUP_RULE_ATTRS = [
 
 FORBIDDEN_EVENT_HOOK_ATTRS = ['"events"', '"filters"', '"auth_type"']
 
+# Hallucinated provisioning block on okta_app_saml / okta_app_oauth.
+# SCIM provisioning on app resources is NOT supported by the v4.x Okta provider —
+# it is configured via the Okta Admin Console UI, not Terraform. Any provisioning {}
+# block on a SAML or OAuth app will fail terraform validate.
+FORBIDDEN_APP_SCIM_ATTRS = [
+    "provisioning {",
+    "provisioning_type",
+    "scim_enabled",
+    "scim_url",
+    "scim_settings",
+    "scim_connector",
+]
+
 TEST_CASES = [
     # ── okta_group ────────────────────────────────────────────────────────────
     TestCase("G01", "Create a group called Engineering",
@@ -225,6 +238,9 @@ TEST_CASES = [
              okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml"),
     TestCase("AS05", "Add a new SAML app integration for Box",
              okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml"),
+    TestCase("AS06", "Create a SAML app called HR Portal for Workday with SCIM provisioning",
+             okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml",
+             must_contain=["okta_app_saml"]),
 
     # ── okta_app_oauth ────────────────────────────────────────────────────────
     TestCase("AO01", "Create an OAuth 2.0 app for our internal dashboard",
@@ -675,7 +691,9 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             issues.append(f"Hallucinated attribute '{attr}' in okta HCL")
 
     # ── 3. Forbidden event hook attribute names ────────────────────────────
-    if "okta_event_hook" in okta_hcl:
+    # Use the resource declaration, not substring match, so comments mentioning
+    # event_hook as guidance ("for this case use okta_event_hook instead") don't trigger.
+    if 'resource "okta_event_hook"' in okta_hcl:
         for f in FORBIDDEN_EVENT_HOOK_ATTRS:
             if f in okta_hcl:
                 issues.append(f"Forbidden event hook attribute {f}")
@@ -691,6 +709,21 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if is_group_scenario and "okta_event_hook" in okta_hcl:
         if "group.user_membership" not in okta_hcl:
             issues.append("Group-membership scenario missing group.user_membership.* event — check event types")
+
+    # ── 4a. SCIM provisioning hallucination on app resources ───────────────
+    # Strip comment lines so explanatory NOTE blocks (which legitimately mention
+    # "provisioning {} block" in prose) don't false-positive.
+    if "okta_app_saml" in okta_hcl or "okta_app_oauth" in okta_hcl:
+        non_comment_hcl = "\n".join(
+            line for line in okta_hcl.split("\n")
+            if not line.lstrip().startswith("#")
+        )
+        for attr in FORBIDDEN_APP_SCIM_ATTRS:
+            if attr in non_comment_hcl:
+                issues.append(
+                    f"Hallucinated SCIM/provisioning attribute '{attr}' on app resource — "
+                    f"the v4.x Okta provider has no provisioning block; SCIM is UI-only"
+                )
 
     # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
     if "okta_group_rule" in okta_hcl:

@@ -210,7 +210,7 @@ For resources NOT in the live context list, continue using var.* declarations as
 - Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
-- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource — there is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. Example of the only valid pattern:
+- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource — there is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. CRITICAL: if the prompt mentions "SCIM" or "SCIM provisioning", do NOT add a `provisioning {}` block — see SECTION F.5. The Okta provider v4.x does not support SCIM provisioning configuration on app resources; emit the SAML app without provisioning block and add a NOTE comment explaining SCIM must be configured via the Admin Console. Example of the only valid pattern:
 ```hcl
 resource "okta_app_saml" "workday" {
   label   = "Workday"
@@ -487,11 +487,41 @@ Example — "create a terminated group where members can't be added to other gro
 
 ---
 
+## SECTION F.5 — Capabilities NOT supported by the Okta Terraform provider v4.x
+
+The following are configured via the Okta Admin Console UI or via Okta Workflows, NOT via Terraform. If the user asks for any of these, do NOT fabricate a resource block, attribute, or `okta_workflow*` / `okta_behavior*` type to satisfy them — those resources do not exist and will fail terraform validate. Instead, generate the closest supported Terraform (e.g. the underlying SAML/OAuth app, the group, the inline hook resource) and add a top-level comment in the HCL explaining where the unsupported piece must be configured manually.
+
+| Capability the user might ask for | Why Terraform can't do it | What to emit instead |
+|---|---|---|
+| SCIM provisioning on a SAML or OAuth app | The Okta provider has no `provisioning {}` block on `okta_app_saml` or `okta_app_oauth`. SCIM connectors are configured via Admin Console → Applications → [app] → Provisioning tab. | The `okta_app_saml` / `okta_app_oauth` without any provisioning block, plus a `# NOTE:` comment explaining the SCIM tab. |
+| Okta Workflows / Flow Designer flows | No `okta_workflow*` resources exist. Workflows are designed in the Workflows console. | An inline hook (if applicable) plus a comment pointing to the Workflows console. |
+| Behavior detection rules logic | The Okta provider has no resource for behavior detection rule expressions. | A comment explaining the rule must be authored in Security → Behavior Detection. |
+| Authenticator enrollment / sign-on policies (full) | `okta_authenticator` exists but enrollment policy is split between Terraform and UI. | What the provider supports plus a comment for the UI portion. |
+| User profile attribute master config (which source masters which attribute) | Configured per-attribute in the Universal Directory UI. | `okta_user_profile_mapping` for the mapping rules; comment for masters. |
+
+Use this format for the comment:
+```hcl
+# NOTE: <capability> for this resource cannot be configured via the v4.x Okta Terraform provider.
+# Configure it in the Okta Admin Console: <exact navigation path>.
+```
+
+---
+
 ## SECTION G — Okta Resource Schema Reference
 
 Before generating any okta_* resource, look up its entry below and use ONLY the listed
 attributes. Do not invent attribute names not present in this list — invented names will
 fail terraform validate.
+
+**okta_app_saml**
+Required: label
+Optional (most common for custom SAML): sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref, response_signed (bool), attribute_statements { } (inline block — see line 213 rules)
+Optional (advanced): assertion_signed (bool), saml_signed_request_enabled (bool), inline_hook_id, idp_issuer, sp_issuer, single_logout_url, single_logout_issuer, single_logout_certificate, default_relay_state, request_compressed (bool), saml_version ("2.0"|"1.1"), key_name, key_years_valid, preconfigured_app, app_settings_json, app_links_json, status ("ACTIVE"|"INACTIVE"), user_name_template, user_name_template_type, user_name_template_suffix, user_name_template_push_status, acs_endpoints (list, max 100), authentication_policy, hide_ios (bool), hide_web (bool), auto_submit_toolbar (bool), implicit_assignment (bool), enduser_note, admin_note
+FORBIDDEN — these blocks/attributes do NOT exist on okta_app_saml v4.x and fail terraform validate with "Unsupported argument" or "Unsupported block type":
+  - `provisioning { }` block (does NOT exist; SCIM provisioning on SAML apps is configured via the Okta Admin Console UI, NOT Terraform)
+  - `provisioning_type`, `scim_enabled`, `scim_url`, `scim_settings`, `scim_connector` (none exist)
+  - `users { }` or `groups` attribute (use `okta_app_user` and `okta_app_group_assignment` resources)
+  - `okta_app_saml_attribute_statements` separate resource (does not exist; use inline `attribute_statements` block)
 
 **okta_app_oauth**
 Required: label, type ("web"|"native"|"browser"|"service"), grant_types (list of strings)
@@ -501,7 +531,9 @@ Optional: token_endpoint_auth_method ("client_secret_basic"|"client_secret_post"
   consent_method ("REQUIRED"|"TRUSTED"|"IMPLICIT"), login_uri, post_logout_redirect_uris,
   wildcard_redirect, pkce_required (bool), status ("ACTIVE"|"INACTIVE"),
   groups_claim { type, filter_type, name, value }
-FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy
+FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy,
+  `provisioning { }` block (does NOT exist; SCIM provisioning on OAuth/OIDC apps is configured via the Okta Admin Console UI, NOT Terraform),
+  `scim_enabled`, `scim_url`, `scim_settings` (none exist)
 
 **okta_group**
 Required: name (string, the group's display name)
