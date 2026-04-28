@@ -17,6 +17,7 @@ from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from generator.okta_group_sanitizer import sanitize_okta_group_refs
+from generator.hcl_utils import strip_provider_boilerplate
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
 import history as _history
@@ -108,6 +109,16 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         lambda_reqs_path = "lambda/requirements.txt"
         optional_path = "terraform/optional_extensions.tf"
         tfvars_path = "terraform/terraform.tfvars.example"
+
+    # When base is set, the file lives alongside an existing terraform/okta.tf
+    # (or providers.tf) that already declares the boilerplate. Stripping
+    # avoids "Duplicate ..." init errors. When base is empty, this is the
+    # canonical single-file push and the boilerplate must remain.
+    if base:
+        if okta_hcl:
+            okta_hcl = strip_provider_boilerplate(okta_hcl)
+        if lambda_hcl:
+            lambda_hcl = strip_provider_boilerplate(lambda_hcl)
 
     if mode in ("Both", "Okta Terraform only"):
         if okta_hcl and okta_hcl.strip():
