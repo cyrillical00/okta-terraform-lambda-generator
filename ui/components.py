@@ -203,7 +203,12 @@ def render_validation_result(result: dict) -> bool:
     return st.button("Fix Issues", type="primary")
 
 
-def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[bool, bool, str, str, str, str]:
+def render_action_buttons(
+    outputs: dict,
+    mode: str,
+    default_repo: str,
+    auto_basename: str = "",
+) -> tuple[bool, bool, str, str, str, str]:
     st.divider()
 
     with st.expander("GitHub push settings"):
@@ -217,16 +222,22 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             value="main",
             placeholder="main",
         )
+        if auto_basename:
+            placeholder_text = f"auto-derived from intent: {auto_basename}"
+        else:
+            placeholder_text = "e.g. hr_portal — leave blank for legacy 'okta.tf'"
         file_basename = st.text_input(
             "Resource basename (optional)",
             value="",
-            placeholder="e.g. hr_portal — leave blank for legacy 'okta.tf'",
+            placeholder=placeholder_text,
             help=(
-                "Filename base for generated files. Use distinct names per prompt to "
-                "avoid overwriting prior pushes (e.g. 'hr_portal' produces "
-                "terraform/hr_portal.tf instead of terraform/okta.tf). Leave blank "
-                "to use the legacy fixed paths (terraform/okta.tf, terraform/lambda.tf, "
-                "lambda/lambda_function.py)."
+                "Filename base for the pushed files. When blank, we auto-derive "
+                "from the parsed intent's resource_name (so prompt #2 lands at "
+                "terraform/hr_portal_workday.tf without you typing anything). "
+                "Type something here to override the auto-derived value, or "
+                "leave blank for the auto-derive default. If both this and "
+                "the auto-derive are empty, the legacy single-file path "
+                "(terraform/okta.tf) is used."
             ),
         )
 
@@ -254,11 +265,17 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             use_container_width=True,
         )
 
+    # If the user did not type anything, fall back to the auto-derived basename
+    # so per-prompt files always have a stable, unique path. Empty user input
+    # AND empty auto_basename means "use legacy okta.tf path" — exactly the
+    # behavior that was here before this auto-derive feature.
+    effective_basename = file_basename.strip() or auto_basename
+
     return (
         push_clicked,
         regenerate_clicked,
         extra_instructions,
         repo_override.strip(),
         branch_override.strip(),
-        file_basename.strip(),
+        effective_basename,
     )

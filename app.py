@@ -17,7 +17,7 @@ from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from generator.okta_group_sanitizer import sanitize_okta_group_refs
-from generator.hcl_utils import strip_provider_boilerplate
+from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
 import history as _history
@@ -509,8 +509,9 @@ if st.session_state.outputs:
                         st.code(e.raw_response)
 
     default_repo = _get_secret("GITHUB_REPO")
+    auto_basename = derive_basename_from_intent(st.session_state.intent)
     push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override, file_basename = render_action_buttons(
-        st.session_state.outputs, mode, default_repo
+        st.session_state.outputs, mode, default_repo, auto_basename=auto_basename
     )
 
     # Regenerate with automatic 3-pass refinement

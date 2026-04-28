@@ -23,6 +23,29 @@ _BOILERPLATE_PATTERNS = [
 ]
 
 
+def derive_basename_from_intent(intent: dict | None) -> str:
+    """Derive a filesystem-safe basename from a parsed intent dict so the
+    Streamlit UI can auto-name per-prompt files when the user does not type
+    one in. The parser already produces `intent["resource_name"]` as a
+    snake_case identifier (e.g. "engineering", "hr_portal_workday",
+    "gcp_bigquery_readonly"), which is exactly what we want for the file
+    path.
+
+    Sanitization: lowercase, replace any character not in [a-z0-9_] with `_`,
+    collapse consecutive underscores, strip leading/trailing underscores.
+    Empty input or missing resource_name returns "" (the legacy okta.tf path
+    will be used).
+    """
+    if not intent:
+        return ""
+    name = intent.get("resource_name") or ""
+    if not name:
+        return ""
+    sanitized = re.sub(r'[^a-z0-9_]+', '_', name.lower())
+    sanitized = re.sub(r'_+', '_', sanitized)
+    return sanitized.strip('_')
+
+
 def strip_provider_boilerplate(hcl: str) -> str:
     """Strip the three boilerplate blocks (terraform / provider "okta" /
     variable "okta_api_token") from an HCL string.

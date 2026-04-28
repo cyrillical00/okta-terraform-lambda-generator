@@ -13,7 +13,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from generator.hcl_utils import strip_provider_boilerplate
+from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
 
 
 CANONICAL_HCL_WITH_BOILERPLATE = textwrap.dedent('''\
@@ -147,6 +147,56 @@ def test_provider_block_with_multiple_attributes():
     assert 'resource "okta_group" "x"' in out
 
 
+# derive_basename_from_intent tests
+
+def test_derive_basename_from_snake_case_resource_name():
+    assert derive_basename_from_intent({"resource_name": "engineering"}) == "engineering"
+
+
+def test_derive_basename_preserves_underscores():
+    assert derive_basename_from_intent({"resource_name": "hr_portal_workday"}) == "hr_portal_workday"
+
+
+def test_derive_basename_lowercases_and_replaces_dashes():
+    out = derive_basename_from_intent({"resource_name": "GCP-BigQuery-ReadOnly"})
+    assert out == "gcp_bigquery_readonly", f"got {out!r}"
+
+
+def test_derive_basename_collapses_special_chars():
+    out = derive_basename_from_intent({"resource_name": "HR Portal Workday"})
+    assert out == "hr_portal_workday", f"got {out!r}"
+
+
+def test_derive_basename_strips_leading_trailing_underscores():
+    out = derive_basename_from_intent({"resource_name": "--engineering--"})
+    assert out == "engineering", f"got {out!r}"
+
+
+def test_derive_basename_collapses_consecutive_underscores():
+    out = derive_basename_from_intent({"resource_name": "a---b___c"})
+    assert out == "a_b_c", f"got {out!r}"
+
+
+def test_derive_basename_none_intent():
+    assert derive_basename_from_intent(None) == ""
+
+
+def test_derive_basename_empty_intent():
+    assert derive_basename_from_intent({}) == ""
+
+
+def test_derive_basename_missing_resource_name():
+    assert derive_basename_from_intent({"resource_type": "okta_group"}) == ""
+
+
+def test_derive_basename_empty_resource_name():
+    assert derive_basename_from_intent({"resource_name": ""}) == ""
+
+
+def test_derive_basename_none_resource_name():
+    assert derive_basename_from_intent({"resource_name": None}) == ""
+
+
 _TESTS = [
     test_strips_terraform_block,
     test_strips_provider_okta_block,
@@ -159,6 +209,17 @@ _TESTS = [
     test_hcl_without_boilerplate_unchanged,
     test_handles_nested_braces_in_terraform_block,
     test_provider_block_with_multiple_attributes,
+    test_derive_basename_from_snake_case_resource_name,
+    test_derive_basename_preserves_underscores,
+    test_derive_basename_lowercases_and_replaces_dashes,
+    test_derive_basename_collapses_special_chars,
+    test_derive_basename_strips_leading_trailing_underscores,
+    test_derive_basename_collapses_consecutive_underscores,
+    test_derive_basename_none_intent,
+    test_derive_basename_empty_intent,
+    test_derive_basename_missing_resource_name,
+    test_derive_basename_empty_resource_name,
+    test_derive_basename_none_resource_name,
 ]
 
 
