@@ -594,19 +594,31 @@ FORBIDDEN: type (no top-level type attribute exists for okta_group), users (the 
 
 **okta_group_rule**
 Required: name (string, MAXIMUM 50 CHARACTERS — the Okta provider rejects longer names with `[name] cannot be longer than 50 characters` at terraform validate time. Pick a SHORT identifier like `engineering_auto_assign` or `Engineering Auto-Assign` — do NOT echo the user's full sentence as the rule name),
-  expression_value (Okta expression string like `user.department == "Engineering"`),
+  expression_value (Okta expression string — see EXPRESSION SYNTAX below),
   group_assignments (list of okta_group resource IDs that matching users will be ADDED to)
 Optional: status (`ACTIVE` or `INACTIVE`, default `ACTIVE`),
   expression_type (default and ONLY valid value: `urn:okta:expression:1.0`),
   users_excluded (list of user IDs to exclude when the rule is processed),
   remove_assigned_users (bool, default false)
-FORBIDDEN — these are common hallucinations that fail terraform validate:
+
+EXPRESSION SYNTAX (CRITICAL — group rules special-case profile attributes):
+The Okta group rule API rejects `user.profile.X` syntax with "Invalid property profile in expression ..." at terraform apply (this is an L2 runtime check, not a schema check, so terraform validate passes but apply fails). Group rules access user profile attributes via the shorthand `user.X` form, NOT the fully-qualified `user.profile.X` form used in inline hooks or SCIM mappings.
+
+  - CORRECT: `user.department == "Engineering"`
+  - CORRECT: `user.title == "Manager"`
+  - CORRECT: `user.department == "Engineering" and user.employeeType == "FTE"`
+  - WRONG: `user.profile.department == "Engineering"` — fails apply
+  - WRONG: `user.profile.title == "Manager"` — fails apply
+
+String literals in Okta expressions use double quotes. Escape them in HCL as `\"` so the rendered expression contains the literal quotes. Example: `expression_value = "user.department == \"Engineering\""`.
+
+FORBIDDEN — these are hallucinations that fail at apply time even when terraform validate passes:
   - name attribute longer than 50 characters — Okta enforces a 50-char limit; if the user's prompt is verbose, abbreviate to a short identifier rather than copying the prompt verbatim
   - `type` (no top-level `type = "group_rule"` attribute exists; the rule type is implicit)
   - `group_ids` (use `group_assignments` — `group_ids` is invalid in the v4.x schema)
   - `expression` (use `expression_value` — bare `expression` is invalid in the v4.x schema)
-  - Any expression_type value other than `urn:okta:expression:1.0` — NOT `urn:okta:expression:GroupRule`,
-    NOT `urn:okta:expression:group:pred:expression`, NOT any other variant
+  - Any expression_type value other than `urn:okta:expression:1.0` — NOT `urn:okta:expression:GroupRule`, NOT `urn:okta:expression:group:pred:expression`, NOT any other variant
+  - `user.profile.X` syntax inside `expression_value` (use `user.X` shorthand — see EXPRESSION SYNTAX above)
 
 Canonical example:
 ```hcl

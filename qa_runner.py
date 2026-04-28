@@ -818,6 +818,24 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                         f"required fields')."
                     )
 
+    # ── 4g. okta_group_rule expression must use user.X (not user.profile.X) ──
+    # Okta's group rule API rejects user.profile.X syntax with "Invalid
+    # property profile in expression ..." at apply time (L2 runtime check,
+    # not schema). Group rules special-case profile attributes via the
+    # shorthand user.X form. Discovered via apply failure on run 25031083752
+    # (2026-04-28).
+    if "okta_group_rule" in okta_hcl:
+        bad_expr_pattern = re.compile(
+            r'expression_value\s*=\s*"[^"]*\buser\.profile\.[a-zA-Z_]'
+        )
+        for m in bad_expr_pattern.finditer(okta_hcl):
+            issues.append(
+                "okta_group_rule.expression_value uses `user.profile.X` syntax. "
+                "Group rules require the shorthand `user.X` form (e.g. "
+                "`user.department`, not `user.profile.department`). Apply "
+                "fails with `Invalid property profile in expression ...`."
+            )
+
     # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
     if "okta_group_rule" in okta_hcl:
         rule_name_pattern = re.compile(
