@@ -147,6 +147,107 @@ def test_provider_block_with_multiple_attributes():
     assert 'resource "okta_group" "x"' in out
 
 
+def test_strips_provider_aws_block():
+    hcl = textwrap.dedent('''\
+        provider "aws" {
+          region = var.aws_region
+        }
+
+        resource "aws_lambda_function" "handler" {
+          function_name = "x"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'provider "aws"' not in out
+    assert 'resource "aws_lambda_function" "handler"' in out
+
+
+def test_strips_provider_google_block():
+    hcl = textwrap.dedent('''\
+        provider "google" {
+          project = var.gcp_project_id
+          region  = var.gcp_region
+        }
+
+        resource "google_cloudfunctions2_function" "handler" {
+          name = "x"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'provider "google"' not in out
+    assert 'resource "google_cloudfunctions2_function" "handler"' in out
+
+
+def test_strips_gcp_project_id_variable():
+    hcl = textwrap.dedent('''\
+        variable "gcp_project_id" {
+          type        = string
+          description = "GCP project ID"
+        }
+
+        variable "function_name" {
+          type    = string
+          default = "x"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'variable "gcp_project_id"' not in out
+    assert 'variable "function_name"' in out, "non-boilerplate variable must be preserved"
+
+
+def test_strips_gcp_region_variable():
+    hcl = textwrap.dedent('''\
+        variable "gcp_region" {
+          type    = string
+          default = "us-central1"
+        }
+
+        resource "google_storage_bucket" "handler" {
+          name = "x"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'variable "gcp_region"' not in out
+    assert 'resource "google_storage_bucket" "handler"' in out
+
+
+def test_strips_aws_region_variable():
+    hcl = textwrap.dedent('''\
+        variable "aws_region" {
+          type    = string
+          default = "us-east-1"
+        }
+
+        resource "aws_lambda_function" "handler" {
+          function_name = "x"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'variable "aws_region"' not in out
+    assert 'resource "aws_lambda_function" "handler"' in out
+
+
+def test_strips_okta_org_name_and_base_url_variables():
+    hcl = textwrap.dedent('''\
+        variable "okta_org_name" {
+          type = string
+        }
+
+        variable "okta_base_url" {
+          type    = string
+          default = "okta.com"
+        }
+
+        resource "okta_group" "x" {
+          name = "X"
+        }
+        ''')
+    out = strip_provider_boilerplate(hcl)
+    assert 'variable "okta_org_name"' not in out
+    assert 'variable "okta_base_url"' not in out
+    assert 'resource "okta_group" "x"' in out
+
+
 # derive_basename_from_intent tests
 
 def test_derive_basename_from_snake_case_resource_name():
@@ -209,6 +310,12 @@ _TESTS = [
     test_hcl_without_boilerplate_unchanged,
     test_handles_nested_braces_in_terraform_block,
     test_provider_block_with_multiple_attributes,
+    test_strips_provider_aws_block,
+    test_strips_provider_google_block,
+    test_strips_gcp_project_id_variable,
+    test_strips_gcp_region_variable,
+    test_strips_aws_region_variable,
+    test_strips_okta_org_name_and_base_url_variables,
     test_derive_basename_from_snake_case_resource_name,
     test_derive_basename_preserves_underscores,
     test_derive_basename_lowercases_and_replaces_dashes,

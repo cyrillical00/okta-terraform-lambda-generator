@@ -2,7 +2,7 @@ import io
 import zipfile
 import streamlit as st
 
-OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only"]
+OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP"]
 
 _RESOURCE_LABEL_TO_TF = {
     "Workflow": "okta_event_hook",
@@ -10,6 +10,9 @@ _RESOURCE_LABEL_TO_TF = {
     "Group": "okta_group",
     "Policy": "okta_auth_server_policy",
     "User Object": "okta_user_profile_mapping",
+    "Network Zone": "okta_network_zone",
+    "Brand": "okta_brand",
+    "MFA Factor": "okta_factor",
 }
 
 _APP_TYPE_TO_TF = {
@@ -25,13 +28,24 @@ _AWS_RESOURCE_LABEL_TO_TF = {
     "SNS": "aws_sns_topic",
 }
 
+_GCP_RESOURCE_LABEL_TO_TF = {
+    "Cloud Function": "google_cloudfunctions2_function",
+    "Cloud Run": "google_cloud_run_v2_service",
+    "Pub/Sub": "google_pubsub_topic",
+    "Scheduler": "google_cloud_scheduler_job",
+    "GCS Bucket": "google_storage_bucket",
+    "Secret": "google_secret_manager_secret",
+}
 
-def render_resource_type_selector() -> tuple[list[str], list[str]]:
-    """Two-section checkbox selector. Returns (okta_types, aws_types)."""
+
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str]]:
+    """Three-section checkbox selector. Returns (okta_types, aws_types, gcp_types)."""
     okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
     aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
+    gcp_labels = list(_GCP_RESOURCE_LABEL_TO_TF.keys())
     okta_selected: list[str] = []
     aws_selected: list[str] = []
+    gcp_selected: list[str] = []
 
     # Okta row
     okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
@@ -63,7 +77,16 @@ def render_resource_type_selector() -> tuple[list[str], list[str]]:
             if st.checkbox(label, key=f"rsel_aws_{label.lower().replace(' ', '_')}"):
                 aws_selected.append(_AWS_RESOURCE_LABEL_TO_TF[label])
 
-    return okta_selected, aws_selected
+    # GCP row
+    gcp_cols = st.columns([0.7] + [1] * len(gcp_labels))
+    with gcp_cols[0]:
+        st.markdown("**GCP**")
+    for i, label in enumerate(gcp_labels):
+        with gcp_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_gcp_{label.lower().replace(' ', '_').replace('/', '_')}"):
+                gcp_selected.append(_GCP_RESOURCE_LABEL_TO_TF[label])
+
+    return okta_selected, aws_selected, gcp_selected
 
 
 def render_intent_card(intent: dict) -> dict | None:
@@ -107,28 +130,47 @@ def render_intent_card(intent: dict) -> dict | None:
 
 
 def render_code_panels(outputs: dict, mode: str):
-    show_tf = mode in ("Both", "Okta Terraform only")
-    show_lambda = mode in ("Both", "Lambda only")
+    show_okta_tf = mode in ("Both", "Okta Terraform only", "Okta + GCP")
+    show_lambda_tf = mode in ("Both", "Lambda only")
+    show_lambda_py = mode in ("Both", "Lambda only")
+    show_gcp_tf = mode in ("GCP only", "Okta + GCP")
+    show_gcp_py = mode in ("GCP only", "Okta + GCP")
 
-    if show_tf and show_lambda:
+    has_tf = show_okta_tf or show_lambda_tf or show_gcp_tf
+    has_code = show_lambda_py or show_gcp_py
+
+    if has_tf and has_code:
         left, right = st.columns(2)
         with left:
-            _render_terraform(outputs)
+            _render_terraform(outputs, show_okta_tf, show_lambda_tf, show_gcp_tf)
         with right:
-            _render_lambda(outputs)
-    elif show_tf:
-        _render_terraform(outputs)
+            if show_gcp_py:
+                _render_cloud_function(outputs)
+            else:
+                _render_lambda(outputs)
+    elif has_tf:
+        _render_terraform(outputs, show_okta_tf, show_lambda_tf, show_gcp_tf)
+    elif show_gcp_py:
+        _render_cloud_function(outputs)
     else:
         _render_lambda(outputs)
 
 
-def _render_terraform(outputs: dict):
+def _render_terraform(outputs: dict, show_okta: bool, show_lambda: bool, show_gcp: bool):
     st.subheader("Terraform")
-    tf_tab1, tf_tab2 = st.tabs(["okta.tf", "lambda.tf"])
-    with tf_tab1:
-        st.code(outputs["terraform_okta_hcl"], language="hcl")
-    with tf_tab2:
-        st.code(outputs["terraform_lambda_hcl"], language="hcl")
+    tabs_to_show = []
+    if show_okta:
+        tabs_to_show.append(("okta.tf", outputs.get("terraform_okta_hcl", "")))
+    if show_lambda:
+        tabs_to_show.append(("lambda.tf", outputs.get("terraform_lambda_hcl", "")))
+    if show_gcp:
+        tabs_to_show.append(("gcp.tf", outputs.get("terraform_gcp_hcl", "")))
+    if not tabs_to_show:
+        return
+    tabs = st.tabs([label for label, _ in tabs_to_show])
+    for tab, (_, content) in zip(tabs, tabs_to_show):
+        with tab:
+            st.code(content, language="hcl")
 
 
 def _render_lambda(outputs: dict):
@@ -139,15 +181,34 @@ def _render_lambda(outputs: dict):
             st.code(outputs["lambda_requirements"], language="text")
 
 
+def _render_cloud_function(outputs: dict):
+    st.subheader("Cloud Function Python")
+    st.code(outputs.get("cloud_function_python", ""), language="python")
+    if outputs.get("cloud_function_requirements", "").strip():
+        with st.expander("Cloud Function requirements.txt"):
+            st.code(outputs["cloud_function_requirements"], language="text")
+
+
 def build_project_zip(outputs: dict, mode: str) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        if mode in ("Both", "Okta Terraform only"):
-            zf.writestr("terraform/okta.tf", outputs["terraform_okta_hcl"])
-            zf.writestr("terraform/lambda.tf", outputs["terraform_lambda_hcl"])
+        if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+            okta_hcl = outputs.get("terraform_okta_hcl", "")
+            if okta_hcl.strip():
+                zf.writestr("terraform/okta.tf", okta_hcl)
+        if mode in ("Both",):
+            lambda_hcl = outputs.get("terraform_lambda_hcl", "")
+            if lambda_hcl.strip():
+                zf.writestr("terraform/lambda.tf", lambda_hcl)
         if mode in ("Both", "Lambda only"):
-            zf.writestr("lambda/lambda_function.py", outputs["lambda_python"])
+            zf.writestr("lambda/lambda_function.py", outputs.get("lambda_python", ""))
             zf.writestr("lambda/requirements.txt", outputs.get("lambda_requirements", ""))
+        if mode in ("GCP only", "Okta + GCP"):
+            gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+            if gcp_hcl.strip():
+                zf.writestr("terraform/gcp.tf", gcp_hcl)
+            zf.writestr("cloud_function/main.py", outputs.get("cloud_function_python", ""))
+            zf.writestr("cloud_function/requirements.txt", outputs.get("cloud_function_requirements", ""))
         optional_tf = outputs.get("optional_tf", "")
         if optional_tf and optional_tf.strip():
             zf.writestr("terraform/optional_extensions.tf", optional_tf)

@@ -90,23 +90,32 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     files = {}
     okta_hcl = outputs.get("terraform_okta_hcl", "")
     lambda_hcl = outputs.get("terraform_lambda_hcl", "")
+    gcp_hcl = outputs.get("terraform_gcp_hcl", "")
     lambda_py = outputs.get("lambda_python", "")
     lambda_reqs = outputs.get("lambda_requirements", "")
+    cloud_function_py = outputs.get("cloud_function_python", "")
+    cloud_function_reqs = outputs.get("cloud_function_requirements", "")
     optional_tf = outputs.get("optional_tf", "")
     tfvars = outputs.get("terraform_tfvars_example", "")
 
     if base:
         okta_path = f"terraform/{base}.tf"
         lambda_tf_path = f"terraform/{base}_lambda.tf"
+        gcp_tf_path = f"terraform/{base}_gcp.tf"
         lambda_py_path = f"lambda/{base}.py"
         lambda_reqs_path = f"lambda/{base}_requirements.txt"
+        cloud_function_py_path = f"cloud_function/{base}.py"
+        cloud_function_reqs_path = f"cloud_function/{base}_requirements.txt"
         optional_path = f"terraform/{base}_optional_extensions.tf"
         tfvars_path = f"terraform/{base}.tfvars.example"
     else:
         okta_path = "terraform/okta.tf"
         lambda_tf_path = "terraform/lambda.tf"
+        gcp_tf_path = "terraform/gcp.tf"
         lambda_py_path = "lambda/lambda_function.py"
         lambda_reqs_path = "lambda/requirements.txt"
+        cloud_function_py_path = "cloud_function/main.py"
+        cloud_function_reqs_path = "cloud_function/requirements.txt"
         optional_path = "terraform/optional_extensions.tf"
         tfvars_path = "terraform/terraform.tfvars.example"
 
@@ -119,10 +128,13 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             okta_hcl = strip_provider_boilerplate(okta_hcl)
         if lambda_hcl:
             lambda_hcl = strip_provider_boilerplate(lambda_hcl)
+        if gcp_hcl:
+            gcp_hcl = strip_provider_boilerplate(gcp_hcl)
 
-    if mode in ("Both", "Okta Terraform only"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
         if okta_hcl and okta_hcl.strip():
             files[okta_path] = okta_hcl
+    if mode in ("Both",):
         if lambda_hcl and lambda_hcl.strip():
             files[lambda_tf_path] = lambda_hcl
     if mode in ("Both", "Lambda only"):
@@ -130,6 +142,13 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             files[lambda_py_path] = lambda_py
         if lambda_reqs and lambda_reqs.strip():
             files[lambda_reqs_path] = lambda_reqs
+    if mode in ("GCP only", "Okta + GCP"):
+        if gcp_hcl and gcp_hcl.strip():
+            files[gcp_tf_path] = gcp_hcl
+        if cloud_function_py and cloud_function_py.strip():
+            files[cloud_function_py_path] = cloud_function_py
+        if cloud_function_reqs and cloud_function_reqs.strip():
+            files[cloud_function_reqs_path] = cloud_function_reqs
     if optional_tf and optional_tf.strip():
         files[optional_path] = optional_tf
     if tfvars and tfvars.strip():
@@ -177,6 +196,9 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
             # `resource "okta_group"` blocks. No-op when Okta is not connected.
             live_groups = (st.session_state.env_context or {}).get("okta", {}).get("groups") or []
             outputs = sanitize_okta_group_refs(outputs, live_groups)
+            # Note: sanitize_okta_brand_refs runs centrally in generate_all so it
+            # applies to every code path (app.py, qa_runner, future tools), not
+            # just the refinement loop here.
 
             status.update(label="Done", state="complete", expanded=False)
         except GenerationError as e:
@@ -193,7 +215,7 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
 
 def _load_env_context() -> None:
-    """Fetch Okta/AWS context once per session. Skips if already loaded."""
+    """Fetch Okta/AWS/GCP context once per session. Skips if already loaded."""
     if st.session_state.env_context is not None:
         return
     st.session_state.env_context = build_env_context(
@@ -202,6 +224,9 @@ def _load_env_context() -> None:
         aws_region=_get_secret("AWS_REGION"),
         aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
         aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
+        gcp_project_id=_get_secret("GCP_PROJECT_ID"),
+        gcp_sa_json=_get_secret("GCP_SA_JSON"),
+        gcp_region=_get_secret("GCP_REGION") or "us-central1",
     )
 
 
@@ -209,6 +234,7 @@ def _render_env_sidebar() -> None:
     ctx = st.session_state.env_context or {}
     okta = ctx.get("okta", {})
     aws = ctx.get("aws", {})
+    gcp = ctx.get("gcp", {})
 
     st.sidebar.divider()
     st.sidebar.markdown("**Environment**")
@@ -229,6 +255,20 @@ def _render_env_sidebar() -> None:
     else:
         err = aws.get("error", "Not configured")
         st.sidebar.caption(f"AWS: {err}")
+
+    if gcp.get("connected"):
+        n_fns = len(gcp.get("functions", []))
+        n_sa = len(gcp.get("service_accounts", []))
+        n_topics = len(gcp.get("pubsub_topics", []))
+        st.sidebar.success(f"GCP: {n_fns} functions · {n_sa} SAs · {n_topics} topics")
+        partial = gcp.get("partial_errors") or []
+        if partial:
+            with st.sidebar.expander(f"GCP partial: {len(partial)} service(s) unavailable"):
+                for p in partial:
+                    st.caption(f"· {p[:140]}")
+    else:
+        err = gcp.get("error", "Not configured")
+        st.sidebar.caption(f"GCP: {err}")
 
     if st.sidebar.button("Refresh environment", use_container_width=True):
         st.session_state.env_context = None
@@ -353,7 +393,7 @@ st.caption("Describe an Okta operation in plain English and get production-ready
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types = render_resource_type_selector()
+    okta_types, aws_types, gcp_types = render_resource_type_selector()
     user_input = st.text_area(
         "Describe the Okta operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -393,7 +433,16 @@ if parse_clicked and user_input.strip():
                     intent["resource_types"] = [intent.get("resource_type", "")]
                 if aws_types:
                     intent["aws_resource_types"] = aws_types
-                intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
+                if gcp_types:
+                    intent["gcp_resource_types"] = gcp_types
+                if gcp_types and okta_types:
+                    intent["output_mode"] = "Okta + GCP"
+                elif gcp_types:
+                    intent["output_mode"] = "GCP only"
+                elif aws_types:
+                    intent["output_mode"] = "Both"
+                else:
+                    intent["output_mode"] = "Okta Terraform only"
                 errors = validate_intent(intent)
                 if errors:
                     st.session_state.parse_error = "Validation errors: " + "; ".join(errors)

@@ -2,8 +2,14 @@ import json
 import anthropic
 from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 from .parser import _extract_json
+from .okta_brand_sanitizer import sanitize_okta_brand_refs
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
+OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
+    "terraform_gcp_hcl": "",
+    "cloud_function_python": "",
+    "cloud_function_requirements": "",
+}
 
 MODEL = "claude-haiku-4-5-20251001"
 
@@ -20,6 +26,9 @@ def _parse_output(raw: str) -> dict:
     missing = REQUIRED_OUTPUT_KEYS - set(parsed.keys())
     if missing:
         raise ValueError(f"Generated output missing required keys: {', '.join(sorted(missing))}")
+    for key, default in OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS.items():
+        if key not in parsed or not isinstance(parsed.get(key), str):
+            parsed[key] = default
     if "optional_tf" in parsed and not isinstance(parsed["optional_tf"], str):
         parsed["optional_tf"] = ""
     if "terraform_tfvars_example" in parsed and not isinstance(parsed["terraform_tfvars_example"], str):
@@ -66,6 +75,15 @@ def generate_all(
         )
     else:
         aws_resource_section = ""
+    gcp_types = intent.get("gcp_resource_types", [])
+    if gcp_types:
+        gcp_resource_section = (
+            "GCP resources to include in terraform_gcp_hcl (in addition to the standard "
+            f"Cloud Function + service account + source bucket): {', '.join(gcp_types)}. "
+            "Follow the rules for each in SECTION C2."
+        )
+    else:
+        gcp_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         output_mode=output_mode,
@@ -76,6 +94,7 @@ def generate_all(
         repo_context_section=repo_context_section,
         multi_resource_section=multi_resource_section,
         aws_resource_section=aws_resource_section,
+        gcp_resource_section=gcp_resource_section,
     )
     messages = [{"role": "user", "content": user_content}]
 
@@ -100,7 +119,7 @@ def generate_all(
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
-                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements, terraform_tfvars_example), no other text.",
+                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
             },
         ]
         retry_response = client.messages.create(
@@ -127,11 +146,37 @@ def generate_all(
     # Hard-enforce output_mode constraints in code — prompt alone is not reliable enough.
     if output_mode == "Okta Terraform only":
         result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
     elif output_mode == "Lambda only":
         result["terraform_okta_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
+    elif output_mode == "GCP only":
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + GCP":
+        result["terraform_lambda_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+    elif output_mode == "Both":
+        # "Both" means Okta + AWS Lambda — explicitly NOT GCP
+        result["terraform_gcp_hcl"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+
+    # Strip forbidden okta_brand attributes (logo, primary_color, secondary_color)
+    # — provider v4.x does not support them and apply fails. Runs in every
+    # generate_all caller, including qa_runner, not just app.py's refinement loop.
+    result = sanitize_okta_brand_refs(result)
 
     return result

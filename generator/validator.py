@@ -38,6 +38,10 @@ Check for these specific problems in Terraform:
 - Invalid or non-existent attribute references on resource types
 - app_settings_json with null/placeholder values not required for this resource type
 - Missing required arguments for the resource type
+- For okta_network_zone: IP zones must use `gateways` (list of objects with type="CIDR"|"RANGE" and value=CIDR/range string). DYNAMIC zones must use `dynamic_locations` (list of ISO-3166 country codes) OR `asns` (list of strings) — never both. Mixing `gateways` with `dynamic_locations`/`asns` on the same resource is invalid and fails terraform apply. Forbidden attribute names that have been observed as hallucinations and must be flagged: `ip_list`, `allowed_ips`, `blocked_ips`, `cidr_ranges`.
+- For okta_user_profile_mapping: every `mappings { }` block MUST contain all three of `id` (e.g. "appuser.email" or "user.email"), `expression` (Okta expression string), and `push_status` ("PUSH" or "DONT_PUSH"). A mappings block missing any of these three keys fails terraform apply. Forbidden attribute names on the resource: `source_type`, `target_id`, `profile_attribute` (use the mappings block instead).
+- For okta_brand: NEVER include `logo`, `primary_color`, or `secondary_color` — none of these exist on the v4.x okta_brand resource. Logo upload is an Okta Admin Console operation; flag any logo-related attribute or block as a hallucination. Allowed attributes are name, agree_to_custom_privacy_policy, custom_privacy_policy_url, remove_powered_by_okta, default_app_app_instance_id, default_app_classic_application_uri.
+- For okta_email_customization: the `body` value must escape Terraform interpolation by writing `$${variable}` (double dollar) wherever an Okta email template variable appears — e.g. `$${user.firstName}`. A body containing bare `${...}` fails terraform validate with "Reference to undeclared resource". Also confirm `template_name` is one of the documented Okta lifecycle templates ("UserActivation", "ForgotPassword", "PasswordChanged", "EmailChallenge", "ADForgotPassword", etc.) and that `language` (not `locale`) is set.
 
 Check for these specific problems in Lambda:
 - Event hook verification logic (x-okta-verification-challenge) present when resource_type is NOT okta_event_hook
@@ -96,9 +100,11 @@ VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 Return only the JSON review object."""
 
 _OUTPUT_MODE_INSTRUCTIONS = {
-    "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
+    "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda or Cloud Function issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
     "Lambda only": "The user requested Lambda only. Do NOT evaluate or report any Terraform issues — set terraform_issues to []. Only review lambda_python.",
-    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf.",
+    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf. terraform_gcp_hcl is intentionally empty in this mode; do NOT flag its absence.",
+    "GCP only": "The user requested GCP only. Review terraform_gcp_hcl and cloud_function_python. terraform_okta_hcl, terraform_lambda_hcl, and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
+    "Okta + GCP": "The user requested Okta + GCP. Review terraform_okta_hcl, terraform_gcp_hcl, and cloud_function_python. terraform_lambda_hcl and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
 }
 
 
@@ -171,18 +177,45 @@ def refine_outputs(
         try:
             optional_tf = outputs.get("optional_tf", "")
             tfvars = outputs.get("terraform_tfvars_example", "")
+            # Capture GCP outputs before fix_outputs (fixer only knows the 4 original keys)
+            gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+            cf_py = outputs.get("cloud_function_python", "")
+            cf_reqs = outputs.get("cloud_function_requirements", "")
             outputs = fix_outputs(intent, outputs, result, client, model)
             if optional_tf and not outputs.get("optional_tf"):
                 outputs["optional_tf"] = optional_tf
             if tfvars and not outputs.get("terraform_tfvars_example"):
                 outputs["terraform_tfvars_example"] = tfvars
+            # Restore GCP outputs that fix_outputs cannot produce
+            outputs["terraform_gcp_hcl"] = gcp_hcl
+            outputs["cloud_function_python"] = cf_py
+            outputs["cloud_function_requirements"] = cf_reqs
             # Re-apply output_mode enforcement — fix_outputs doesn't enforce it
             if output_mode == "Okta Terraform only":
                 outputs["terraform_lambda_hcl"] = ""
+                outputs["terraform_gcp_hcl"] = ""
                 outputs["lambda_python"] = ""
                 outputs["lambda_requirements"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
             elif output_mode == "Lambda only":
                 outputs["terraform_okta_hcl"] = ""
+                outputs["terraform_gcp_hcl"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
+            elif output_mode == "GCP only":
+                outputs["terraform_okta_hcl"] = ""
+                outputs["terraform_lambda_hcl"] = ""
+                outputs["lambda_python"] = ""
+                outputs["lambda_requirements"] = ""
+            elif output_mode == "Okta + GCP":
+                outputs["terraform_lambda_hcl"] = ""
+                outputs["lambda_python"] = ""
+                outputs["lambda_requirements"] = ""
+            elif output_mode == "Both":
+                outputs["terraform_gcp_hcl"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
         except GenerationError:
             break
     return outputs

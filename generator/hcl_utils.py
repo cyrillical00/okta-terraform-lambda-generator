@@ -1,8 +1,8 @@
 """Small HCL string utilities used by the generation pipeline.
 
-Currently exposes one function: `strip_provider_boilerplate`, which removes
-the `terraform {}`, `provider "okta" {}`, and `variable "okta_api_token" {}`
-top-level blocks from a generated HCL string. Used when pushing per-prompt
+Exposes `strip_provider_boilerplate`, which removes `terraform {}`,
+`provider "okta|aws|google" {}`, and the corresponding shared variable
+declarations from a generated HCL string. Used when pushing per-prompt
 files (basename != "okta") so multiple generated `.tf` files can coexist in
 the same Terraform module without "Duplicate required providers
 configuration" / "Duplicate provider configuration" / "Duplicate variable
@@ -19,7 +19,14 @@ import re
 _BOILERPLATE_PATTERNS = [
     re.compile(r'^terraform\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
     re.compile(r'^provider\s+"okta"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^provider\s+"aws"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^provider\s+"google"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
     re.compile(r'^variable\s+"okta_api_token"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^variable\s+"okta_org_name"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^variable\s+"okta_base_url"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^variable\s+"aws_region"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^variable\s+"gcp_project_id"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
+    re.compile(r'^variable\s+"gcp_region"\s*\{[\s\S]*?\n\}\s*\n', re.MULTILINE),
 ]
 
 

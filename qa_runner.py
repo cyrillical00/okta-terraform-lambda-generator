@@ -97,11 +97,16 @@ class TestCase:
     prompt: str
     okta_types: list = field(default_factory=list)
     aws_types: list = field(default_factory=list)
+    gcp_types: list = field(default_factory=list)
     expected_resource_type: Optional[str] = None
     # strings that MUST appear in terraform_okta_hcl
     must_contain: list = field(default_factory=list)
     # strings that must NOT appear in terraform_okta_hcl
     must_not_contain_okta: list = field(default_factory=list)
+    # strings that MUST appear in terraform_gcp_hcl (GCP/Okta+GCP modes)
+    must_contain_gcp: list = field(default_factory=list)
+    # strings that must NOT appear in terraform_gcp_hcl
+    must_not_contain_gcp: list = field(default_factory=list)
     notes: str = ""
 
 
@@ -132,6 +137,19 @@ FORBIDDEN_EVENT_HOOK_ATTRS = ['"events"', '"filters"', '"auth_type"']
 # SCIM provisioning on app resources is NOT supported by the v4.x Okta provider —
 # it is configured via the Okta Admin Console UI, not Terraform. Any provisioning {}
 # block on a SAML or OAuth app will fail terraform validate.
+FORBIDDEN_BRAND_ATTRS = ["logo", "primary_color", "secondary_color"]
+FORBIDDEN_NETWORK_ZONE_ATTRS = ["ip_list", "allowed_ips", "blocked_ips", "cidr_ranges"]
+
+# GCP — never emit. google_project_iam_policy is AUTHORITATIVE and overwrites
+# the entire project IAM policy on apply (use google_project_iam_member instead).
+# Cloud Functions Gen1 (no `2`) is deprecated; we ship Gen2 only.
+FORBIDDEN_GCP_RESOURCES = [
+    "google_project_iam_policy",
+    "google_organization_iam_policy",
+    "google_folder_iam_policy",
+    "google_cloudfunctions_function",  # Gen1, deprecated
+]
+
 FORBIDDEN_APP_SCIM_ATTRS = [
     "provisioning {",
     "provisioning_type",
@@ -647,6 +665,59 @@ TEST_CASES = [
              must_contain=["attribute_statements"],
              must_not_contain_okta=["okta_app_saml_attribute_statements"],
              notes="Regression: no hallucinated separate attribute resource"),
+
+    # ── GCP module — Phase 1 verification ─────────────────────────────────────
+    TestCase("GCP01",
+             "Create a Cloud Function that responds to HTTP requests and returns a JSON status",
+             gcp_types=["google_cloudfunctions2_function"],
+             must_contain_gcp=[
+                 'provider "google"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 'resource "google_service_account" "handler"',
+                 'runtime     = "python311"',
+                 'entry_point = "main"',
+             ],
+             notes="Single-function HTTP trigger — exercises the standard Gen2 stack: SA + source bucket + function"),
+    TestCase("GCP02",
+             "Create a Pub/Sub topic called demo-events with a Cloud Function subscriber that logs each message",
+             gcp_types=["google_cloudfunctions2_function", "google_pubsub_topic"],
+             must_contain_gcp=[
+                 'resource "google_pubsub_topic" "handler"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 "event_trigger",
+                 "google.cloud.pubsub.topic.v1.messagePublished",
+             ],
+             notes="Pub/Sub trigger — function must wire event_trigger to the topic"),
+    TestCase("GCP03",
+             "Deploy a Cloud Run service called internal-api running a custom container",
+             gcp_types=["google_cloud_run_v2_service"],
+             must_contain_gcp=[
+                 'resource "google_cloud_run_v2_service" "handler"',
+                 "template",
+                 "containers",
+                 'service_account = google_service_account.handler.email',
+             ],
+             notes="Cloud Run Gen2 service — must use the v2 resource and template/containers shape"),
+    TestCase("GCP04",
+             "Create a daily scheduled Cloud Function that runs at 9 AM UTC and processes pending records",
+             gcp_types=["google_cloudfunctions2_function", "google_cloud_scheduler_job"],
+             must_contain_gcp=[
+                 'resource "google_cloud_scheduler_job" "handler"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 "http_target",
+                 "oidc_token",
+             ],
+             notes="Scheduler + Function — scheduler must invoke the function via OIDC"),
+    TestCase("GCP05",
+             "Create an Okta event hook that fires on user deactivation and calls a GCP Cloud Function",
+             okta_types=["okta_event_hook"],
+             gcp_types=["google_cloudfunctions2_function"],
+             expected_resource_type="okta_event_hook",
+             must_contain=['resource "okta_event_hook"', "user.lifecycle.deactivate"],
+             must_contain_gcp=[
+                 'resource "google_cloudfunctions2_function" "handler"',
+             ],
+             notes="Okta + GCP composite — Okta event hook with channel.uri pointing at the Cloud Function URI, no AWS Lambda"),
 ]
 
 
@@ -723,6 +794,51 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 issues.append(
                     f"Hallucinated SCIM/provisioning attribute '{attr}' on app resource, "
                     f"the v4.x Okta provider has no provisioning block; SCIM is UI-only"
+                )
+
+    # ── 4b. Forbidden okta_brand attributes (logo, primary_color, secondary_color) ──
+    # The v4.x provider does not support these — apply fails with "Unsupported
+    # argument". Scan only inside a `resource "okta_brand"` block so unrelated
+    # resources that legitimately use a `logo` attribute aren't false-positived.
+    brand_block_match = re.search(
+        r'resource\s+"okta_brand"\s+"[^"]+"\s*\{([\s\S]*?)\n\}',
+        okta_hcl,
+    )
+    if brand_block_match:
+        body = brand_block_match.group(1)
+        body_no_comments = "\n".join(
+            line for line in body.split("\n")
+            if not line.lstrip().startswith("#")
+        )
+        for attr in FORBIDDEN_BRAND_ATTRS:
+            if re.search(rf'\b{re.escape(attr)}\s*=', body_no_comments) or \
+               re.search(rf'\b{re.escape(attr)}\s*\{{', body_no_comments):
+                issues.append(
+                    f"Forbidden okta_brand attribute '{attr}' — not supported by v4.x provider; "
+                    f"logo upload is an Admin Console operation."
+                )
+
+    # ── 4b.2 Forbidden okta_network_zone attributes ──────────────────────────
+    if 'resource "okta_network_zone"' in okta_hcl:
+        for attr in FORBIDDEN_NETWORK_ZONE_ATTRS:
+            if re.search(rf'\b{re.escape(attr)}\s*=', okta_hcl):
+                issues.append(
+                    f"Forbidden okta_network_zone attribute '{attr}' — use `gateways` "
+                    f"(IP zones) or `dynamic_locations`/`asns` (DYNAMIC zones) instead."
+                )
+        # IP/DYNAMIC mutual exclusivity: a single zone declaring both gateways
+        # and dynamic_locations/asns is a hallucination of zone shape.
+        nz_blocks = re.findall(
+            r'resource\s+"okta_network_zone"\s+"[^"]+"\s*\{([\s\S]*?)\n\}',
+            okta_hcl,
+        )
+        for body in nz_blocks:
+            has_gateways = re.search(r'\bgateways\s*=', body) or re.search(r'\bgateways\s*\{', body)
+            has_dynamic = re.search(r'\bdynamic_locations\s*=', body) or re.search(r'\basns\s*=', body)
+            if has_gateways and has_dynamic:
+                issues.append(
+                    "okta_network_zone mixes `gateways` with `dynamic_locations`/`asns` — "
+                    "IP and DYNAMIC zone fields are mutually exclusive."
                 )
 
     # ── 4c. Unescaped Okta Expression Language in HCL string literals ──────
@@ -948,6 +1064,58 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if okta_in_lambda:
         issues.append(f"okta_* resource(s) found in terraform_lambda_hcl: {okta_in_lambda}")
 
+    # ── 15. GCP module checks ───────────────────────────────────────────────
+    gcp_hcl = outputs.get("terraform_gcp_hcl", "") or ""
+
+    # 15a. Mode contract: GCP-only mode means everything else empty
+    if output_mode == "GCP only":
+        if okta_hcl.strip():
+            issues.append("terraform_okta_hcl not empty in GCP only mode")
+        if lambda_hcl.strip():
+            issues.append("terraform_lambda_hcl not empty in GCP only mode")
+        if outputs.get("lambda_python", "").strip():
+            issues.append("lambda_python not empty in GCP only mode")
+    if output_mode == "Okta + GCP":
+        if lambda_hcl.strip():
+            issues.append("terraform_lambda_hcl not empty in Okta + GCP mode")
+        if outputs.get("lambda_python", "").strip():
+            issues.append("lambda_python not empty in Okta + GCP mode")
+
+    # 15b. When GCP HCL is non-empty: provider boilerplate + Gen2 + naming + must_contain_gcp
+    if gcp_hcl.strip():
+        if 'provider "google"' not in gcp_hcl:
+            issues.append('terraform_gcp_hcl missing `provider "google"` block')
+        if 'required_providers' not in gcp_hcl:
+            issues.append("terraform_gcp_hcl missing `required_providers` block")
+
+        # Forbidden GCP resources (auth-overwriting IAM policies, Gen1 functions)
+        for forbidden in FORBIDDEN_GCP_RESOURCES:
+            if re.search(rf'resource\s+"{re.escape(forbidden)}"', gcp_hcl):
+                issues.append(
+                    f"Forbidden GCP resource '{forbidden}' — see SECTION C2 forbidden list "
+                    f"(authoritative IAM policies overwrite project state; Gen1 functions are deprecated)."
+                )
+
+        # No okta_* or aws_* in terraform_gcp_hcl
+        cross_okta = re.findall(r'resource\s+"(okta_[^"]+)"', gcp_hcl)
+        if cross_okta:
+            issues.append(f"okta_* resource(s) found in terraform_gcp_hcl: {cross_okta}")
+        cross_aws = re.findall(r'resource\s+"(aws_[^"]+)"', gcp_hcl)
+        if cross_aws:
+            issues.append(f"aws_* resource(s) found in terraform_gcp_hcl: {cross_aws}")
+
+        # 15c. must_contain_gcp / must_not_contain_gcp from the test case
+        for needle in tc.must_contain_gcp:
+            if needle not in gcp_hcl:
+                issues.append(f"Expected '{needle}' in terraform_gcp_hcl")
+        for needle in tc.must_not_contain_gcp:
+            if needle in gcp_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_gcp_hcl")
+
+    # 15d. GCP modes must produce non-empty terraform_gcp_hcl
+    if output_mode in ("GCP only", "Okta + GCP") and not gcp_hcl.strip():
+        issues.append(f"terraform_gcp_hcl empty in {output_mode} mode")
+
     return issues
 
 
@@ -961,7 +1129,21 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["resource_types"] = tc.okta_types
     if tc.aws_types:
         intent["aws_resource_types"] = tc.aws_types
-    intent["output_mode"] = "Both" if tc.aws_types else "Okta Terraform only"
+    if tc.gcp_types:
+        intent["gcp_resource_types"] = tc.gcp_types
+    # Mode mapping mirrors app.py:Stage 1 (after-parse):
+    # both okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
+    # okta alone → "Okta Terraform only", aws alone (rare) → "Lambda only".
+    if tc.gcp_types and tc.okta_types:
+        intent["output_mode"] = "Okta + GCP"
+    elif tc.gcp_types:
+        intent["output_mode"] = "GCP only"
+    elif tc.aws_types and tc.okta_types:
+        intent["output_mode"] = "Both"
+    elif tc.aws_types:
+        intent["output_mode"] = "Lambda only"
+    else:
+        intent["output_mode"] = "Okta Terraform only"
     intent["answers"] = {}
     intent["provider_version"] = "~> 4.0"
     return intent

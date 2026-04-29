@@ -93,13 +93,16 @@ GENERATOR_SYSTEM_PROMPT = """You are an Okta infrastructure code generator. Your
 
 ## Output Contract
 
-Return exactly this JSON structure (all four keys required, all values are strings):
+Return exactly this JSON structure (all seven keys required, all values are strings):
 
 {
   "terraform_okta_hcl": "<complete Terraform HCL for Okta resources>",
   "terraform_lambda_hcl": "<complete Terraform HCL for AWS Lambda resources>",
+  "terraform_gcp_hcl": "<complete Terraform HCL for GCP resources, or empty string when not generating GCP>",
   "lambda_python": "<complete Python Lambda handler code>",
-  "lambda_requirements": "<pip packages one per line, or empty string if none>"
+  "lambda_requirements": "<pip packages one per line, or empty string if none>",
+  "cloud_function_python": "<complete Python GCP Cloud Function Gen2 handler code, or empty string when not generating GCP>",
+  "cloud_function_requirements": "<pip packages one per line for the Cloud Function, or empty string if none>"
 }
 
 ---
@@ -110,21 +113,34 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 
 **OUTPUT MODE: Okta Terraform only**
 - Generate complete HCL in terraform_okta_hcl for the requested Okta resources.
-- Set terraform_lambda_hcl to exactly "" (empty string).
-- Set lambda_python to exactly "" (empty string).
-- Set lambda_requirements to exactly "" (empty string).
-- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS or Lambda resources in optional_tf. optional_tf is also forbidden from containing aws_ resources in this mode.
-- Do NOT reference aws_, Lambda, IAM, EventBridge, SNS, or any AWS service in ANY field — not in terraform_okta_hcl, not in optional_tf, not in variable descriptions, not in comments.
-- If the resource is okta_event_hook, use var.webhook_endpoint (a plain string variable) for channel.uri. The description of var.webhook_endpoint must only say it is an HTTPS endpoint — do NOT mention Lambda, AWS, or function URLs.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS, GCP, Lambda, or Cloud Function resources in optional_tf. optional_tf is also forbidden from containing aws_ or google_ resources in this mode.
+- Do NOT reference aws_, Lambda, IAM, EventBridge, SNS, google_, Cloud Function, Cloud Run, Pub/Sub, or any AWS or GCP service in ANY field — not in terraform_okta_hcl, not in optional_tf, not in variable descriptions, not in comments.
+- If the resource is okta_event_hook, use var.webhook_endpoint (a plain string variable) for channel.uri. The description of var.webhook_endpoint must only say it is an HTTPS endpoint — do NOT mention Lambda, AWS, GCP, function URLs, or Cloud Run.
 
 **OUTPUT MODE: Lambda only**
 - Generate complete terraform_lambda_hcl with the Lambda function and IAM resources.
 - Generate complete lambda_python handler code.
-- Set terraform_okta_hcl to exactly "" (empty string).
-- Do NOT generate any Okta resources.
+- Set terraform_okta_hcl, terraform_gcp_hcl, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Do NOT generate any Okta or GCP resources.
 
 **OUTPUT MODE: Both**
-- Generate complete output for all sections following the rules below.
+- Generate complete output for terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements following the Okta + AWS Lambda rules below.
+- Set terraform_gcp_hcl, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string). "Both" means Okta + AWS Lambda; GCP is NOT included.
+
+**OUTPUT MODE: GCP only**
+- Generate complete terraform_gcp_hcl with GCP resources following SECTION C2 below.
+- Generate complete cloud_function_python (Cloud Functions Gen2 handler — see SECTION C below).
+- Set terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements ALL to exactly "" (empty string).
+- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS, Okta, or Lambda resources in optional_tf in this mode.
+- Do NOT reference okta_, aws_, Lambda, IAM, EventBridge, SNS, or any Okta or AWS service in ANY field.
+
+**OUTPUT MODE: Okta + GCP**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_gcp_hcl with GCP resources following SECTION C2 below.
+- Generate complete cloud_function_python.
+- Set terraform_lambda_hcl, lambda_python, lambda_requirements ALL to exactly "" (empty string).
+- Do NOT generate any AWS resources. The webhook target for any okta_event_hook in this mode is the GCP Cloud Function HTTP trigger URI from terraform_gcp_hcl — wire `channel.uri` to the function URI variable, NOT a Lambda function URL.
 
 ---
 
@@ -395,11 +411,165 @@ output "lambda_function_url" {
 
 ---
 
+## SECTION C2 — GCP Cloud Functions Terraform (terraform_gcp_hcl)
+
+Only generate this when output_mode is "GCP only" or "Okta + GCP". Otherwise terraform_gcp_hcl MUST be exactly "".
+
+### Provider block (always include in terraform_gcp_hcl when present)
+
+```
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.gcp_region
+}
+
+variable "gcp_project_id" {
+  type        = string
+  description = "GCP project ID"
+}
+
+variable "gcp_region" {
+  type        = string
+  description = "GCP region"
+  default     = "us-central1"
+}
+```
+
+**Live-environment override:** When the user message contains a `Live environment context` section that includes `GCP project metadata` with literal `project` and `region` values, replace `var.gcp_project_id` and `var.gcp_region` in the provider block above with those literal string values, AND remove the `variable "gcp_project_id"` and `variable "gcp_region"` declarations entirely (they would be dead variables). Credentials are loaded by the provider from `GOOGLE_APPLICATION_CREDENTIALS` at apply time — do NOT add a `credentials = ...` argument or a `gcp_sa_json` variable to the provider block.
+
+### Standard Cloud Function Gen2 stack (always include when generating google_cloudfunctions2_function)
+
+Must include these resources, in this order:
+1. `google_service_account` — runtime identity for the function
+2. `google_storage_bucket` — source-bundle bucket (set `name = "${var.gcp_project_id}-cloud-function-source"`, `location = var.gcp_region`, `uniform_bucket_level_access = true`)
+3. `google_storage_bucket_object` — source archive object pointing at `../cloud_function/cloud_function.zip`
+4. `google_cloudfunctions2_function` — the function itself
+5. `google_cloud_run_service_iam_member` — public invoker binding when the function is HTTP-triggered with no auth, scoped to `roles/run.invoker` on `aws_cloudfunctions2_function.handler.name` (Gen2 invocations go through Cloud Run IAM)
+
+### CRITICAL NAMING RULE
+Every resource in terraform_gcp_hcl uses `"handler"` as the Terraform resource label, no exceptions:
+- `resource "google_cloudfunctions2_function" "handler"` — always "handler"
+- `resource "google_service_account" "handler"` — always "handler"
+- `resource "google_storage_bucket" "handler"` — always "handler"
+- `resource "google_storage_bucket_object" "handler"` — always "handler"
+
+All cross-references use these exact addresses: `google_cloudfunctions2_function.handler.name`, `google_cloudfunctions2_function.handler.service_config[0].uri`, `google_service_account.handler.email`, `google_storage_bucket.handler.name`.
+
+### google_cloudfunctions2_function required shape
+
+```hcl
+resource "google_cloudfunctions2_function" "handler" {
+  name        = var.function_name
+  location    = var.gcp_region
+  description = "<one-line description from intent>"
+
+  build_config {
+    runtime     = "python311"
+    entry_point = "main"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.handler.name
+        object = google_storage_bucket_object.handler.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count    = 10
+    available_memory      = "256M"
+    timeout_seconds       = 60
+    service_account_email = google_service_account.handler.email
+    ingress_settings      = "ALLOW_ALL"
+  }
+}
+```
+
+For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "google.cloud.pubsub.topic.v1.messagePublished", pubsub_topic, retry_policy = "RETRY_POLICY_RETRY" }` block. The Cloud Function entry_point handler signature changes accordingly — see SECTION C.
+
+### Additional GCP resources (add only when listed in "GCP resources to include")
+
+**google_pubsub_topic**:
+- Add `resource "google_pubsub_topic" "handler" { name = var.topic_name }`.
+- Wire to the function via `event_trigger` on google_cloudfunctions2_function.handler with `pubsub_topic = google_pubsub_topic.handler.id`.
+
+**google_cloud_scheduler_job (scheduled trigger)**:
+- Add `resource "google_cloud_scheduler_job" "handler"` with `schedule = var.schedule_expression` (default `"0 9 * * *"`), `time_zone = "UTC"`, `http_target { uri = google_cloudfunctions2_function.handler.service_config[0].uri, http_method = "POST", oidc_token { service_account_email = google_service_account.handler.email } }`.
+
+**google_cloud_run_v2_service**:
+- Add `resource "google_cloud_run_v2_service" "handler"` with `name = var.service_name`, `location = var.gcp_region`, a `template { containers { image = var.container_image } service_account = google_service_account.handler.email }` block.
+
+**google_storage_bucket (data bucket, distinct from source bucket)**:
+- Use a SEPARATE logical name like `data` (not `handler`) so it does not collide with the source bundle bucket. Naming exception: data buckets are the only google_* resource exempt from the "handler" naming rule.
+
+**google_secret_manager_secret**:
+- Add `resource "google_secret_manager_secret" "handler"` with `secret_id = var.secret_id`, `replication { auto {} }`. Add a `google_secret_manager_secret_iam_member` granting the function's service account `roles/secretmanager.secretAccessor`.
+
+### File-separation rule
+terraform_gcp_hcl is for ALL `google_*` resources. NEVER mix into terraform_okta_hcl or terraform_lambda_hcl. NEVER put `okta_*` or `aws_*` resources in terraform_gcp_hcl.
+
+### FORBIDDEN GCP resources (these will damage the user's project — never emit)
+- `google_project_iam_policy` — this is AUTHORITATIVE and overwrites the entire project IAM policy. Use `google_project_iam_member` (single-binding, additive) instead.
+- `google_organization_iam_policy`, `google_folder_iam_policy` — same authoritative-overwrite hazard at higher scopes.
+- `google_organization_*`, `google_folder_*` resources — out of scope unless the user EXPLICITLY says "organization" or "folder" in their request.
+- `google_project` resource — never create projects from this tool; the project already exists and is referenced via var.gcp_project_id.
+- Cloud Functions Gen1 (`google_cloudfunctions_function`, no `2`) — Gen2 only. Gen1 is deprecated.
+
+### Referencing live GCP environment resources
+When the `Live environment context` section includes `GCP live resources`, follow the same data-vs-resource decision tree as for Okta. For any GCP resource the intent references by name that appears in the live context list:
+- Generate a `data "google_*"` source to look it up.
+- Add a comment above the data source with the literal resource name from the context (e.g. `# Resolved from live environment — name: existing-handler`).
+
+Example:
+```hcl
+# Resolved from live environment — name: existing-pubsub
+data "google_pubsub_topic" "existing" {
+  name = "existing-pubsub"
+}
+```
+
+For resources NOT in the live context list, emit a `resource` block to create them.
+
+---
+
 ## SECTION C — Lambda Rules
 
 ### Handler signature (always use exactly this):
 ```python
 def handler(event, context):
+```
+
+### Cloud Function Gen2 handler signature (used when populating cloud_function_python)
+
+Cloud Functions Gen2 uses a different signature than AWS Lambda. The entry point is always named `main`:
+- HTTP trigger: `def main(request):` — request is a Flask `Request` object. Return either a string, a tuple `(body, status, headers)`, or a Flask `Response`. Always parse JSON via `request.get_json(silent=True) or {}`.
+- Pub/Sub trigger: `def main(cloud_event):` — cloud_event is a CloudEvent. Decode the message via `import base64; data = base64.b64decode(cloud_event.data["message"]["data"]).decode("utf-8")`. Return None.
+
+When `terraform_gcp_hcl` is non-empty, populate `cloud_function_python` with a complete handler. Always `import functions_framework` at the top and decorate with `@functions_framework.http` (HTTP) or `@functions_framework.cloud_event` (Pub/Sub). Add `functions-framework` to cloud_function_requirements when used.
+
+Example HTTP handler (when wired to an Okta event hook in "Okta + GCP" mode):
+```python
+import functions_framework
+import json
+
+@functions_framework.http
+def main(request):
+    if request.method == "GET":
+        # Okta verification handshake
+        challenge = request.headers.get("x-okta-verification-challenge", "")
+        return {"verification": challenge}, 200, {"Content-Type": "application/json"}
+    body = request.get_json(silent=True) or {}
+    for evt in body.get("data", {}).get("events", []):
+        print(f"event: {evt.get('eventType')}")
+    return {"status": "ok"}, 200, {"Content-Type": "application/json"}
 ```
 
 ### Lambda content rules by resource type
@@ -702,15 +872,16 @@ INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and 
 
 {user_input}"""
 
-GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for the following confirmed intent:
+GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda/Cloud Function Python for the following confirmed intent:
 
 {intent_json}
 
 OUTPUT MODE: {output_mode}
 {multi_resource_section}
 {aws_resource_section}
+{gcp_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}
 {repo_context_section}
-Return only the JSON object. Always include the four required keys and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
+Return only the JSON object. Always include the seven required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements) and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""

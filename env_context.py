@@ -2,6 +2,7 @@ from urllib.parse import urlparse
 
 from okta_client import OktaClient, OktaError
 from aws_client import AWSClient, AWSError
+from gcp_client import GcpClient, GcpError
 
 
 def _parse_org_url(url: str) -> tuple[str, str]:
@@ -60,16 +61,56 @@ def fetch_aws_context(region: str, access_key: str = "", secret_key: str = "") -
         return {"connected": False, "error": f"Unexpected error: {e}"}
 
 
+def fetch_gcp_context(project_id: str, sa_json: str = "", region: str = "us-central1") -> dict:
+    if not project_id:
+        return {"connected": False, "error": "Not configured — add GCP_PROJECT_ID to secrets."}
+    try:
+        client = GcpClient(project_id, sa_json, region)
+    except GcpError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    # Per-service partial-success: a sandbox project without billing typically
+    # has Cloud Run disabled while functions/IAM/pubsub work. Don't fail the
+    # whole context just because one of four list calls hit SERVICE_DISABLED.
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except GcpError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    result = {
+        "connected": True,
+        "project_id": project_id,
+        "region": region,
+        "functions": _safe("functions", client.list_functions),
+        "service_accounts": _safe("service_accounts", client.list_service_accounts),
+        "pubsub_topics": _safe("pubsub_topics", client.list_pubsub_topics),
+        "run_services": _safe("run_services", client.list_run_services),
+        "error": None,
+        "partial_errors": partial_errors,
+    }
+    return result
+
+
 def build_env_context(
     okta_org_url: str,
     okta_api_token: str,
     aws_region: str,
     aws_access_key: str = "",
     aws_secret_key: str = "",
+    gcp_project_id: str = "",
+    gcp_sa_json: str = "",
+    gcp_region: str = "us-central1",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
         "aws": fetch_aws_context(aws_region, aws_access_key, aws_secret_key),
+        "gcp": fetch_gcp_context(gcp_project_id, gcp_sa_json, gcp_region or "us-central1"),
     }
 
 
@@ -77,6 +118,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     """Returns a formatted string for injection into the generation prompt. Empty string if nothing connected."""
     okta = env_context.get("okta", {})
     aws = env_context.get("aws", {})
+    gcp = env_context.get("gcp", {})
     sections = []
 
     if okta.get("connected"):
@@ -116,6 +158,36 @@ def format_context_for_prompt(env_context: dict) -> str:
             lines.append("**IAM roles** (reference via data \"aws_iam_role\"):")
             for r in roles[:40]:
                 lines.append(f'  - name: "{r["name"]}"  arn: {r["arn"]}')
+        sections.append("\n".join(lines))
+
+    if gcp.get("connected"):
+        lines = ["### GCP live resources"]
+        project_id = gcp.get("project_id", "")
+        region = gcp.get("region", "us-central1")
+        if project_id:
+            lines.append("**GCP project metadata** (use these literal values in the provider block):")
+            lines.append(f'  - project: "{project_id}"')
+            lines.append(f'  - region: "{region}"')
+        fns = gcp.get("functions", [])
+        if fns:
+            lines.append("**Cloud Functions** (reference via data \"google_cloudfunctions2_function\"):")
+            for fn in fns[:40]:
+                lines.append(f'  - name: "{fn["name"]}"  uri: {fn.get("uri", "")}')
+        sas = gcp.get("service_accounts", [])
+        if sas:
+            lines.append("**Service accounts** (reference via data \"google_service_account\"):")
+            for sa in sas[:40]:
+                lines.append(f'  - email: "{sa["email"]}"  display_name: "{sa.get("display_name", "")}"')
+        topics = gcp.get("pubsub_topics", [])
+        if topics:
+            lines.append("**Pub/Sub topics** (reference via data \"google_pubsub_topic\"):")
+            for t in topics[:40]:
+                lines.append(f'  - name: "{t["name"]}"  full_name: {t["full_name"]}')
+        run_svcs = gcp.get("run_services", [])
+        if run_svcs:
+            lines.append("**Cloud Run services** (reference via data \"google_cloud_run_v2_service\"):")
+            for s in run_svcs[:40]:
+                lines.append(f'  - name: "{s["name"]}"  uri: {s.get("uri", "")}')
         sections.append("\n".join(lines))
 
     if not sections:
