@@ -3,6 +3,7 @@ import anthropic
 from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 from .parser import _extract_json
 from .okta_brand_sanitizer import sanitize_okta_brand_refs
+from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
@@ -178,5 +179,10 @@ def generate_all(
     # — provider v4.x does not support them and apply fails. Runs in every
     # generate_all caller, including qa_runner, not just app.py's refinement loop.
     result = sanitize_okta_brand_refs(result)
+
+    # Strip hallucinated SCIM/provisioning blocks from okta_app_saml /
+    # okta_app_oauth resources; provider v4.x has no SCIM support; SCIM is
+    # UI-only. Inserts a NOTE comment pointing to the Admin Console.
+    result = sanitize_okta_app_scim_refs(result)
 
     return result
