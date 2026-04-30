@@ -1098,7 +1098,18 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if gcp_hcl.strip():
         if 'provider "google"' not in gcp_hcl:
             issues.append('terraform_gcp_hcl missing `provider "google"` block')
-        if 'required_providers' not in gcp_hcl:
+        # In Okta + GCP composite mode, `merge_terraform_blocks` intentionally
+        # moves required_providers entries into terraform_okta_hcl and strips
+        # the entire `terraform {}` block from terraform_gcp_hcl. Skip this
+        # check there; check the okta side instead.
+        if output_mode == "Okta + GCP":
+            okta_hcl_check = outputs.get("terraform_okta_hcl", "")
+            if 'required_providers' not in okta_hcl_check or 'google = {' not in okta_hcl_check:
+                issues.append(
+                    "Okta+GCP composite: terraform_okta_hcl must declare both okta and google "
+                    "in required_providers after merge_terraform_blocks runs"
+                )
+        elif 'required_providers' not in gcp_hcl:
             issues.append("terraform_gcp_hcl missing `required_providers` block")
 
         # Forbidden GCP resources (auth-overwriting IAM policies, Gen1 functions)

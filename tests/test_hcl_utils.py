@@ -13,7 +13,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
+from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent, merge_terraform_blocks
 
 
 CANONICAL_HCL_WITH_BOILERPLATE = textwrap.dedent('''\
@@ -298,6 +298,118 @@ def test_derive_basename_none_resource_name():
     assert derive_basename_from_intent({"resource_name": None}) == ""
 
 
+# merge_terraform_blocks tests
+
+_OKTA_HCL = textwrap.dedent('''\
+    terraform {
+      required_providers {
+        okta = {
+          source  = "okta/okta"
+          version = "~> 4.0"
+        }
+      }
+    }
+
+    provider "okta" {
+      org_name  = var.okta_org_name
+      api_token = var.okta_api_token
+    }
+
+    resource "okta_event_hook" "x" {
+      name = "X"
+    }
+    ''')
+
+_GCP_HCL = textwrap.dedent('''\
+    terraform {
+      required_providers {
+        google = {
+          source  = "hashicorp/google"
+          version = "~> 6.0"
+        }
+      }
+    }
+
+    provider "google" {
+      project = var.gcp_project_id
+      region  = var.gcp_region
+    }
+
+    resource "google_cloudfunctions2_function" "handler" {
+      name = "handler"
+    }
+    ''')
+
+
+def test_merge_adds_google_to_okta_required_providers():
+    new_okta, _ = merge_terraform_blocks(_OKTA_HCL, _GCP_HCL)
+    assert 'okta = {' in new_okta
+    assert 'google = {' in new_okta
+    assert 'source  = "hashicorp/google"' in new_okta or 'source = "hashicorp/google"' in new_okta
+
+
+def test_merge_strips_terraform_block_from_secondary():
+    _, new_gcp = merge_terraform_blocks(_OKTA_HCL, _GCP_HCL)
+    assert 'terraform {' not in new_gcp
+    assert 'provider "google"' in new_gcp, 'provider block must remain in gcp'
+    assert 'resource "google_cloudfunctions2_function"' in new_gcp
+
+
+def test_merge_idempotent():
+    once_okta, once_gcp = merge_terraform_blocks(_OKTA_HCL, _GCP_HCL)
+    twice_okta, twice_gcp = merge_terraform_blocks(once_okta, once_gcp)
+    assert once_okta == twice_okta, 'merge must be idempotent on okta side'
+    assert once_gcp == twice_gcp, 'merge must be idempotent on gcp side'
+
+
+def test_merge_no_op_when_secondary_lacks_terraform_block():
+    no_terraform_gcp = 'provider "google" {\n  project = "x"\n}\n'
+    new_okta, new_gcp = merge_terraform_blocks(_OKTA_HCL, no_terraform_gcp)
+    assert new_okta == _OKTA_HCL
+    assert new_gcp == no_terraform_gcp
+
+
+def test_merge_no_op_when_primary_lacks_terraform_block():
+    no_terraform_okta = 'resource "okta_group" "x" {\n  name = "X"\n}\n'
+    new_okta, new_gcp = merge_terraform_blocks(no_terraform_okta, _GCP_HCL)
+    assert new_okta == no_terraform_okta
+    assert new_gcp == _GCP_HCL
+
+
+def test_merge_no_op_when_either_input_empty():
+    a, b = merge_terraform_blocks('', _GCP_HCL)
+    assert a == '' and b == _GCP_HCL
+    a, b = merge_terraform_blocks(_OKTA_HCL, '')
+    assert a == _OKTA_HCL and b == ''
+
+
+def test_merge_does_not_duplicate_provider_already_in_primary():
+    okta_with_google = textwrap.dedent('''\
+        terraform {
+          required_providers {
+            okta = {
+              source  = "okta/okta"
+              version = "~> 4.0"
+            }
+            google = {
+              source  = "hashicorp/google"
+              version = "~> 6.0"
+            }
+          }
+        }
+        ''')
+    new_primary, new_secondary = merge_terraform_blocks(okta_with_google, _GCP_HCL)
+    # google should appear exactly once in required_providers
+    assert new_primary.count('google = {') == 1, f'expected one google entry, got: {new_primary}'
+    assert 'terraform {' not in new_secondary, 'gcp terraform block still gets stripped'
+
+
+def test_merge_preserves_resources_in_primary():
+    new_okta, _ = merge_terraform_blocks(_OKTA_HCL, _GCP_HCL)
+    assert 'resource "okta_event_hook" "x"' in new_okta
+    assert 'provider "okta"' in new_okta
+
+
 _TESTS = [
     test_strips_terraform_block,
     test_strips_provider_okta_block,
@@ -327,6 +439,14 @@ _TESTS = [
     test_derive_basename_missing_resource_name,
     test_derive_basename_empty_resource_name,
     test_derive_basename_none_resource_name,
+    test_merge_adds_google_to_okta_required_providers,
+    test_merge_strips_terraform_block_from_secondary,
+    test_merge_idempotent,
+    test_merge_no_op_when_secondary_lacks_terraform_block,
+    test_merge_no_op_when_primary_lacks_terraform_block,
+    test_merge_no_op_when_either_input_empty,
+    test_merge_does_not_duplicate_provider_already_in_primary,
+    test_merge_preserves_resources_in_primary,
 ]
 
 

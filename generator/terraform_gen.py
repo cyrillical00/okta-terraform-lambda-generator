@@ -4,6 +4,7 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 from .parser import _extract_json
 from .okta_brand_sanitizer import sanitize_okta_brand_refs
 from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
+from .hcl_utils import merge_terraform_blocks
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
@@ -184,5 +185,19 @@ def generate_all(
     # okta_app_oauth resources; provider v4.x has no SCIM support; SCIM is
     # UI-only. Inserts a NOTE comment pointing to the Admin Console.
     result = sanitize_okta_app_scim_refs(result)
+
+    # In Okta + GCP composite mode, both terraform_okta_hcl and
+    # terraform_gcp_hcl independently emit a `terraform { required_providers {} }`
+    # block. When the user saves them as two .tf files in the same module,
+    # terraform init fails with "Duplicate required providers configuration".
+    # Merge the gcp required_providers entries into okta and strip the
+    # terraform block from gcp.
+    if output_mode == "Okta + GCP":
+        merged_okta, merged_gcp = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_gcp_hcl", ""),
+        )
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_gcp_hcl"] = merged_gcp
 
     return result
