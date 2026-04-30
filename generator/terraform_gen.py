@@ -186,12 +186,12 @@ def generate_all(
     # UI-only. Inserts a NOTE comment pointing to the Admin Console.
     result = sanitize_okta_app_scim_refs(result)
 
-    # In Okta + GCP composite mode, both terraform_okta_hcl and
-    # terraform_gcp_hcl independently emit a `terraform { required_providers {} }`
-    # block. When the user saves them as two .tf files in the same module,
+    # Composite-mode duplicate-providers fix. terraform_okta_hcl always emits
+    # its own `terraform { required_providers {} }` block; the lambda and gcp
+    # outputs emit theirs too. When saved as separate .tf files in one module,
     # terraform init fails with "Duplicate required providers configuration".
-    # Merge the gcp required_providers entries into okta and strip the
-    # terraform block from gcp.
+    # Merge the secondary's required_providers entries into okta and strip the
+    # secondary's terraform block.
     if output_mode == "Okta + GCP":
         merged_okta, merged_gcp = merge_terraform_blocks(
             result.get("terraform_okta_hcl", ""),
@@ -199,5 +199,12 @@ def generate_all(
         )
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_gcp_hcl"] = merged_gcp
+    elif output_mode == "Both":
+        merged_okta, merged_lambda = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_lambda_hcl", ""),
+        )
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_lambda_hcl"] = merged_lambda
 
     return result

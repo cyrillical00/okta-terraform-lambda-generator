@@ -131,7 +131,7 @@ FORBIDDEN_GROUP_RULE_ATTRS = [
     "urn:okta:expression:group:pred:expression",
 ]
 
-FORBIDDEN_EVENT_HOOK_ATTRS = ['"events"', '"filters"', '"auth_type"']
+FORBIDDEN_EVENT_HOOK_ATTRS = ['events_filter', '"filters"', '"auth_type"']
 
 # Hallucinated provisioning block on okta_app_saml / okta_app_oauth.
 # SCIM provisioning on app resources is NOT supported by the v4.x Okta provider —
@@ -783,8 +783,12 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 issues.append(f"Forbidden event hook attribute {f}")
         if "channel" not in non_comment_okta_hcl:
             issues.append("okta_event_hook missing 'channel' block")
-        if "events_filter" not in non_comment_okta_hcl:
-            issues.append("okta_event_hook missing 'events_filter' block")
+        # v4.x schema: `events = [...]` is a flat set attribute (not the
+        # legacy `events_filter = { items = [...] }` envelope). Match the
+        # attribute via regex anchored at line start so substrings inside
+        # other constructs do not satisfy the check.
+        if not re.search(r'^\s*events\s*=', non_comment_okta_hcl, re.MULTILINE):
+            issues.append("okta_event_hook missing 'events' attribute (v4.x schema)")
 
     # ── 4. Group membership scenarios must include group.user_membership.* ──
     is_group_scenario = any(kw in tc.prompt.lower() for kw in

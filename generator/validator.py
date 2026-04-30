@@ -236,10 +236,13 @@ Return ONLY a JSON object with exactly these four keys:
   "lambda_requirements": "..."
 }
 
-## Canonical okta_event_hook schema (use this EXACTLY when fixing event hook issues)
+## Canonical okta_event_hook schema (okta/okta v4.x, locked at 4.20.0; use EXACTLY this shape when fixing event hook issues)
 
-Only these five top-level attributes are valid for okta_event_hook: name, status, channel, events_filter, headers.
-NEVER use: events, filters, auth_type, url, eventFilters, or any other attribute name.
+Valid top-level fields: name (attr), status (attr), channel (map(string) attr), events (set(string) attr), headers (REPEATABLE BLOCK), auth (map(string) attr, optional).
+NEVER use: events_filter, filters, auth_type, url, eventFilters, or any other attribute name. The v4.x provider rejects them with "Unsupported argument".
+
+`events` is a flat set of event-type strings; do NOT wrap it in `events_filter = { type, items }`.
+`headers` is a block (one block per header); do NOT write `headers = [{...}]` as an attribute list.
 
 ```hcl
 resource "okta_event_hook" "example" {
@@ -252,15 +255,12 @@ resource "okta_event_hook" "example" {
     type    = "HTTP"
   }
 
-  events_filter = {
-    type  = "EVENT_TYPE"
-    items = ["group.user_membership.add"]
-  }
+  events = ["group.user_membership.add"]
 
-  headers = [{
+  headers {
     key   = "Authorization"
     value = "Bearer ${var.event_hook_auth_token}"
-  }]
+  }
 }
 ```
 

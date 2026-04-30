@@ -266,7 +266,7 @@ For group-scoped attribute statements, set `filter_type` and `filter_value` insi
 - For okta_app_group_assignment: use `app_id` and `group_id`. To assign multiple groups, create one `okta_app_group_assignment` resource per group — there is no bulk assignment resource. Do NOT use `okta_app_group_assignments` (plural) as a separate resource type.
 - For okta_group: include name and description
 - For okta_group_rule: see SECTION G for the EXACT schema. The most common hallucinations to avoid: `group_ids` is NOT a real attribute (use `group_assignments`); bare `expression` is NOT a real attribute (use `expression_value`); there is NO top-level `type` attribute; `expression_type` MUST be `urn:okta:expression:1.0` (no other value is valid). SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
-- For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
+- For okta_event_hook: use EXACTLY this schema (okta/okta v4.x, locked at 4.20.0). No other attribute names are valid:
 
 ```hcl
 resource "okta_event_hook" "example" {
@@ -279,20 +279,17 @@ resource "okta_event_hook" "example" {
     type    = "HTTP"
   }
 
-  events_filter = {
-    type  = "EVENT_TYPE"
-    items = ["group.user_membership.add"]
-  }
+  events = ["group.user_membership.add"]
 
-  headers = [{
+  headers {
     key   = "Authorization"
     value = "Bearer ${var.event_hook_auth_token}"
-  }]
+  }
 }
 
 variable "event_hook_url" {
   type        = string
-  description = "HTTPS endpoint URL — use the aws_lambda_function_url output from terraform_lambda_hcl"
+  description = "HTTPS endpoint URL. Use the aws_lambda_function_url output from terraform_lambda_hcl."
 }
 
 variable "event_hook_auth_token" {
@@ -302,12 +299,17 @@ variable "event_hook_auth_token" {
 }
 ```
 
-CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid.
+CRITICAL SCHEMA RULES (v4.x provider, verified against the live schema):
+- `events` is a flat `set(string)` attribute. Do NOT wrap it in `events_filter = { type = "EVENT_TYPE", items = [...] }`; that envelope does not exist in v4 and `terraform validate` rejects it.
+- `headers` is a repeatable BLOCK (one block per header), not an attribute list. Do NOT write `headers = [{...}]`; that is wrong. Write `headers { key = "..." value = "..." }`, repeated as needed.
+- `channel` is a `map(string)` attribute (so `channel = { version, uri, type }` is correct as written above).
 
-PARSER OVERRIDE — `intent.attributes.events`, `intent.attributes.event_type`, and any other parser-supplied event names are UNRELIABLE and FREQUENTLY HALLUCINATED (the parser has been observed emitting fake names like `user.lifecycle.change_password`, `user.lifecycle.update`, etc., none of which are real Okta events). IGNORE these fields completely. Always derive the event type from `intent.resource_name`, `intent.notes`, and the original natural-language description by applying the EVENT TYPE SELECTION decision tree below. The decision tree is the only authoritative source for the contents of `events_filter.items`.
+CRITICAL: Do NOT use `events_filter`, `filters`, `auth_type`, or `url`. Only `name`, `status`, `channel`, `events`, `headers`, and `auth` are valid attributes / blocks on okta_event_hook.
+
+PARSER OVERRIDE — `intent.attributes.events`, `intent.attributes.event_type`, and any other parser-supplied event names are UNRELIABLE and FREQUENTLY HALLUCINATED (the parser has been observed emitting fake names like `user.lifecycle.change_password`, `user.lifecycle.update`, etc., none of which are real Okta events). IGNORE these fields completely. Always derive the event type from `intent.resource_name`, `intent.notes`, and the original natural-language description by applying the EVENT TYPE SELECTION decision tree below. The decision tree is the only authoritative source for the contents of the `events` set.
 
 EVENT TYPE SELECTION — follow this decision tree before choosing items:
-1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> MUST emit exactly `items = ["group.user_membership.add"]`; any other event type for this prompt class is a hallucination. STOP. Do not also include user.lifecycle.create or any other event alongside it. CRITICAL: do not let the SEMANTIC PURPOSE of the group name override the trigger. "Offboarding group", "Terminated group", "Suspended group" are just group NAMES; if the prompt says the user is "added to" one of them, the trigger is still group.user_membership.add. Do NOT switch to user.lifecycle.deactivate just because the group is named "Offboarding".
+1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> MUST emit exactly `events = ["group.user_membership.add"]`; any other event type for this prompt class is a hallucination. STOP. Do not also include user.lifecycle.create or any other event alongside it. CRITICAL: do not let the SEMANTIC PURPOSE of the group name override the trigger. "Offboarding group", "Terminated group", "Suspended group" are just group NAMES; if the prompt says the user is "added to" one of them, the trigger is still group.user_membership.add. Do NOT switch to user.lifecycle.deactivate just because the group is named "Offboarding".
 2. Does it involve a user being removed from a group? -> `group.user_membership.remove`. STOP.
 3. Does it involve user deactivation, offboarding, or suspension? -> `user.lifecycle.deactivate`.
 4. Does it involve a new user account being created? -> `user.lifecycle.create`.
@@ -361,7 +363,7 @@ PASSWORD variants (use user.account.update_password):
 user.lifecycle.create fires ONLY when a brand-new Okta account is provisioned for the first time — it has NOTHING to do with group membership changes. Never use it for group join/leave events.
 
 EXAMPLE for "Set up a Lambda that fires when a user is added to the Offboarding group and sends an SNS notification":
-  okta_event_hook.events_filter.items MUST be exactly `["group.user_membership.add"]`.
+  okta_event_hook.events MUST be exactly `["group.user_membership.add"]`.
   NOT user.lifecycle.deactivate (the group's purpose does not change the trigger).
   NOT user.lifecycle.create. NOT user.account.update_profile. NOT group.membership.update.
   The phrase "added to a group" maps to exactly one event type: group.user_membership.add.
