@@ -44,7 +44,7 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
         hint_section = f"\n\nResource types explicitly selected by the user: {', '.join(resource_type_hints)}. Use these to inform resource_type selection — prefer one of these types over guessing."
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=[
             {
                 "type": "text",

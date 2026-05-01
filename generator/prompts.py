@@ -384,7 +384,7 @@ output "lambda_function_url" {
 ```
 - For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
 - For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
-- For `okta_factor`: include `provider_id` (e.g. "GOOGLE", "OKTA", "DUO") and `status` ("ACTIVE"). CRITICAL: Do NOT wrap in an `okta_policy` resource — `okta_factor` is a standalone org-level enrollment setting. Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
+- For `okta_factor`: include `provider_id` (lowercase canonical name from the v4 schema list in SECTION G; e.g. `okta_push`, `google_otp`, `duo`, `fido_webauthn`, `yubikey_token`) and `active = true` (bool, optional, default true). CRITICAL: the v4.x provider does NOT accept a `status` attribute; emit `active = true` instead. The uppercase forms ("GOOGLE", "OKTA", "DUO") are also rejected; v4 wants lowercase canonical names. Do NOT wrap in an `okta_policy` resource (okta_factor is a standalone org-level enrollment setting). Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
 - For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo), gateways (list of objects with type="CIDR" and value=var.*) for IP zones; for DYNAMIC zones use asns or dynamic_locations instead of gateways
 - For okta_brand: include name, agree_to_custom_privacy_policy (bool). Optionally include custom_privacy_policy_url, remove_powered_by_okta (bool). Note: logo upload is not supported in HCL — add an inline comment directing the user to do it in the Okta Admin Console
 - For okta_email_customization: include brand_id (reference var.brand_id), template_name (e.g. "UserActivation", "ForgotPassword", "PasswordChanged"), language, is_default (bool), subject, body. The body must be valid Okta email template HTML with ${} variable placeholders escaped as $${} in HCL heredoc strings
@@ -522,15 +522,140 @@ For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "goog
 **google_secret_manager_secret**:
 - Add `resource "google_secret_manager_secret" "handler"` with `secret_id = var.secret_id`, `replication { auto {} }`. Add a `google_secret_manager_secret_iam_member` granting the function's service account `roles/secretmanager.secretAccessor`.
 
+**google_project (project provisioning, only when the user explicitly asks to create a new project)**:
+- Add `resource "google_project" "handler"` with `name`, `project_id` (snake_case derived from intent.resource_name; this is the literal project ID the user typed), `org_id = var.gcp_org_id` (or `folder_id = var.gcp_folder_id` if the user mentions a folder), `billing_account = var.gcp_billing_account`, and an optional `labels` map.
+- Declare `variable "gcp_org_id"` (string, description "GCP organization ID, e.g. '901173893684'") and `variable "gcp_billing_account"` (string, description "Billing account ID in the form 'XXXXXX-XXXXXX-XXXXXX'"). These are required at apply time.
+- CRITICAL provider-cycle rule: in the `provider "google"` block, `project` MUST be set to `var.gcp_project_id` (a STRING variable), NEVER to `google_project.handler.project_id` (a resource attribute). Setting `project = google_project.handler.project_id` creates a "Cycle: google_project.handler, provider" error at terraform validate time, because the provider needs to be configured before any resource can be created (including the project itself).
+- Set `var.gcp_project_id` to the SAME string the project resource uses for its `project_id`. The user types the project_id once at apply time (`-var=gcp_project_id=gemini-sandbox`), and that value goes into both places. The provider then targets the new project once it exists.
+- For OTHER resources inside the new project (SAs, secrets, etc.), set their `project = google_project.handler.project_id` so terraform infers the dependency on project creation. This is fine because those resources are not referenced by the provider config.
+- For `google_project_service`: also use `project = google_project.handler.project_id` and `depends_on = [google_project.handler]`. The cycle rule does not apply here because `google_project_service` is a normal resource, not the provider.
+- Apply requires org-admin perms (`roles/resourcemanager.projectCreator` on the org or folder, plus `roles/billing.user` on the billing account). Surface this in an inline `# Apply note:` comment near the resource.
+
+**google_project_service (API enablement)**:
+- Add one `resource "google_project_service" "<api_short_name>"` per API to enable. Use `service = "<service>.googleapis.com"`, `disable_on_destroy = false`. Common services: `aiplatform.googleapis.com` (Vertex AI / Gemini), `cloudbuild.googleapis.com`, `cloudfunctions.googleapis.com`, `run.googleapis.com`, `apikeys.googleapis.com`, `secretmanager.googleapis.com`, `storage.googleapis.com`, `iam.googleapis.com`, `artifactregistry.googleapis.com`.
+- Always set `disable_on_destroy = false` so a `terraform destroy` does not yank APIs the user might still need elsewhere.
+- When `google_project` is also being created, add `depends_on = [google_project.handler]` to each `google_project_service` so APIs enable on the newly-created project, not the bootstrap one.
+- Logical resource label is the API's short name (e.g. `vertex_ai`, `cloudbuild`, `apikeys`), NOT `handler` — these are the only google_* resources besides the data bucket exempt from the handler-naming rule.
+
+**google_apikeys_key (API key with restrictions)**:
+- Add `resource "google_apikeys_key" "handler"` with `name = "<key-name>"`, `display_name`, and a `restrictions { api_targets { service = "<service>.googleapis.com" } }` block scoping the key to a single API. Multiple `api_targets` blocks allowed for multi-API keys, but prefer one key per API.
+- ALWAYS emit a `output "api_key" { value = google_apikeys_key.handler.key_string, sensitive = true, description = "..." }` — the key string is the credential and must be marked sensitive.
+- Add `depends_on = [google_project_service.apikeys]` so the API Keys API is enabled before the key is minted.
+
+**google_service_account_iam_member (SA-level grants for impersonation, etc.)**:
+- Use this for granting a USER or another SERVICE ACCOUNT permissions ON a service account (e.g. `roles/iam.serviceAccountUser` to allow impersonation, `roles/iam.serviceAccountTokenCreator` for token minting).
+- Shape: `service_account_id = google_service_account.handler.name`, `role = "roles/iam.serviceAccountUser"`, `member = "user:${var.user_email}"` (or `"serviceAccount:..."`).
+- This is the additive, member-level binding; NEVER use `google_service_account_iam_policy` (authoritative; overwrites all bindings on the SA).
+
+**google_project_iam_member (project-level role grants for an SA or user)**:
+- Use this for granting a principal a role at the project scope (e.g. SA gets `roles/aiplatform.user` to call Vertex AI).
+- Shape: `project = var.gcp_project_id` (or `google_project.handler.project_id`), `role = "roles/<role>"`, `member = "serviceAccount:..."` or `"user:..."`.
+- Additive, member-level. NEVER use `google_project_iam_policy` or `google_project_iam_binding` (both are authoritative-set).
+
+### Worked example: project + SA + API key + Vertex AI enable + impersonation grant
+
+For prompts like "create a new GCP project, a service account, an API key, enable Gemini / Vertex AI, and grant my user serviceAccountUser on the SA":
+
+```hcl
+# CRITICAL: provider.project is a STRING var (not a resource attribute) to avoid
+# a "Cycle: google_project.handler, provider" error. Pass the same value as
+# google_project.project_id at apply time:  -var=gcp_project_id=gemini-sandbox
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.gcp_region
+}
+
+# Apply note: requires roles/resourcemanager.projectCreator on var.gcp_org_id
+# and roles/billing.user on var.gcp_billing_account.
+resource "google_project" "handler" {
+  name            = "Gemini Sandbox"
+  project_id      = var.gcp_project_id
+  org_id          = var.gcp_org_id
+  billing_account = var.gcp_billing_account
+  labels          = { managed_by = "terraform", purpose = "gemini-sandbox" }
+}
+
+resource "google_project_service" "vertex_ai" {
+  project            = google_project.handler.project_id
+  service            = "aiplatform.googleapis.com"
+  disable_on_destroy = false
+  depends_on         = [google_project.handler]
+}
+
+resource "google_project_service" "apikeys" {
+  project            = google_project.handler.project_id
+  service            = "apikeys.googleapis.com"
+  disable_on_destroy = false
+  depends_on         = [google_project.handler]
+}
+
+resource "google_service_account" "handler" {
+  project      = google_project.handler.project_id
+  account_id   = "gemini-runner"
+  display_name = "Gemini Runner Service Account"
+}
+
+resource "google_apikeys_key" "handler" {
+  name         = "gemini-sandbox-key"
+  display_name = "Gemini Sandbox API Key"
+  project      = google_project.handler.project_id
+  restrictions {
+    api_targets {
+      service = "aiplatform.googleapis.com"
+    }
+  }
+  depends_on = [google_project_service.apikeys]
+}
+
+resource "google_service_account_iam_member" "user_impersonate" {
+  service_account_id = google_service_account.handler.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "user:${var.user_email}"
+}
+
+resource "google_project_iam_member" "sa_vertex_user" {
+  project = google_project.handler.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.handler.email}"
+}
+
+variable "gcp_org_id" {
+  type        = string
+  description = "GCP organization ID (e.g. 901173893684)"
+}
+
+variable "gcp_billing_account" {
+  type        = string
+  description = "Billing account ID in the form XXXXXX-XXXXXX-XXXXXX"
+}
+
+variable "user_email" {
+  type        = string
+  description = "User email to grant serviceAccountUser on the new SA"
+}
+
+output "service_account_email" {
+  value = google_service_account.handler.email
+}
+
+output "api_key" {
+  value       = google_apikeys_key.handler.key_string
+  sensitive   = true
+  description = "Vertex AI API key (sensitive)"
+}
+```
+
 ### File-separation rule
 terraform_gcp_hcl is for ALL `google_*` resources. NEVER mix into terraform_okta_hcl or terraform_lambda_hcl. NEVER put `okta_*` or `aws_*` resources in terraform_gcp_hcl.
 
-### FORBIDDEN GCP resources (these will damage the user's project — never emit)
-- `google_project_iam_policy` — this is AUTHORITATIVE and overwrites the entire project IAM policy. Use `google_project_iam_member` (single-binding, additive) instead.
-- `google_organization_iam_policy`, `google_folder_iam_policy` — same authoritative-overwrite hazard at higher scopes.
-- `google_organization_*`, `google_folder_*` resources — out of scope unless the user EXPLICITLY says "organization" or "folder" in their request.
-- `google_project` resource — never create projects from this tool; the project already exists and is referenced via var.gcp_project_id.
-- Cloud Functions Gen1 (`google_cloudfunctions_function`, no `2`) — Gen2 only. Gen1 is deprecated.
+### FORBIDDEN GCP resources (these will damage the user's project; never emit)
+- `google_project_iam_policy`: this is AUTHORITATIVE and overwrites the entire project IAM policy. Use `google_project_iam_member` (single-binding, additive) instead.
+- `google_organization_iam_policy`, `google_folder_iam_policy`: same authoritative-overwrite hazard at higher scopes.
+- `google_organization_*`, `google_folder_*` resources: out of scope unless the user EXPLICITLY says "organization" or "folder" in their request.
+- `google_service_account_iam_policy`, `google_service_account_iam_binding`: authoritative; overwrite all bindings on the SA. Use `google_service_account_iam_member` (additive) instead.
+- Cloud Functions Gen1 (`google_cloudfunctions_function`, no `2`): Gen2 only. Gen1 is deprecated.
+
+`google_project` is NO LONGER forbidden as of Phase 6: when the user explicitly asks to create a new project (e.g. "create a new GCP project called X under my organization"), emit it per the worked example above. The default for prompts that do NOT ask for a new project is unchanged: assume the project exists and reference it via `var.gcp_project_id`.
 
 ### Referencing live GCP environment resources
 When the `Live environment context` section includes `GCP live resources`, follow the same data-vs-resource decision tree as for Okta. For any GCP resource the intent references by name that appears in the live context list:
@@ -849,11 +974,16 @@ Optional: access_token_lifetime_minutes (int), refresh_token_lifetime_minutes (i
   refresh_token_window_minutes (int), inline_hook_id
 FORBIDDEN: rule_id, token_lifetime, allowed_clients
 
-**okta_factor**
-Required: provider_id (string: "GOOGLE","OKTA","DUO","FIDO","RSA","SYMANTEC","YUBICO"),
-  status ("ACTIVE"|"INACTIVE")
-Optional: active (bool — deprecated, prefer status)
-FORBIDDEN: factor_type (not a top-level attribute), okta_policy, policy_id
+**okta_factor** (okta/okta v4.x, locked at 4.20.0)
+Required: provider_id (string, lowercase canonical name; allowed values:
+  "okta_otp", "okta_push", "okta_question", "okta_sms", "okta_call",
+  "okta_email", "okta_password", "google_otp", "duo", "fido_u2f",
+  "fido_webauthn", "yubikey_token", "rsa_token", "symantec_vip", "hotp")
+Optional: active (bool, default true)
+FORBIDDEN: status (does NOT exist in v4.x; the v3-era "status" attribute was
+  replaced by "active"; emitting status fails terraform validate with
+  "Unsupported argument"); factor_type (not a top-level attribute);
+  okta_policy, policy_id (okta_factor is a standalone org-level resource)
 
 **okta_network_zone**
 Required: name, type ("IP"|"DYNAMIC")

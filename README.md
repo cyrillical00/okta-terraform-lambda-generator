@@ -111,7 +111,7 @@ A real Cloud Functions Gen2 deployment also requires billing linked on the targe
 
 ## QA suite
 
-`qa_runner.py` ships a 132-case live regression suite covering every supported resource and output mode, plus a separate `terraform validate` harness under `_tftool/validate/`. See `TESTS.md` for the full breakdown and how to run individual cases.
+`qa_runner.py` ships a 133-case live regression suite covering every supported resource and output mode, plus a separate `terraform validate` harness under `_tftool/validate/`. See `TESTS.md` for the full breakdown and how to run individual cases.
 
 ```bash
 # full suite (~$1.50 live, ~7 min)

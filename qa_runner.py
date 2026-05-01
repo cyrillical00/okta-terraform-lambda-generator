@@ -381,6 +381,29 @@ TEST_CASES = [
              expected_resource_type="okta_auth_server",
              must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim"]),
 
+    # ── Complex multi-resource Okta workflows (added 2026-04-29) ──────────────
+    TestCase("COMP09",
+             "Set up a complete onboarding workflow: create groups for Engineering, Sales, and HR. Create group rules that auto-assign users to each group based on their department attribute. Create a SAML app for Workday with attribute statements for department and manager, and assign all three groups to it. Add an event hook that fires when a new user is created in Okta and notifies a Lambda for downstream provisioning.",
+             okta_types=["okta_group", "okta_group_rule", "okta_app_saml", "okta_event_hook"],
+             aws_types=["aws_lambda_function"],
+             must_contain=["okta_group", "okta_group_rule", "okta_app_saml", "okta_event_hook",
+                           "user.lifecycle.create", "okta_app_group_assignment"],
+             notes="Composite onboarding: 3 groups + 3 rules + SAML app + 3 assignments + event hook + Lambda"),
+    TestCase("COMP10",
+             "Set up a custom authorization server for our internal API. Define three scopes: read:data, write:data, and admin:data. Add two custom claims: a groups claim sourced from user.groups and a role claim sourced from user.profile.role. Create an access policy that allows read:data to all authenticated users but restricts write:data and admin:data to users in the API-Admins group. Create two OAuth apps: a public mobile app that requests only read:data and a confidential web app that requests all three scopes.",
+             okta_types=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
+                         "okta_auth_server_policy", "okta_auth_server_policy_rule", "okta_app_oauth"],
+             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
+                           "okta_auth_server_policy", "okta_app_oauth", "read:data", "write:data", "admin:data"],
+             notes="Zero-trust API access: full OAuth machinery (auth server + 3 scopes + 2 claims + policy + rule + 2 apps)"),
+    TestCase("COMP11",
+             "Build an offboarding pipeline: create a Terminated group; a group rule that adds users with employmentStatus equal to Terminated to that group; an event hook that fires on the user being added to the Terminated group; and a Lambda that calls the Okta API to deactivate the user, sends an SNS alert to the security team, and revokes their active sessions. Also enable Okta Verify push notifications as an MFA factor for the org.",
+             okta_types=["okta_group", "okta_group_rule", "okta_event_hook", "okta_factor"],
+             aws_types=["aws_lambda_function", "aws_sns_topic"],
+             must_contain=["okta_group", "okta_group_rule", "okta_event_hook", "okta_factor",
+                           "group.user_membership.add"],
+             notes="Offboarding pipeline: group + rule + event hook on group.user_membership.add + Lambda + SNS + Okta Verify factor"),
+
     # ── optional_tf collision tests (Both mode) ───────────────────────────────
     TestCase("OPT01",
              "When a user is removed from the Contractors group, deactivate their account. Also run a daily Lambda sweep for contractors whose end date has passed.",
@@ -523,7 +546,7 @@ TEST_CASES = [
     # ── okta_factor additional types ──────────────────────────────────────────
     TestCase("MFA03", "Enable Duo Security as a supported MFA factor for the org",
              expected_resource_type="okta_factor",
-             must_contain=["okta_factor", "DUO"],
+             must_contain=["okta_factor", "duo"],
              must_not_contain_okta=["okta_policy"]),
     TestCase("MFA04", "Enable FIDO2 WebAuthn as an MFA factor",
              expected_resource_type="okta_factor",
@@ -725,6 +748,57 @@ TEST_CASES = [
                  'resource "google_cloudfunctions2_function" "handler"',
              ],
              notes="Okta + GCP composite — Okta event hook with channel.uri pointing at the Cloud Function URI, no AWS Lambda"),
+
+    # ── Complex multi-resource GCP workflows (added 2026-04-29) ───────────────
+    TestCase("GCPX01",
+             "Create a Pub/Sub topic called orders that fans out to two Cloud Functions: one called order-processor that records the order to a database, and one called order-notifier that sends an email confirmation to the customer. Both functions must be triggered by the same topic.",
+             gcp_types=["google_cloudfunctions2_function", "google_pubsub_topic"],
+             must_contain_gcp=[
+                 'resource "google_pubsub_topic"',
+                 'resource "google_cloudfunctions2_function"',
+                 "google.cloud.pubsub.topic.v1.messagePublished",
+                 "event_trigger",
+             ],
+             must_not_contain_gcp=["google_cloudfunctions_function"],
+             notes="Pub/Sub fan-out: 1 topic, 2 subscriber functions. Both functions must wire event_trigger to the same topic."),
+    TestCase("GCPX02",
+             "Create a Cloud Storage bucket called document-uploads. When a new object is finalized in the bucket, fire a Cloud Function called document-processor that reads the object, extracts metadata, and writes a JSON summary to a separate metadata bucket.",
+             gcp_types=["google_cloudfunctions2_function", "google_storage_bucket"],
+             must_contain_gcp=[
+                 'resource "google_storage_bucket"',
+                 'resource "google_cloudfunctions2_function"',
+                 "google.cloud.storage.object.v1.finalized",
+                 "event_trigger",
+             ],
+             must_not_contain_gcp=["google_cloudfunctions_function"],
+             notes="GCS object-finalize trigger: bucket + Cloud Function that fires on new object upload."),
+    TestCase("GCPX03",
+             "Create a Cloud Function that reads an API key from Secret Manager at runtime and calls an external weather API to return the forecast for a given city. The function's service account must have only secretmanager.secretAccessor on that specific secret.",
+             gcp_types=["google_cloudfunctions2_function", "google_secret_manager_secret"],
+             must_contain_gcp=[
+                 'resource "google_secret_manager_secret"',
+                 'resource "google_cloudfunctions2_function"',
+                 "roles/secretmanager.secretAccessor",
+             ],
+             must_not_contain_gcp=["google_project_iam_policy"],
+             notes="Secret Manager + Cloud Function: SA reads secret at runtime via least-privilege IAM binding (member, not policy)."),
+    TestCase("GCPX04",
+             "Create a new GCP project called gemini-sandbox under my organization, create a service account called gemini-runner inside it, mint an API key for that project, enable the Gemini / Vertex AI API, and grant my user (oleg@example.com) the serviceAccountUser role on the gemini-runner SA so I can impersonate it locally.",
+             gcp_types=["google_project", "google_service_account",
+                        "google_apikeys_key", "google_project_service",
+                        "google_service_account_iam_member"],
+             must_contain_gcp=[
+                 'resource "google_project"',
+                 'resource "google_service_account"',
+                 'resource "google_apikeys_key"',
+                 "aiplatform.googleapis.com",
+                 "roles/iam.serviceAccountUser",
+             ],
+             must_not_contain_gcp=["google_project_iam_policy",
+                                   "google_organization_iam_policy",
+                                   "google_service_account_iam_policy"],
+             notes="Project provisioning + Vertex AI + API key + SA impersonation grant. "
+                   "Apply requires org-admin perms (org_id, billing_account)."),
 ]
 
 
@@ -1049,7 +1123,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         # exact resource match only — avoid substring hits (e.g. okta_auth_server_policy)
         "okta_auth_server":         ["audiences", "issuer_mode"],
         "okta_auth_server_policy":  ["client_whitelist", "priority"],
-        "okta_factor":              ["provider_id", "status"],
+        "okta_factor":              ["provider_id"],
         "okta_network_zone":        ["type"],
         "okta_email_customization": ["brand_id", "template_name", "body"],
     }
@@ -1063,7 +1137,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     FORBIDDEN_ATTR_MAP = {
         "okta_app_oauth":           [r"client_id_scheme", r"app_type\s*=", r"client_credentials\s*\{"],
         "okta_auth_server":         [r"\bissuer\s*=", r"\borg_url\s*="],
-        "okta_factor":              [r"\bfactor_type\s*=", r"\bpolicy_id\s*="],
+        "okta_factor":              [r"\bfactor_type\s*=", r"\bpolicy_id\s*=", r"^\s*status\s*=\s*\"ACTIVE\""],
         "okta_network_zone":        [r"\bip_list\s*=", r"\bcidr_ranges\s*="],
         "okta_email_customization": [r"\blocale\s*="],
     }

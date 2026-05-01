@@ -1,6 +1,6 @@
 # QA Test Suite
 
-`qa_runner.py` ships a 132-case live-LLM regression suite that exercises every supported resource type, output mode, and known failure mode. It runs against the live Anthropic API (with prompt caching), checks generated output for forbidden patterns, schema compliance, and `must_contain` presence, and reports PASS/FAIL with cost telemetry.
+`qa_runner.py` ships a 133-case live-LLM regression suite that exercises every supported resource type, output mode, and known failure mode. It runs against the live Anthropic API (with prompt caching), checks generated output for forbidden patterns, schema compliance, and `must_contain` presence, and reports PASS/FAIL with cost telemetry.
 
 ## Running it
 
@@ -37,7 +37,7 @@ Each run writes `qa_outputs_cache.json` (per-test outputs), `qa_report.json` (pe
 14. **`okta_network_zone`**: `gateways` for IP zones, `dynamic_locations` / `asns` for DYNAMIC, never both.
 15. **GCP module**: provider boilerplate, Gen2 only (no `google_cloudfunctions_function`), authoritative IAM forbidden, GCP-only mode contract, `must_contain_gcp` substrings.
 
-## Test categories (132 total)
+## Test categories (133 total)
 
 ### Okta core resources (76)
 
@@ -85,7 +85,7 @@ Each run writes `qa_outputs_cache.json` (per-test outputs), `qa_report.json` (pe
 | Category | Count | What it covers |
 |---|---|---|
 | `GCP` | 5 | Cloud Function HTTP, Pub/Sub trigger, Cloud Run service, Scheduler+Function, Okta+GCP composite |
-| `GCPX` | 3 | Complex GCP: Pub/Sub fan-out, GCS object-finalize trigger, Secret Manager + IAM-bound Function |
+| `GCPX` | 4 | Complex GCP: Pub/Sub fan-out, GCS object-finalize trigger, Secret Manager + IAM-bound Function, full project provisioning (Vertex AI + API key + impersonation grant) |
 
 ### Edge cases and compound workflows (20)
 

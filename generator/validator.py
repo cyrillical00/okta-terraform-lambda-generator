@@ -129,7 +129,7 @@ def validate_outputs(
 
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=[
             {
                 "type": "text",
@@ -276,6 +276,30 @@ output "lambda_function_url" {
   description = "Paste this URL into var.event_hook_url"
 }
 ```
+
+## Canonical okta_factor schema (okta/okta v4.x, locked at 4.20.0)
+
+Required: `provider_id` (string, LOWERCASE canonical name).
+Optional: `active` (bool, default true).
+FORBIDDEN: `status`, `factor_type`, `okta_policy`, `policy_id`.
+
+The v4.x schema replaced the v3 `status = "ACTIVE"` string attribute with `active = true` (bool).
+Emitting `status` fails terraform validate with "Unsupported argument". Allowed `provider_id`
+values are lowercase canonical names from the provider plugin: `okta_otp`, `okta_push`,
+`okta_question`, `okta_sms`, `okta_call`, `okta_email`, `okta_password`, `google_otp`, `duo`,
+`fido_u2f`, `fido_webauthn`, `yubikey_token`, `rsa_token`, `symantec_vip`, `hotp`. Uppercase
+forms ("GOOGLE", "OKTA", "DUO") are rejected.
+
+```hcl
+resource "okta_factor" "okta_verify" {
+  provider_id = "okta_push"
+  active      = true
+}
+```
+
+When fixing an okta_factor, replace any `status = "ACTIVE"` with `active = true` and lowercase
+the `provider_id` value if it appears in uppercase. Drop any `factor_type`, `okta_policy`, or
+`policy_id` attributes.
 
 ## Lambda resource naming rule (CRITICAL — apply when fixing any name mismatch)
 Every AWS Lambda resource MUST use "handler" as the Terraform resource label — no other name is ever valid:
