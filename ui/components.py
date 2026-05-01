@@ -2,7 +2,7 @@ import io
 import zipfile
 import streamlit as st
 
-from .css import pill, mode_chip_html
+from ui.css import pill, mode_chip_html
 
 OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP"]
 
