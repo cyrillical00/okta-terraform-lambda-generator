@@ -28,6 +28,11 @@ from ui.components import (
 from ui.css import inject_global_css
 import history as _history
 from history import add_entry, get_entries
+import audit as _audit
+import cost as _cost
+import roles as _roles
+import redact as _redact
+import secret_rotation as _rotation
 from env_context import build_env_context, format_context_for_prompt
 from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
@@ -73,7 +78,31 @@ def _get_client() -> anthropic.Anthropic:
     if not api_key.startswith("sk-ant"):
         st.error(f"ANTHROPIC_API_KEY looks wrong — it should start with 'sk-ant' but starts with '{api_key[:8]}...'. Check your Streamlit secrets.")
         st.stop()
-    return anthropic.Anthropic(api_key=api_key)
+    raw = anthropic.Anthropic(api_key=api_key)
+    # Wrap the client so every messages.create() records usage against the
+    # signed-in user. Has no effect if st.user isn't available yet (e.g. at
+    # auth-gate render time, before login).
+    email = getattr(getattr(st, "user", None), "email", "") or "anonymous"
+    return _cost.wrap_client(raw, email)
+
+
+def _quota_block_or_warn() -> bool:
+    """Check the signed-in user's daily quota. Returns True if blocked
+    (caller should refuse the action). Renders an inline error when
+    blocked. Quota of 0 means unlimited (admins by default)."""
+    email = getattr(getattr(st, "user", None), "email", "") or ""
+    if not email:
+        return False
+    spent = _cost.today_usd(email)
+    if _roles.is_quota_exhausted(email, spent):
+        cap = _roles.daily_quota_usd(email)
+        st.error(
+            f"Daily spend limit reached: ${spent:.2f} of ${cap:.2f} used today (UTC). "
+            "Resets at midnight UTC. Contact an admin to raise your quota."
+        )
+        _audit.log(email, "quota_blocked", extra={"role": _roles.get_role(email), "spent_usd": spent, "cap_usd": cap})
+        return True
+    return False
 
 
 def _get_model(default: str) -> str:
@@ -289,6 +318,7 @@ def _render_env_sidebar() -> None:
         st.sidebar.caption(f"GCP: {err}")
 
     if st.sidebar.button("Refresh environment", use_container_width=True):
+        _audit.log(st.user.email, "env_refresh")
         st.session_state.env_context = None
         st.rerun()
 
@@ -348,6 +378,38 @@ def _render_repo_sidebar(default_repo: str) -> None:
             st.sidebar.warning("No .tf files found at that path.")
 
 
+def _render_audit_sidebar(email: str) -> None:
+    """Show the user's last 10 privileged actions plus a CSV export button."""
+    st.sidebar.divider()
+    st.sidebar.markdown("**Audit log**")
+    entries = _audit.recent(email, limit=10)
+    if not entries:
+        st.sidebar.caption("No actions logged yet.")
+        return
+    for entry in entries:
+        ts = (entry.get("timestamp_utc") or "")[:19].replace("T", " ")
+        action = entry.get("action", "")
+        rt = entry.get("resource_type", "")
+        cost = entry.get("cost_estimate_usd", 0.0) or 0.0
+        meta = f"`{action}`"
+        if rt:
+            meta += f" · `{rt}`"
+        if cost > 0:
+            meta += f" · ${cost:.4f}"
+        st.sidebar.caption(meta)
+        st.sidebar.markdown(f"<span style='font-size:0.78em;color:#777'>{ts} UTC</span>", unsafe_allow_html=True)
+    csv_text = _audit.export_csv(email)
+    if csv_text:
+        st.sidebar.download_button(
+            "Export full audit (CSV)",
+            data=csv_text,
+            file_name=f"audit_{_audit._email_hash(email)}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="audit_export_btn",
+        )
+
+
 def _render_history_sidebar(email: str) -> None:
     entries = get_entries(email)
     st.sidebar.divider()
@@ -382,6 +444,18 @@ _history.configure(
     github_token=_get_secret("GITHUB_TOKEN"),
     github_repo=_get_secret("GITHUB_REPO"),
 )
+_audit.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
+_cost.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
+_rotation.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
 
 # Auth gate
 if not hasattr(st.user, "is_logged_in"):
@@ -397,15 +471,78 @@ if not st.user.is_logged_in:
     st.button("Sign in with Google", on_click=st.login, args=("google",))
     st.stop()
 
+# ── Session-idle timeout (30 minutes) ────────────────────────────────────
+# Streamlit has no native session timeout. Track activity in session_state
+# and force re-login when idle past the threshold. Updated on every render.
+import time as _time
+
+SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
+_now = _time.time()
+_last = st.session_state.get("last_activity_ts")
+if _last and (_now - _last) > SESSION_IDLE_TIMEOUT_SECONDS:
+    _audit.log(st.user.email, "session_timeout")
+    # Wipe everything except the audit_signin_logged flag (which would
+    # cause a duplicate sign_in log), and the env_context which is
+    # already cached. Force re-login by logging out.
+    for k in list(st.session_state.keys()):
+        if k not in ("env_context",):
+            del st.session_state[k]
+    st.warning("Session timed out after 30 minutes of inactivity. Please sign in again.")
+    st.button("Sign in again", on_click=st.logout)
+    st.stop()
+st.session_state["last_activity_ts"] = _now
+
+# Log sign-in once per session (the first time the user reaches authed state).
+if not st.session_state.get("audit_signin_logged"):
+    _audit.log(st.user.email, "sign_in")
+    st.session_state["audit_signin_logged"] = True
+
+
+def _signout_with_audit():
+    _audit.log(st.user.email, "sign_out")
+    st.logout()
+
+
+def _render_role_and_cost_sidebar(email: str) -> None:
+    """Show the user's role badge, today's cost / quota usage, and (admin-only)
+    a redaction-bypass toggle plus a stale-secret warning."""
+    role = _roles.get_role(email)
+    spent = _cost.today_usd(email)
+    cap = _roles.daily_quota_usd(email)
+    st.sidebar.markdown(f"<small style='color:#777'>Role:</small> <b>{role}</b>", unsafe_allow_html=True)
+    if cap == 0:
+        st.sidebar.caption(f"Today: ${spent:.4f} (no cap)")
+    else:
+        pct = min(1.0, spent / cap) if cap else 0.0
+        st.sidebar.caption(f"Today: ${spent:.4f} of ${cap:.2f}")
+        st.sidebar.progress(pct)
+    # Admin-only: per-session redaction toggle + stale-secret warnings
+    if _roles.can("manage_roles", role):
+        st.sidebar.checkbox(
+            "Disable PII redaction (this session)",
+            key="redact_disabled",
+            help="Admin-only. When checked, prompts are sent to Claude as-is. Use sparingly.",
+        )
+        stale = _rotation.stale_list()
+        if stale:
+            with st.sidebar.expander(f"⚠️ {len(stale)} stale secret(s)"):
+                for s in stale:
+                    age = s.get("age_days")
+                    age_str = f"{age}d" if age is not None else "never"
+                    st.caption(f"`{s['name']}` — {age_str} (target {s['target_days']}d): {s['reason']}")
+
+
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
-    st.button("Sign out", on_click=st.logout)
+    _render_role_and_cost_sidebar(st.user.email)
+    st.button("Sign out", on_click=_signout_with_audit)
 
 inject_global_css()
 
 _load_env_context()
 _render_env_sidebar()
 _render_repo_sidebar(_get_secret("GITHUB_REPO"))
+_render_audit_sidebar(st.user.email)
 _render_history_sidebar(st.user.email)
 
 # Top-of-page status row + GCP partial-error banner
@@ -433,20 +570,51 @@ with st.container():
         height=100,
         key="user_input_area",
     )
-    parse_clicked = st.button("Parse Intent", type="primary")
+    _can_parse = _roles.can("parse", st.user.email)
+    _can_generate = _roles.can("generate", st.user.email)
+    if not _can_generate:
+        st.caption(
+            f"Your role ({_roles.get_role(st.user.email)}) is read-only. "
+            "Parsing is allowed; generation requires contributor or higher."
+        )
+    parse_clicked = st.button(
+        "Parse Intent",
+        type="primary",
+        disabled=not _can_parse,
+        help=("" if _can_parse else "Your role does not permit parsing prompts."),
+    )
 
 if parse_clicked and user_input.strip():
+    if not _roles.can("parse", st.user.email):
+        st.error("Your role does not permit parsing prompts. Contact an admin.")
+        st.stop()
+    if _quota_block_or_warn():
+        st.stop()
+    # Redact PII / secrets BEFORE handing the prompt to the LLM. Admins can
+    # opt out per session via a sidebar toggle (see _render_role_and_cost_sidebar).
+    raw_input = user_input.strip()
+    if st.session_state.get("redact_disabled") and _roles.can("manage_roles", st.user.email):
+        cleaned_input, redact_summary = raw_input, {}
+    else:
+        cleaned_input, redact_summary = _redact.redact(raw_input)
+    if redact_summary:
+        st.info(f"Redacted before sending to Claude: {_redact.format_summary(redact_summary)}.")
+        _audit.log(
+            st.user.email,
+            "redact",
+            extra={"summary": redact_summary, "preview": cleaned_input[:200]},
+        )
     st.session_state.parse_error = None
     st.session_state.intent = None
     st.session_state.outputs = None
     st.session_state.commit_url = None
     st.session_state.validation_result = None
-    st.session_state.last_user_input = user_input.strip()
+    st.session_state.last_user_input = cleaned_input  # store the redacted version going forward
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
         try:
-            intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
+            intent = parse_intent(cleaned_input, client, model=model, resource_type_hints=okta_types)
             # Friendly rejection: parser returned 'unknown' and the user gave no UI hints to override.
             if intent.get("resource_type") == "unknown" and not okta_types:
                 notes = intent.get("notes") or []
@@ -481,6 +649,13 @@ if parse_clicked and user_input.strip():
                     st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
                 else:
                     st.session_state.intent = intent
+                    _audit.log(
+                        st.user.email,
+                        "parse_intent",
+                        resource_type=intent.get("resource_type", ""),
+                        output_mode=intent.get("output_mode", ""),
+                        redacted_input_preview=cleaned_input,
+                    )
         except ValueError as e:
             st.session_state.parse_error = str(e)
 
@@ -499,12 +674,24 @@ if st.session_state.intent and st.session_state.outputs is None:
 if st.session_state.generation_triggered:
     st.session_state.generation_triggered = False
     st.session_state.gen_error = None
+    if not _roles.can("generate", st.user.email):
+        st.error("Your role does not permit generation. Contact an admin.")
+        st.stop()
+    if _quota_block_or_warn():
+        st.stop()
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
     outputs = _generate_and_refine(st.session_state.intent, "", client, model)
     if outputs is not None:
         st.session_state.outputs = outputs
         add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
+        _audit.log(
+            st.user.email,
+            "generate",
+            resource_type=st.session_state.intent.get("resource_type", ""),
+            output_mode=st.session_state.intent.get("output_mode", ""),
+            redacted_input_preview=st.session_state.last_user_input,
+        )
 
 if st.session_state.gen_error:
     st.error(st.session_state.gen_error)
@@ -535,7 +722,24 @@ if st.session_state.outputs:
 
     if st.session_state.validation_result:
         fix_clicked = render_validation_result(st.session_state.validation_result)
+        if check_clicked:
+            _audit.log(
+                st.user.email,
+                "self_check",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.output_mode or "",
+                extra={
+                    "tf_issues": len(st.session_state.validation_result.get("terraform_issues", [])),
+                    "lambda_issues": len(st.session_state.validation_result.get("lambda_issues", [])),
+                },
+            )
         if fix_clicked:
+            _audit.log(
+                st.user.email,
+                "fix_issues",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.output_mode or "",
+            )
             client = _get_client()
             model = _get_model("claude-haiku-4-5-20251001")
             with st.spinner("Fixing issues..."):
@@ -598,6 +802,11 @@ if st.session_state.outputs:
 
     # Regenerate with automatic 3-pass refinement
     if regenerate_clicked:
+        if not _roles.can("regenerate", st.user.email):
+            st.error("Your role does not permit regeneration.")
+            st.stop()
+        if _quota_block_or_warn():
+            st.stop()
         st.session_state.gen_error = None
         client = _get_client()
         model = _get_model("claude-haiku-4-5-20251001")
@@ -606,6 +815,14 @@ if st.session_state.outputs:
             st.session_state.outputs = outputs
             st.session_state.commit_url = None
             st.session_state.validation_result = None
+            _audit.log(
+                st.user.email,
+                "regenerate",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.intent.get("output_mode", ""),
+                redacted_input_preview=st.session_state.last_user_input,
+                extra={"extra_instructions": (extra_instructions or "")[:200]},
+            )
             st.rerun()
 
     # GitHub push
@@ -615,6 +832,13 @@ if st.session_state.outputs:
             st.error("GITHUB_TOKEN must be configured in secrets to push to GitHub.")
         elif not repo_override:
             st.error("Repository name is required to push to GitHub.")
+        elif not _roles.can_push_to(st.user.email, repo_override):
+            role = _roles.get_role(st.user.email)
+            st.error(
+                f"Role '{role}' cannot push to {repo_override}. "
+                "Contributors can push only to repos owned by them; ask an editor or admin."
+            )
+            _audit.log(st.user.email, "push_blocked", extra={"role": role, "repo": repo_override})
         else:
             files = _build_files(st.session_state.outputs, mode, base=file_basename)
             commit_message = build_commit_message(st.session_state.intent)
@@ -624,10 +848,20 @@ if st.session_state.outputs:
                         files, repo_override, github_token, commit_message, branch=branch_override
                     )
                     st.session_state.commit_url = commit_url
+                    _audit.log(
+                        st.user.email,
+                        "push",
+                        resource_type=st.session_state.intent.get("resource_type", ""),
+                        output_mode=mode,
+                        commit_url=commit_url,
+                        extra={"repo": repo_override, "branch": branch_override or "default", "file_count": len(files)},
+                    )
                 except RuntimeError as e:
                     st.error(str(e))
+                    _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
                 except Exception as e:
                     st.error(f"GitHub push failed: {e}")
+                    _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
 
 # Stage 5 — Commit URL
 if st.session_state.commit_url:
