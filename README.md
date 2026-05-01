@@ -1,13 +1,22 @@
-# Okta Terraform + Lambda Generator
+# Okta Terraform + Lambda + GCP Generator
 
-A Streamlit app that converts plain-English Okta operation descriptions into production-ready **Terraform HCL** and **AWS Lambda Python**, then pushes both to GitHub with one click.
+A Streamlit app that turns plain-English infrastructure descriptions into deployable Terraform HCL across three providers. Output covers Okta resources, AWS Lambda glue (Okta event hooks calling Lambdas, scheduled sweeps), and GCP Cloud Functions / Cloud Run / Pub/Sub. One click pushes the generated files to GitHub; another saves a ZIP locally.
+
+Live at https://okta-terraform-lambda-generator.streamlit.app.
 
 ## What it generates
 
-- `terraform/okta.tf` — Okta provider config + Okta resource (app, group, event hook, etc.)
-- `terraform/lambda.tf` — AWS IAM role + Lambda function resource
-- `lambda/lambda_function.py` — Python 3.11 Lambda handler (event hook verification, scheduled, or API Gateway)
-- `lambda/requirements.txt` — Lambda pip dependencies (if any)
+Five output modes selectable from the sidebar:
+
+| Mode | Files |
+|---|---|
+| Okta Terraform only | `terraform/okta.tf` |
+| Both | `terraform/okta.tf`, `terraform/lambda.tf`, `lambda/lambda_function.py`, `lambda/requirements.txt` |
+| Lambda only | `terraform/lambda.tf`, `lambda/lambda_function.py`, `lambda/requirements.txt` |
+| GCP only | `terraform/gcp.tf`, `cloud_function/main.py`, `cloud_function/requirements.txt` |
+| Okta + GCP | `terraform/okta.tf`, `terraform/gcp.tf`, `cloud_function/main.py`, `cloud_function/requirements.txt` |
+
+Composite modes (Okta+AWS, Okta+GCP) automatically merge `terraform { required_providers {} }` blocks so the generated files coexist in a single Terraform module without "Duplicate required providers configuration" errors.
 
 ## Setup
 
@@ -23,15 +32,18 @@ pip install -r requirements.txt
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-Edit `.streamlit/secrets.toml` and fill in:
+Edit `.streamlit/secrets.toml`:
 
-| Key | Description |
-|-----|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GITHUB_TOKEN` | GitHub personal access token with `repo` write scope |
-| `GITHUB_REPO` | Target repository in `owner/repo` format |
+| Key | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | yes | Anthropic API key (Haiku 4.5 used for generation; prompt caching enabled) |
+| `GITHUB_TOKEN` | yes | GitHub PAT with `repo` write scope |
+| `GITHUB_REPO` | yes | Target repository in `owner/repo` format |
+| `OKTA_API_TOKEN` / `OKTA_ORG_NAME` | optional | Live Okta context for the parser; resolves real group / app IDs instead of placeholders |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | optional | Live AWS context for Lambda function lookups |
+| `GCP_SA_JSON` | optional | Single-line JSON service account key for live GCP context (Cloud Functions / Run / Pub/Sub listings); ADC works locally without this |
 
-> The GitHub repository must have at least one existing commit before pushing.
+The GitHub repo must have at least one commit before the first push.
 
 ### 3. Run
 
@@ -41,40 +53,83 @@ streamlit run app.py
 
 ## Usage
 
-1. Enter a plain-English description of the Okta operation
-2. Review and edit the parsed intent card
-3. Click **Confirm and Generate**
-4. Review the Terraform HCL and Lambda Python in the side-by-side panels
-5. Click **Push to GitHub** to commit all four files, or **Download as ZIP** to save locally
-6. Use **Regenerate** with optional extra instructions to refine the output
+1. Type a plain-English description.
+2. Select an output mode and any resource-type checkboxes you want to constrain.
+3. Review the parsed intent card and confirm.
+4. Inspect the generated HCL and code in the side-by-side panels.
+5. Push to GitHub or download as ZIP.
+6. Use Regenerate with extra instructions to refine.
 
 ## Example prompts
 
-- `Create an Okta SAML app called HR Portal for Workday`
-- `Build a Lambda that fires when a user is deactivated in Okta and logs the event`
-- `Set up an RBAC group called Engineering with a rule that matches users in the engineering department`
-- `Create an Okta event hook that triggers on user.lifecycle.deactivate`
-- `Scheduled Lambda that runs nightly and checks for Okta users without MFA enrolled`
+- `Create a SAML app called HR Portal for Workday with SCIM provisioning`
+- `Build a Lambda that fires when a user is added to the Offboarding group and sends an SNS alert`
+- `Set up a Cloud Function that responds to HTTP requests and returns a JSON status`
+- `Create a Pub/Sub topic called orders that fans out to two Cloud Functions`
+- `Custom authorization server for our payments API with read:invoices and write:invoices scopes`
+- `Group rule that adds users with department=Engineering to the Engineering group`
+
+## Provider versions
+
+The generated HCL pins:
+
+- `okta/okta ~> 4.0` (currently resolves to 4.20.0; verified against the live provider schema)
+- `hashicorp/google ~> 6.0`
+- `hashicorp/aws ~> 5.0`
+
+To upgrade Okta to v6 (a breaking change for several resources), bump the constraint in the generated `okta.tf` and run `terraform init -upgrade`. Note: `okta_factor` and several event hook attributes have schema differences between v4 and v6; expect to re-validate.
 
 ## Deploying to Streamlit Community Cloud
 
-1. Push this repo to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io) and connect the repo
-3. In the app settings, paste the contents of your `secrets.toml` into the **Secrets** field
-4. Deploy
-
-## Okta Terraform provider version
-
-Generated HCL targets `hashicorp/okta ~> 4.0`. The current stable provider release is `6.x`. To upgrade, change the version constraint in the generated `okta.tf` and run `terraform init -upgrade`.
+1. Push the repo to GitHub.
+2. At [share.streamlit.io](https://share.streamlit.io), connect the repo.
+3. Paste the contents of `.streamlit/secrets.toml` into the app's Secrets field.
+4. Deploy. The pinned `streamlit==1.56.0` in `requirements.txt` avoids a 1.57.0 OAuth-state regression; lift only after confirming an upstream fix.
 
 ## Lambda deployment note
 
-The generated `lambda.tf` references `../lambda/lambda_function.zip`. You need to build this ZIP before running `terraform apply`:
+Generated `lambda.tf` references `../lambda/lambda_function.zip`. Build this before `terraform apply`:
 
 ```bash
 cd lambda
 zip lambda_function.zip lambda_function.py
-# If requirements.txt is non-empty:
+# if requirements.txt is non-empty:
 pip install -r requirements.txt -t package/
 cd package && zip -r ../lambda_function.zip . && cd ..
 ```
+
+## Cloud Function deployment note
+
+Generated `gcp.tf` references `../cloud_function/cloud_function.zip`. Build it the same way:
+
+```bash
+cd cloud_function
+zip cloud_function.zip main.py requirements.txt
+```
+
+A real Cloud Functions Gen2 deployment also requires billing linked on the target project, the `run.googleapis.com`, `cloudfunctions.googleapis.com`, `cloudbuild.googleapis.com`, and `artifactregistry.googleapis.com` APIs enabled, and standard build / compute service-account roles. See `_tftool/validate/run_validate.py` for an automated harness that surfaces these prerequisites.
+
+## QA suite
+
+`qa_runner.py` ships a 132-case live regression suite covering every supported resource and output mode, plus a separate `terraform validate` harness under `_tftool/validate/`. See `TESTS.md` for the full breakdown and how to run individual cases.
+
+```bash
+# full suite (~$1.50 live, ~7 min)
+python qa_runner.py
+
+# replay from cache (free)
+python qa_runner.py --replay
+
+# real terraform validate against locked providers
+python _tftool/validate/run_validate.py
+```
+
+## Architecture
+
+- `app.py`: Streamlit UI; intent parsing, generation, validation, push.
+- `generator/`: LLM prompts (`prompts.py`), generation pipeline (`terraform_gen.py`), parser (`parser.py`), refiner (`validator.py`), and deterministic post-generation sanitizers for `okta_brand`, `okta_app_saml` SCIM, `okta_group`, and provider-block merging (`hcl_utils.py`).
+- `okta_client.py`, `aws_client.py`, `gcp_client.py`: live provider context for the parser (resolves real resource IDs).
+- `env_context.py`: fan-out across providers; partial-success per service.
+- `qa_runner.py`: live LLM regression suite.
+- `tests/`: unit tests for sanitizers and HCL utilities (`pytest tests/`).
+- `_tftool/`: gitignored scratch space for terraform-validate workspaces and dev tools.
