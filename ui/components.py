@@ -2,7 +2,147 @@ import io
 import zipfile
 import streamlit as st
 
+from .css import pill, mode_chip_html
+
 OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP"]
+
+
+# Starter chips shown on the empty state. Each chip prefills the user-input
+# textarea via session_state so they read as suggestions, not commitments.
+_STARTER_CHIPS = [
+    ("Okta",     "Create a SAML app for Salesforce with attribute statements for department and manager"),
+    ("AWS",      "Build a Lambda that fires when a user is added to the Offboarding group and sends an SNS alert"),
+    ("GCP",      "Create a Pub/Sub topic called orders that fans out to two Cloud Functions"),
+    ("Composite", "Create a new GCP project, a service account, an API key, and enable Vertex AI"),
+]
+
+
+def _infer_mode(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> str:
+    """Mirror app.py's mode-inference logic so the read-only chip stays in sync."""
+    if gcp_types and okta_types:
+        return "Okta + GCP"
+    if gcp_types:
+        return "GCP only"
+    if aws_types and okta_types:
+        return "Both"
+    if aws_types:
+        return "Lambda only"
+    return "Okta Terraform only"
+
+
+def render_hero_starters() -> None:
+    """Render the empty-state hero block + starter chips. Call only when no
+    outputs and no parse error are present. Chips prefill the textarea via
+    session_state.user_input_area on click; they do not auto-parse.
+    """
+    st.markdown(
+        '<div class="tf-hero">'
+        '<h1>Plain English to deployable Terraform</h1>'
+        '<p>Across Okta, AWS Lambda, and GCP. One prompt, one click, one PR.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Try one to start:")
+    cols = st.columns(len(_STARTER_CHIPS))
+    for i, (label, prompt) in enumerate(_STARTER_CHIPS):
+        with cols[i]:
+            if st.button(label, key=f"starter_{label.lower()}", use_container_width=True, help=prompt):
+                st.session_state["user_input_area"] = prompt
+                # Reset any in-flight intent / outputs so the user starts fresh.
+                st.session_state["intent"] = None
+                st.session_state["outputs"] = None
+                st.session_state["parse_error"] = None
+                st.session_state["validation_result"] = None
+                st.session_state["commit_url"] = None
+                st.rerun()
+
+
+def render_mode_chip(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> None:
+    """Render a small read-only mode pill that reflects the current checkbox
+    selection. Pure presentation; does NOT change `output_mode` in state.
+    """
+    mode = _infer_mode(okta_types, aws_types, gcp_types)
+    st.markdown(mode_chip_html(mode), unsafe_allow_html=True)
+
+
+def render_env_pills(env_context: dict) -> None:
+    """Render a horizontal row of Okta / AWS / GCP status pills at the top of
+    the main panel. Tooltip exposes resource counts. Pure presentation."""
+    okta = (env_context or {}).get("okta", {})
+    aws = (env_context or {}).get("aws", {})
+    gcp = (env_context or {}).get("gcp", {})
+
+    pills = []
+
+    # Okta
+    if okta.get("connected"):
+        n_groups = len(okta.get("groups", []))
+        n_apps = len(okta.get("apps", []))
+        n_hooks = len(okta.get("event_hooks", []))
+        tooltip = f"{n_groups} groups, {n_apps} apps, {n_hooks} event hooks"
+        pills.append(pill(f"Okta ({n_groups + n_apps + n_hooks})", "on", tooltip))
+    else:
+        pills.append(pill("Okta", "off", okta.get("error", "Not configured")))
+
+    # AWS
+    if aws.get("connected"):
+        n_fns = len(aws.get("lambda_functions", []))
+        n_roles = len(aws.get("iam_roles", []))
+        tooltip = f"{n_fns} lambdas, {n_roles} roles"
+        pills.append(pill(f"AWS ({n_fns + n_roles})", "on", tooltip))
+    else:
+        pills.append(pill("AWS", "off", aws.get("error", "Not configured")))
+
+    # GCP, with warn state when partial errors are present
+    if gcp.get("connected"):
+        n_fns = len(gcp.get("functions", []))
+        n_sa = len(gcp.get("service_accounts", []))
+        n_topics = len(gcp.get("pubsub_topics", []))
+        partial = gcp.get("partial_errors") or []
+        tooltip = f"{n_fns} functions, {n_sa} SAs, {n_topics} topics"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} services unavailable)"
+        pills.append(pill(f"GCP ({n_fns + n_sa + n_topics})", state, tooltip))
+    else:
+        pills.append(pill("GCP", "off", gcp.get("error", "Not configured")))
+
+    st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
+
+
+def render_gcp_partial_warning(env_context: dict) -> None:
+    """Promote GCP partial errors from a sidebar caption to a top-of-page
+    warning when present. No-op when there are no partial errors.
+    """
+    gcp = (env_context or {}).get("gcp", {})
+    partial = gcp.get("partial_errors") or []
+    if not partial:
+        return
+    summary = ", ".join(p.split(":")[0] for p in partial[:3])
+    extra = f" (+{len(partial) - 3} more)" if len(partial) > 3 else ""
+    st.warning(
+        f"GCP live context is partial: {summary}{extra}. "
+        "Generation will use placeholder vars for these services. "
+        "Check API enablement and SA roles, or click Refresh environment."
+    )
+
+
+def render_success_card(commit_url: str, mode: str, file_count: int) -> bool:
+    """Render the post-commit success card. Returns True if "Generate another"
+    was clicked, in which case the caller should reset the relevant state keys.
+    """
+    st.markdown(
+        f'''<div class="tf-success-card">
+        <div class="title">Pushed to GitHub</div>
+        <div class="meta">Mode: <b>{mode}</b> · Files: <b>{file_count}</b></div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.link_button("View commit", commit_url, use_container_width=True)
+    with col_b:
+        return st.button("Generate another", use_container_width=True, key="generate_another_btn")
 
 _RESOURCE_LABEL_TO_TF = {
     "Workflow": "okta_event_hook",

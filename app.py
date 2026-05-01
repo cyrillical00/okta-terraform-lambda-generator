@@ -19,7 +19,13 @@ from generator.validator import validate_outputs, fix_outputs, refine_outputs
 from generator.okta_group_sanitizer import sanitize_okta_group_refs
 from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
+from ui.components import (
+    render_intent_card, render_code_panels, render_action_buttons,
+    render_validation_result, render_optional_tf, render_tfvars_example,
+    render_resource_type_selector, render_hero_starters, render_mode_chip,
+    render_env_pills, render_gcp_partial_warning, render_success_card,
+)
+from ui.css import inject_global_css
 import history as _history
 from history import add_entry, get_entries
 from env_context import build_env_context, format_context_for_prompt
@@ -215,19 +221,31 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
 
 def _load_env_context() -> None:
-    """Fetch Okta/AWS/GCP context once per session. Skips if already loaded."""
+    """Fetch Okta/AWS/GCP context once per session. Skips if already loaded.
+    Wraps the live-context fetch in st.status so the user sees activity when
+    Okta or AWS is slow to respond.
+    """
     if st.session_state.env_context is not None:
         return
-    st.session_state.env_context = build_env_context(
-        okta_org_url=_get_secret("OKTA_ORG_URL"),
-        okta_api_token=_get_secret("OKTA_API_TOKEN"),
-        aws_region=_get_secret("AWS_REGION"),
-        aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
-        aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
-        gcp_project_id=_get_secret("GCP_PROJECT_ID"),
-        gcp_sa_json=_get_secret("GCP_SA_JSON"),
-        gcp_region=_get_secret("GCP_REGION") or "us-central1",
-    )
+    with st.status("Connecting to Okta, AWS, GCP...", expanded=False) as status:
+        st.session_state.env_context = build_env_context(
+            okta_org_url=_get_secret("OKTA_ORG_URL"),
+            okta_api_token=_get_secret("OKTA_API_TOKEN"),
+            aws_region=_get_secret("AWS_REGION"),
+            aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
+            aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
+            gcp_project_id=_get_secret("GCP_PROJECT_ID"),
+            gcp_sa_json=_get_secret("GCP_SA_JSON"),
+            gcp_region=_get_secret("GCP_REGION") or "us-central1",
+        )
+        ctx = st.session_state.env_context or {}
+        connected = sum(
+            1 for k in ("okta", "aws", "gcp") if ctx.get(k, {}).get("connected")
+        )
+        status.update(
+            label=f"Live context ready: {connected} of 3 providers connected",
+            state="complete",
+        )
 
 
 def _render_env_sidebar() -> None:
@@ -383,19 +401,34 @@ with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
     st.button("Sign out", on_click=st.logout)
 
+inject_global_css()
+
 _load_env_context()
 _render_env_sidebar()
 _render_repo_sidebar(_get_secret("GITHUB_REPO"))
 _render_history_sidebar(st.user.email)
 
-st.title("Okta Terraform + Lambda Generator")
-st.caption("Describe an Okta operation in plain English and get production-ready Terraform HCL and AWS Lambda Python.")
+# Top-of-page status row + GCP partial-error banner
+render_env_pills(st.session_state.env_context or {})
+render_gcp_partial_warning(st.session_state.env_context or {})
+
+# Empty-state hero with starter chips, only on first load
+if (
+    st.session_state.outputs is None
+    and st.session_state.intent is None
+    and not st.session_state.parse_error
+):
+    render_hero_starters()
+
+st.title("Okta + AWS + GCP Terraform Generator")
+st.caption("Describe an operation in plain English and get production-ready Terraform HCL plus Lambda or Cloud Function code.")
 
 # Stage 1 — Input
 with st.container():
     okta_types, aws_types, gcp_types = render_resource_type_selector()
+    render_mode_chip(okta_types, aws_types, gcp_types)
     user_input = st.text_area(
-        "Describe the Okta operation",
+        "Describe the operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
         height=100,
         key="user_input_area",
@@ -598,5 +631,12 @@ if st.session_state.outputs:
 
 # Stage 5 — Commit URL
 if st.session_state.commit_url:
-    st.success("Successfully pushed to GitHub!")
-    st.link_button("View commit", st.session_state.commit_url)
+    mode = st.session_state.output_mode or "Both"
+    files = _build_files(st.session_state.outputs or {}, mode)
+    if render_success_card(st.session_state.commit_url, mode, len(files)):
+        st.session_state.intent = None
+        st.session_state.outputs = None
+        st.session_state.commit_url = None
+        st.session_state.validation_result = None
+        st.session_state.parse_error = None
+        st.rerun()
