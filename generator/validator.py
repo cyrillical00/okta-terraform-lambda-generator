@@ -38,11 +38,27 @@ Check for these specific problems in Terraform:
 - Invalid or non-existent attribute references on resource types
 - app_settings_json with null/placeholder values not required for this resource type
 - Missing required arguments for the resource type
+- For okta_network_zone: IP zones must use `gateways` (list of objects with type="CIDR"|"RANGE" and value=CIDR/range string). DYNAMIC zones must use `dynamic_locations` (list of ISO-3166 country codes) OR `asns` (list of strings) — never both. Mixing `gateways` with `dynamic_locations`/`asns` on the same resource is invalid and fails terraform apply. Forbidden attribute names that have been observed as hallucinations and must be flagged: `ip_list`, `allowed_ips`, `blocked_ips`, `cidr_ranges`.
+- For okta_user_profile_mapping: every `mappings { }` block MUST contain all three of `id` (e.g. "appuser.email" or "user.email"), `expression` (Okta expression string), and `push_status` ("PUSH" or "DONT_PUSH"). A mappings block missing any of these three keys fails terraform apply. Forbidden attribute names on the resource: `source_type`, `target_id`, `profile_attribute` (use the mappings block instead).
+- For okta_brand: NEVER include `logo`, `primary_color`, or `secondary_color` — none of these exist on the v4.x okta_brand resource. Logo upload is an Okta Admin Console operation; flag any logo-related attribute or block as a hallucination. Allowed attributes are name, agree_to_custom_privacy_policy, custom_privacy_policy_url, remove_powered_by_okta, default_app_app_instance_id, default_app_classic_application_uri.
+- For okta_email_customization: the `body` value must escape Terraform interpolation by writing `$${variable}` (double dollar) wherever an Okta email template variable appears — e.g. `$${user.firstName}`. A body containing bare `${...}` fails terraform validate with "Reference to undeclared resource". Also confirm `template_name` is one of the documented Okta lifecycle templates ("UserActivation", "ForgotPassword", "PasswordChanged", "EmailChallenge", "ADForgotPassword", etc.) and that `language` (not `locale`) is set.
 
 Check for these specific problems in Lambda:
 - Event hook verification logic (x-okta-verification-challenge) present when resource_type is NOT okta_event_hook
 - Lambda does not match the resource type in any meaningful way
 - Syntax errors or obvious runtime errors
+
+## Canonical okta_group_rule schema (Okta provider v4.x — current, authoritative)
+
+The okta_group_rule resource uses these EXACT attribute names:
+- name (required)
+- status (required, "ACTIVE" or "INACTIVE")
+- expression_type (required, must be "urn:okta:expression:1.0")
+- expression_value (required, the expression body)
+- group_assignments (required, list of group IDs that matching users are ADDED TO)
+- remove_assigned_users (optional, bool)
+
+`group_assignments` is the CORRECT attribute name in v4.x. NEVER recommend replacing it with `group_ids`, `assignments`, `group_assignment`, or any other variant — those are wrong. Likewise the expression body must be `expression_value` (never `expression`) and the type must be `expression_type` (never `type`). If you see `group_assignments`, `expression_value`, or `expression_type` in the generated HCL, those are correct — do not flag them.
 
 Do NOT flag:
 - Style preferences or minor formatting choices
@@ -51,6 +67,8 @@ Do NOT flag:
 - For okta_event_hook: do not flag that "no Lambda endpoint exists" — the Lambda and its aws_lambda_function_url live in terraform_lambda_hcl; the event_hook_url variable is correctly left as a var.* for the user to fill in after deployment
 - For okta_event_hook: do not flag the absence of okta_app_group_assignment, okta_app_user_assignment, or similar Okta-side assignment resources when the intent is clearly event-driven (Lambda handles the API calls at runtime)
 - Variable declarations without a corresponding data source lookup — validating a var.* value at apply time is the user's responsibility, not a code error
+- The use of `group_assignments` on okta_group_rule — this is the correct v4.x attribute name; never recommend `group_ids` or any other variant
+- The use of `expression_value` or `expression_type` on okta_group_rule — these are correct v4.x attribute names; never recommend `expression` or `type`
 - Missing event hooks or automation triggers when the optional_tf section already contains them — optional_tf is a separate file the user can apply; treat it as part of the complete solution when evaluating whether the intent is fully addressed
 - Architectural gaps that are fully addressed by resources in optional_tf — if the missing piece (e.g., event hook, scheduled rule) is present in optional_tf, do not flag it as absent
 
@@ -82,9 +100,11 @@ VALIDATOR_USER_TEMPLATE = """Review the following generated outputs.
 Return only the JSON review object."""
 
 _OUTPUT_MODE_INSTRUCTIONS = {
-    "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
+    "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda or Cloud Function issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
     "Lambda only": "The user requested Lambda only. Do NOT evaluate or report any Terraform issues — set terraform_issues to []. Only review lambda_python.",
-    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf.",
+    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf. terraform_gcp_hcl is intentionally empty in this mode; do NOT flag its absence.",
+    "GCP only": "The user requested GCP only. Review terraform_gcp_hcl and cloud_function_python. terraform_okta_hcl, terraform_lambda_hcl, and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
+    "Okta + GCP": "The user requested Okta + GCP. Review terraform_okta_hcl, terraform_gcp_hcl, and cloud_function_python. terraform_lambda_hcl and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
 }
 
 
@@ -109,7 +129,7 @@ def validate_outputs(
 
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=[
             {
                 "type": "text",
@@ -157,18 +177,45 @@ def refine_outputs(
         try:
             optional_tf = outputs.get("optional_tf", "")
             tfvars = outputs.get("terraform_tfvars_example", "")
+            # Capture GCP outputs before fix_outputs (fixer only knows the 4 original keys)
+            gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+            cf_py = outputs.get("cloud_function_python", "")
+            cf_reqs = outputs.get("cloud_function_requirements", "")
             outputs = fix_outputs(intent, outputs, result, client, model)
             if optional_tf and not outputs.get("optional_tf"):
                 outputs["optional_tf"] = optional_tf
             if tfvars and not outputs.get("terraform_tfvars_example"):
                 outputs["terraform_tfvars_example"] = tfvars
+            # Restore GCP outputs that fix_outputs cannot produce
+            outputs["terraform_gcp_hcl"] = gcp_hcl
+            outputs["cloud_function_python"] = cf_py
+            outputs["cloud_function_requirements"] = cf_reqs
             # Re-apply output_mode enforcement — fix_outputs doesn't enforce it
             if output_mode == "Okta Terraform only":
                 outputs["terraform_lambda_hcl"] = ""
+                outputs["terraform_gcp_hcl"] = ""
                 outputs["lambda_python"] = ""
                 outputs["lambda_requirements"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
             elif output_mode == "Lambda only":
                 outputs["terraform_okta_hcl"] = ""
+                outputs["terraform_gcp_hcl"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
+            elif output_mode == "GCP only":
+                outputs["terraform_okta_hcl"] = ""
+                outputs["terraform_lambda_hcl"] = ""
+                outputs["lambda_python"] = ""
+                outputs["lambda_requirements"] = ""
+            elif output_mode == "Okta + GCP":
+                outputs["terraform_lambda_hcl"] = ""
+                outputs["lambda_python"] = ""
+                outputs["lambda_requirements"] = ""
+            elif output_mode == "Both":
+                outputs["terraform_gcp_hcl"] = ""
+                outputs["cloud_function_python"] = ""
+                outputs["cloud_function_requirements"] = ""
         except GenerationError:
             break
     return outputs
@@ -189,10 +236,13 @@ Return ONLY a JSON object with exactly these four keys:
   "lambda_requirements": "..."
 }
 
-## Canonical okta_event_hook schema (use this EXACTLY when fixing event hook issues)
+## Canonical okta_event_hook schema (okta/okta v4.x, locked at 4.20.0; use EXACTLY this shape when fixing event hook issues)
 
-Only these five top-level attributes are valid for okta_event_hook: name, status, channel, events_filter, headers.
-NEVER use: events, filters, auth_type, url, eventFilters, or any other attribute name.
+Valid top-level fields: name (attr), status (attr), channel (map(string) attr), events (set(string) attr), headers (REPEATABLE BLOCK), auth (map(string) attr, optional).
+NEVER use: events_filter, filters, auth_type, url, eventFilters, or any other attribute name. The v4.x provider rejects them with "Unsupported argument".
+
+`events` is a flat set of event-type strings; do NOT wrap it in `events_filter = { type, items }`.
+`headers` is a block (one block per header); do NOT write `headers = [{...}]` as an attribute list.
 
 ```hcl
 resource "okta_event_hook" "example" {
@@ -205,15 +255,12 @@ resource "okta_event_hook" "example" {
     type    = "HTTP"
   }
 
-  events_filter = {
-    type  = "EVENT_TYPE"
-    items = ["group.user_membership.add"]
-  }
+  events = ["group.user_membership.add"]
 
-  headers = [{
+  headers {
     key   = "Authorization"
     value = "Bearer ${var.event_hook_auth_token}"
-  }]
+  }
 }
 ```
 
@@ -229,6 +276,30 @@ output "lambda_function_url" {
   description = "Paste this URL into var.event_hook_url"
 }
 ```
+
+## Canonical okta_factor schema (okta/okta v4.x, locked at 4.20.0)
+
+Required: `provider_id` (string, LOWERCASE canonical name).
+Optional: `active` (bool, default true).
+FORBIDDEN: `status`, `factor_type`, `okta_policy`, `policy_id`.
+
+The v4.x schema replaced the v3 `status = "ACTIVE"` string attribute with `active = true` (bool).
+Emitting `status` fails terraform validate with "Unsupported argument". Allowed `provider_id`
+values are lowercase canonical names from the provider plugin: `okta_otp`, `okta_push`,
+`okta_question`, `okta_sms`, `okta_call`, `okta_email`, `okta_password`, `google_otp`, `duo`,
+`fido_u2f`, `fido_webauthn`, `yubikey_token`, `rsa_token`, `symantec_vip`, `hotp`. Uppercase
+forms ("GOOGLE", "OKTA", "DUO") are rejected.
+
+```hcl
+resource "okta_factor" "okta_verify" {
+  provider_id = "okta_push"
+  active      = true
+}
+```
+
+When fixing an okta_factor, replace any `status = "ACTIVE"` with `active = true` and lowercase
+the `provider_id` value if it appears in uppercase. Drop any `factor_type`, `okta_policy`, or
+`policy_id` attributes.
 
 ## Lambda resource naming rule (CRITICAL — apply when fixing any name mismatch)
 Every AWS Lambda resource MUST use "handler" as the Terraform resource label — no other name is ever valid:

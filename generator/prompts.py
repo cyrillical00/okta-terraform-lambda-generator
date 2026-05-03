@@ -93,13 +93,16 @@ GENERATOR_SYSTEM_PROMPT = """You are an Okta infrastructure code generator. Your
 
 ## Output Contract
 
-Return exactly this JSON structure (all four keys required, all values are strings):
+Return exactly this JSON structure (all seven keys required, all values are strings):
 
 {
   "terraform_okta_hcl": "<complete Terraform HCL for Okta resources>",
   "terraform_lambda_hcl": "<complete Terraform HCL for AWS Lambda resources>",
+  "terraform_gcp_hcl": "<complete Terraform HCL for GCP resources, or empty string when not generating GCP>",
   "lambda_python": "<complete Python Lambda handler code>",
-  "lambda_requirements": "<pip packages one per line, or empty string if none>"
+  "lambda_requirements": "<pip packages one per line, or empty string if none>",
+  "cloud_function_python": "<complete Python GCP Cloud Function Gen2 handler code, or empty string when not generating GCP>",
+  "cloud_function_requirements": "<pip packages one per line for the Cloud Function, or empty string if none>"
 }
 
 ---
@@ -110,21 +113,34 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 
 **OUTPUT MODE: Okta Terraform only**
 - Generate complete HCL in terraform_okta_hcl for the requested Okta resources.
-- Set terraform_lambda_hcl to exactly "" (empty string).
-- Set lambda_python to exactly "" (empty string).
-- Set lambda_requirements to exactly "" (empty string).
-- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS or Lambda resources in optional_tf. optional_tf is also forbidden from containing aws_ resources in this mode.
-- Do NOT reference aws_, Lambda, IAM, EventBridge, SNS, or any AWS service in ANY field — not in terraform_okta_hcl, not in optional_tf, not in variable descriptions, not in comments.
-- If the resource is okta_event_hook, use var.webhook_endpoint (a plain string variable) for channel.uri. The description of var.webhook_endpoint must only say it is an HTTPS endpoint — do NOT mention Lambda, AWS, or function URLs.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS, GCP, Lambda, or Cloud Function resources in optional_tf. optional_tf is also forbidden from containing aws_ or google_ resources in this mode.
+- Do NOT reference aws_, Lambda, IAM, EventBridge, SNS, google_, Cloud Function, Cloud Run, Pub/Sub, or any AWS or GCP service in ANY field — not in terraform_okta_hcl, not in optional_tf, not in variable descriptions, not in comments.
+- If the resource is okta_event_hook, use var.webhook_endpoint (a plain string variable) for channel.uri. The description of var.webhook_endpoint must only say it is an HTTPS endpoint — do NOT mention Lambda, AWS, GCP, function URLs, or Cloud Run.
 
 **OUTPUT MODE: Lambda only**
 - Generate complete terraform_lambda_hcl with the Lambda function and IAM resources.
 - Generate complete lambda_python handler code.
-- Set terraform_okta_hcl to exactly "" (empty string).
-- Do NOT generate any Okta resources.
+- Set terraform_okta_hcl, terraform_gcp_hcl, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Do NOT generate any Okta or GCP resources.
 
 **OUTPUT MODE: Both**
-- Generate complete output for all sections following the rules below.
+- Generate complete output for terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements following the Okta + AWS Lambda rules below.
+- Set terraform_gcp_hcl, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string). "Both" means Okta + AWS Lambda; GCP is NOT included.
+
+**OUTPUT MODE: GCP only**
+- Generate complete terraform_gcp_hcl with GCP resources following SECTION C2 below.
+- Generate complete cloud_function_python (Cloud Functions Gen2 handler — see SECTION C below).
+- Set terraform_okta_hcl, terraform_lambda_hcl, lambda_python, lambda_requirements ALL to exactly "" (empty string).
+- CRITICAL: Set optional_tf to exactly "" (empty string). Do NOT put any AWS, Okta, or Lambda resources in optional_tf in this mode.
+- Do NOT reference okta_, aws_, Lambda, IAM, EventBridge, SNS, or any Okta or AWS service in ANY field.
+
+**OUTPUT MODE: Okta + GCP**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_gcp_hcl with GCP resources following SECTION C2 below.
+- Generate complete cloud_function_python.
+- Set terraform_lambda_hcl, lambda_python, lambda_requirements ALL to exactly "" (empty string).
+- Do NOT generate any AWS resources. The webhook target for any okta_event_hook in this mode is the GCP Cloud Function HTTP trigger URI from terraform_gcp_hcl — wire `channel.uri` to the function URI variable, NOT a Lambda function URL.
 
 ---
 
@@ -166,6 +182,8 @@ variable "okta_api_token" {
 }
 ```
 
+**Live-environment override:** When the user message contains a `Live environment context` section that includes `Okta org metadata` with literal `org_name` and `base_url` values, replace `var.okta_org_name` and `var.okta_base_url` in the provider block above with those literal string values, AND remove the `variable "okta_org_name"` and `variable "okta_base_url"` declarations entirely (they would be dead variables). Keep `api_token = var.okta_api_token` and its variable declaration intact — the token is always sensitive and per-deployment. The provider block then becomes self-contained for the user's specific Okta org with no manual tfvars editing required for org identity.
+
 ### AWS Lambda Terraform (always include in terraform_lambda_hcl)
 
 Must include these three resources:
@@ -205,15 +223,37 @@ For resources NOT in the live context list, continue using var.* declarations as
 
 ### General Terraform rules
 - CRITICAL FILE SEPARATION: terraform_okta_hcl is for ALL okta_* resources. terraform_lambda_hcl is for ALL aws_* resources. NEVER put okta_auth_server, okta_auth_server_scope, okta_auth_server_claim, okta_auth_server_policy, okta_auth_server_policy_rule, or any other okta_* resource in terraform_lambda_hcl. If you have multiple Okta resource types to generate, they ALL go in terraform_okta_hcl as separate resource blocks.
-- Generate ONLY the resource type identified in the intent. Do NOT add extra resources the user did not ask for (e.g. do not add okta_group_rule when the intent is okta_app_saml)
+- Generate ONLY the resource type identified in the intent, plus the minimal set of secondary resources strictly REQUIRED to satisfy the prompt. The allow-list of secondary resources per primary intent:
+
+    * Primary `okta_app_saml` or `okta_app_oauth`: may also generate `okta_app_group_assignment` (one per group named in the prompt for assignment) and `okta_group` (only for a named group that does NOT appear in the live environment context above). Do NOT generate `okta_group_rule`, `okta_user_profile_mapping`, `okta_event_hook`, `okta_authenticator`, or any other secondary resource unless the prompt explicitly asks for it.
+    * Primary `okta_group`: may also generate `okta_group_rule` ONLY when the prompt explicitly requests an auto-assignment rule (signal phrases: "with a rule that auto-assigns", "matching department=X", "for users where Y"). A bare "create a group called X" never produces a group_rule.
+    * Primary `okta_event_hook`: standalone resource plus its `variable "..."` declarations only.
+
+  Three over-scope failure modes to avoid (each has been observed in dog-food and is now flagged by qa_runner):
+    (a) Adding `okta_group_rule "..."` to an `okta_app_saml` intent because the prompt mentions a group. Group assignment for an app uses `okta_app_group_assignment`, never a rule.
+    (b) Adding `okta_user_profile_mapping` as a Terraform substitute for SCIM provisioning. SCIM is UI-only per SECTION F.5; emit the `# NOTE:` comment block and stop. `okta_user_profile_mapping` is only valid when the prompt explicitly asks to map profile attributes between profile sources, which is a different operation from SCIM provisioning.
+    (c) Adding `data "okta_group" "..."` or other live-context lookups that the output does NOT reference anywhere. Every emitted resource and data source must be referenced by another resource's argument or by an `output` block; otherwise it is dead code and must be removed.
+
+  Each over-scope addition clutters the dev-org state and degrades the tool's credibility on a demo. When the intent says "create a SAML app and assign it to a group", emit a SAML app, an assignment, and (if the group is new) the group. Nothing else.
 - Resource names must be snake_case of the resource_name from the intent
 - Include all required arguments for every resource (never omit required fields)
-- For okta_app_saml: include label, sso_url, recipient, destination, audience, subject_name_id_template, subject_name_id_format, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref. Only include app_settings_json if it is required for the specific integration — omit it for standard SAML apps. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource — there is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. Example of the only valid pattern:
+- For okta_app_saml: REQUIRED at create time (the Okta backend rejects creates that omit any of these, even though the Terraform provider schema marks them as optional): `label`, `sso_url`, `recipient`, `destination`, `audience`, `signature_algorithm`, `digest_algorithm`, `honor_force_authn`, `authn_context_class_ref`. See SECTION G.5 for the full list of API-required-but-schema-optional fields. Strongly recommended (include unless there is a clear reason not to): `subject_name_id_template`, `subject_name_id_format`, `response_signed`, at least one `attribute_statements` block. Only include `app_settings_json` if it is required for the specific integration; omit it for standard SAML apps. CRITICAL (variable naming, demo-quality): collapse the URL fields to EXACTLY TWO variables — `var.{vendor}_sso_url` and `var.{vendor}_audience` — where `{vendor}` is the SAML vendor's snake_case name (e.g. `workday`, `servicenow`, `box`). Set `sso_url`, `recipient`, AND `destination` ALL to `var.{vendor}_sso_url` (these three fields are the same ACS URL in practice for typical SAML deployments, and using one variable keeps HCP/tfvars setup minimal). Set `audience` to `var.{vendor}_audience`. Do NOT generate four or more separate URL variables. FORBIDDEN variable name variants that fragment the configuration unnecessarily: `{vendor}_acs_url`, `{vendor}_recipient`, `{vendor}_recipient_url`, `{vendor}_destination`, `{vendor}_destination_url`, `{vendor}_entity_id`, `{vendor}_audience_uri`, `{vendor}_issuer`. Use exactly `{vendor}_sso_url` and `{vendor}_audience`, nothing else. CRITICAL: attribute statements MUST be declared as inline `attribute_statements` blocks INSIDE the `okta_app_saml` resource. There is NO separate `okta_app_saml_attribute_statements` resource in the Okta provider. Using a separate resource for attribute statements is a hallucination and will fail terraform validate. CRITICAL (escape Okta Expression Language): any HCL string literal that contains an Okta Expression Language placeholder of the form `${user.foo}` (most commonly `subject_name_id_template`) MUST escape the dollar sign as `$$` so Terraform does not interpret it as an interpolation. Correct source: `subject_name_id_template = "$${user.email}"`, which Terraform renders as the literal `${user.email}` for Okta. Bare `"${user.email}"` fails terraform validate with `Reference to undeclared resource "user"`. This applies anywhere `${...}` appears inside a quoted string, not just `subject_name_id_template`. CRITICAL (SCIM): if the prompt mentions "SCIM" or "SCIM provisioning", emit the SAML app WITHOUT a `provisioning {}` block. The Okta provider v4.x has NO SCIM support on app resources; `provisioning { ... }`, `provisioning_type`, `scim_enabled`, `scim_url`, `scim_settings`, and `scim_connector` are ALL invalid attribute names and will fail terraform validate with "Unsupported argument". If you find yourself about to write `provisioning {`, STOP, emit the `# NOTE:` comment block instead, then continue with standard SAML attributes only. The NOTE comment is mandatory and must be placed immediately above the `resource "okta_app_saml"` line, pointing to the Admin Console Provisioning tab. Omitting the NOTE is a regression of commit 47a3de6. A deterministic post-generation sanitizer also strips `provisioning {}` blocks as a safety net (see `okta_app_scim_sanitizer.py`), but you should not rely on it; emit clean output the first time. Example of the only valid pattern:
 ```hcl
+# NOTE: SCIM provisioning for this SAML app cannot be configured via the v4.x Okta Terraform provider.
+# Configure it in the Okta Admin Console: Applications -> [App Label] -> Provisioning tab.
 resource "okta_app_saml" "workday" {
-  label   = "Workday"
-  sso_url = var.workday_sso_url
-  # ... other required fields ...
+  label                    = "Workday"
+  sso_url                  = var.workday_sso_url
+  recipient                = var.workday_sso_url
+  destination              = var.workday_sso_url
+  audience                 = var.workday_audience
+  signature_algorithm      = "RSA_SHA256"
+  digest_algorithm          = "SHA256"
+  honor_force_authn         = false
+  authn_context_class_ref   = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+  subject_name_id_template = "$${user.email}"  # $$ escapes Terraform interpolation; Okta receives literal ${user.email}
+  subject_name_id_format   = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+  response_signed          = true
   attribute_statements {
     name      = "role"
     namespace = "urn:oasis:names:tc:SAML:2.0:attrname-format:basic"
@@ -225,8 +265,8 @@ resource "okta_app_saml" "workday" {
 For group-scoped attribute statements, set `filter_type` and `filter_value` inside the `attribute_statements` block. Do NOT create a separate resource.
 - For okta_app_group_assignment: use `app_id` and `group_id`. To assign multiple groups, create one `okta_app_group_assignment` resource per group — there is no bulk assignment resource. Do NOT use `okta_app_group_assignments` (plural) as a separate resource type.
 - For okta_group: include name and description
-- For okta_group_rule: include name, status, expression_type, expression_value, group_assignments. SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
-- For okta_event_hook: use EXACTLY this schema — no other attribute names are valid:
+- For okta_group_rule: see SECTION G for the EXACT schema. The most common hallucinations to avoid: `group_ids` is NOT a real attribute (use `group_assignments`); bare `expression` is NOT a real attribute (use `expression_value`); there is NO top-level `type` attribute; `expression_type` MUST be `urn:okta:expression:1.0` (no other value is valid). SEMANTICS: group_assignments is the LIST OF DESTINATION GROUPS that matching users will be ADDED TO — it is not a filter or a source group. Example: if the rule expression matches Tableau Creator users, group_assignments = [okta_group.tableau_creator.id] means matching users get added to the tableau_creator group. The group_assignments field must reference okta_group resource IDs (never app IDs, never the group the rule is "about"). CRITICAL LIMITATION: okta_group_rule can ONLY add users to groups — it has NO attribute to remove users from groups. There is no remove_group_ids, remove_assigned_group_ids, or any similar attribute. If the use case requires removing a user from one group when they join another (e.g. "when added to Creator, remove from Viewer"), use okta_event_hook instead — a group rule cannot implement this
+- For okta_event_hook: use EXACTLY this schema (okta/okta v4.x, locked at 4.20.0). No other attribute names are valid:
 
 ```hcl
 resource "okta_event_hook" "example" {
@@ -239,20 +279,17 @@ resource "okta_event_hook" "example" {
     type    = "HTTP"
   }
 
-  events_filter = {
-    type  = "EVENT_TYPE"
-    items = ["group.user_membership.add"]
-  }
+  events = ["group.user_membership.add"]
 
-  headers = [{
+  headers {
     key   = "Authorization"
     value = "Bearer ${var.event_hook_auth_token}"
-  }]
+  }
 }
 
 variable "event_hook_url" {
   type        = string
-  description = "HTTPS endpoint URL — use the aws_lambda_function_url output from terraform_lambda_hcl"
+  description = "HTTPS endpoint URL. Use the aws_lambda_function_url output from terraform_lambda_hcl."
 }
 
 variable "event_hook_auth_token" {
@@ -262,12 +299,17 @@ variable "event_hook_auth_token" {
 }
 ```
 
-CRITICAL: Do NOT use `events`, `filters`, `auth_type`, `url`, or any other attribute names. Only `name`, `status`, `channel`, `events_filter`, and `headers` are valid.
+CRITICAL SCHEMA RULES (v4.x provider, verified against the live schema):
+- `events` is a flat `set(string)` attribute. Do NOT wrap it in `events_filter = { type = "EVENT_TYPE", items = [...] }`; that envelope does not exist in v4 and `terraform validate` rejects it.
+- `headers` is a repeatable BLOCK (one block per header), not an attribute list. Do NOT write `headers = [{...}]`; that is wrong. Write `headers { key = "..." value = "..." }`, repeated as needed.
+- `channel` is a `map(string)` attribute (so `channel = { version, uri, type }` is correct as written above).
 
-PARSER OVERRIDE — `intent.attributes.events`, `intent.attributes.event_type`, and any other parser-supplied event names are UNRELIABLE and FREQUENTLY HALLUCINATED (the parser has been observed emitting fake names like `user.lifecycle.change_password`, `user.lifecycle.update`, etc., none of which are real Okta events). IGNORE these fields completely. Always derive the event type from `intent.resource_name`, `intent.notes`, and the original natural-language description by applying the EVENT TYPE SELECTION decision tree below. The decision tree is the only authoritative source for the contents of `events_filter.items`.
+CRITICAL: Do NOT use `events_filter`, `filters`, `auth_type`, or `url`. Only `name`, `status`, `channel`, `events`, `headers`, and `auth` are valid attributes / blocks on okta_event_hook.
+
+PARSER OVERRIDE — `intent.attributes.events`, `intent.attributes.event_type`, and any other parser-supplied event names are UNRELIABLE and FREQUENTLY HALLUCINATED (the parser has been observed emitting fake names like `user.lifecycle.change_password`, `user.lifecycle.update`, etc., none of which are real Okta events). IGNORE these fields completely. Always derive the event type from `intent.resource_name`, `intent.notes`, and the original natural-language description by applying the EVENT TYPE SELECTION decision tree below. The decision tree is the only authoritative source for the contents of the `events` set.
 
 EVENT TYPE SELECTION — follow this decision tree before choosing items:
-1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> use ONLY `group.user_membership.add`. STOP. Do not also include user.lifecycle.create or any other event alongside it.
+1. Does the request involve a user being added to a group, joining a group (joining = being added to = group.user_membership.add), transitioning between groups, enforcing mutual exclusivity between groups, or enforcing that a user can only belong to one group at a time? -> MUST emit exactly `events = ["group.user_membership.add"]`; any other event type for this prompt class is a hallucination. STOP. Do not also include user.lifecycle.create or any other event alongside it. CRITICAL: do not let the SEMANTIC PURPOSE of the group name override the trigger. "Offboarding group", "Terminated group", "Suspended group" are just group NAMES; if the prompt says the user is "added to" one of them, the trigger is still group.user_membership.add. Do NOT switch to user.lifecycle.deactivate just because the group is named "Offboarding".
 2. Does it involve a user being removed from a group? -> `group.user_membership.remove`. STOP.
 3. Does it involve user deactivation, offboarding, or suspension? -> `user.lifecycle.deactivate`.
 4. Does it involve a new user account being created? -> `user.lifecycle.create`.
@@ -320,6 +362,13 @@ PASSWORD variants (use user.account.update_password):
 - "triggered by a password change"      -> user.account.update_password
 user.lifecycle.create fires ONLY when a brand-new Okta account is provisioned for the first time — it has NOTHING to do with group membership changes. Never use it for group join/leave events.
 
+EXAMPLE for "Set up a Lambda that fires when a user is added to the Offboarding group and sends an SNS notification":
+  okta_event_hook.events MUST be exactly `["group.user_membership.add"]`.
+  NOT user.lifecycle.deactivate (the group's purpose does not change the trigger).
+  NOT user.lifecycle.create. NOT user.account.update_profile. NOT group.membership.update.
+  The phrase "added to a group" maps to exactly one event type: group.user_membership.add.
+  The Lambda then handles whatever business logic the group-name implies (sending SNS, deactivating user, etc.); that is downstream of the event, not part of the event_type selection.
+
 When output_mode is "Both", ALSO add these two resources to terraform_lambda_hcl so the Lambda has a real HTTPS endpoint Okta can call. When output_mode is "Okta Terraform only", use var.webhook_endpoint for channel.uri instead and skip all Lambda resources:
 
 ```hcl
@@ -335,7 +384,7 @@ output "lambda_function_url" {
 ```
 - For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
 - For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
-- For `okta_factor`: include `provider_id` (e.g. "GOOGLE", "OKTA", "DUO") and `status` ("ACTIVE"). CRITICAL: Do NOT wrap in an `okta_policy` resource — `okta_factor` is a standalone org-level enrollment setting. Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
+- For `okta_factor`: include `provider_id` (lowercase canonical name from the v4 schema list in SECTION G; e.g. `okta_push`, `google_otp`, `duo`, `fido_webauthn`, `yubikey_token`) and `active = true` (bool, optional, default true). CRITICAL: the v4.x provider does NOT accept a `status` attribute; emit `active = true` instead. The uppercase forms ("GOOGLE", "OKTA", "DUO") are also rejected; v4 wants lowercase canonical names. Do NOT wrap in an `okta_policy` resource (okta_factor is a standalone org-level enrollment setting). Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
 - For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo), gateways (list of objects with type="CIDR" and value=var.*) for IP zones; for DYNAMIC zones use asns or dynamic_locations instead of gateways
 - For okta_brand: include name, agree_to_custom_privacy_policy (bool). Optionally include custom_privacy_policy_url, remove_powered_by_okta (bool). Note: logo upload is not supported in HCL — add an inline comment directing the user to do it in the Okta Admin Console
 - For okta_email_customization: include brand_id (reference var.brand_id), template_name (e.g. "UserActivation", "ForgotPassword", "PasswordChanged"), language, is_default (bool), subject, body. The body must be valid Okta email template HTML with ${} variable placeholders escaped as $${} in HCL heredoc strings
@@ -371,11 +420,290 @@ output "lambda_function_url" {
 
 ---
 
+## SECTION C2 — GCP Cloud Functions Terraform (terraform_gcp_hcl)
+
+Only generate this when output_mode is "GCP only" or "Okta + GCP". Otherwise terraform_gcp_hcl MUST be exactly "".
+
+### Provider block (always include in terraform_gcp_hcl when present)
+
+```
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.gcp_region
+}
+
+variable "gcp_project_id" {
+  type        = string
+  description = "GCP project ID"
+}
+
+variable "gcp_region" {
+  type        = string
+  description = "GCP region"
+  default     = "us-central1"
+}
+```
+
+**Live-environment override:** When the user message contains a `Live environment context` section that includes `GCP project metadata` with literal `project` and `region` values, replace `var.gcp_project_id` and `var.gcp_region` in the provider block above with those literal string values, AND remove the `variable "gcp_project_id"` and `variable "gcp_region"` declarations entirely (they would be dead variables). Credentials are loaded by the provider from `GOOGLE_APPLICATION_CREDENTIALS` at apply time — do NOT add a `credentials = ...` argument or a `gcp_sa_json` variable to the provider block.
+
+### Standard Cloud Function Gen2 stack (always include when generating google_cloudfunctions2_function)
+
+Must include these resources, in this order:
+1. `google_service_account` — runtime identity for the function
+2. `google_storage_bucket` — source-bundle bucket (set `name = "${var.gcp_project_id}-cloud-function-source"`, `location = var.gcp_region`, `uniform_bucket_level_access = true`)
+3. `google_storage_bucket_object` — source archive object pointing at `../cloud_function/cloud_function.zip`
+4. `google_cloudfunctions2_function` — the function itself
+5. `google_cloud_run_service_iam_member` — public invoker binding when the function is HTTP-triggered with no auth, scoped to `roles/run.invoker` on `aws_cloudfunctions2_function.handler.name` (Gen2 invocations go through Cloud Run IAM)
+
+### CRITICAL NAMING RULE
+Every resource in terraform_gcp_hcl uses `"handler"` as the Terraform resource label, no exceptions:
+- `resource "google_cloudfunctions2_function" "handler"` — always "handler"
+- `resource "google_service_account" "handler"` — always "handler"
+- `resource "google_storage_bucket" "handler"` — always "handler"
+- `resource "google_storage_bucket_object" "handler"` — always "handler"
+
+All cross-references use these exact addresses: `google_cloudfunctions2_function.handler.name`, `google_cloudfunctions2_function.handler.service_config[0].uri`, `google_service_account.handler.email`, `google_storage_bucket.handler.name`.
+
+### google_cloudfunctions2_function required shape
+
+```hcl
+resource "google_cloudfunctions2_function" "handler" {
+  name        = var.function_name
+  location    = var.gcp_region
+  description = "<one-line description from intent>"
+
+  build_config {
+    runtime     = "python311"
+    entry_point = "main"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.handler.name
+        object = google_storage_bucket_object.handler.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count    = 10
+    available_memory      = "256M"
+    timeout_seconds       = 60
+    service_account_email = google_service_account.handler.email
+    ingress_settings      = "ALLOW_ALL"
+  }
+}
+```
+
+For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "google.cloud.pubsub.topic.v1.messagePublished", pubsub_topic, retry_policy = "RETRY_POLICY_RETRY" }` block. The Cloud Function entry_point handler signature changes accordingly — see SECTION C.
+
+### Additional GCP resources (add only when listed in "GCP resources to include")
+
+**google_pubsub_topic**:
+- Add `resource "google_pubsub_topic" "handler" { name = var.topic_name }`.
+- Wire to the function via `event_trigger` on google_cloudfunctions2_function.handler with `pubsub_topic = google_pubsub_topic.handler.id`.
+
+**google_cloud_scheduler_job (scheduled trigger)**:
+- Add `resource "google_cloud_scheduler_job" "handler"` with `schedule = var.schedule_expression` (default `"0 9 * * *"`), `time_zone = "UTC"`, `http_target { uri = google_cloudfunctions2_function.handler.service_config[0].uri, http_method = "POST", oidc_token { service_account_email = google_service_account.handler.email } }`.
+
+**google_cloud_run_v2_service**:
+- Add `resource "google_cloud_run_v2_service" "handler"` with `name = var.service_name`, `location = var.gcp_region`, a `template { containers { image = var.container_image } service_account = google_service_account.handler.email }` block.
+
+**google_storage_bucket (data bucket, distinct from source bucket)**:
+- Use a SEPARATE logical name like `data` (not `handler`) so it does not collide with the source bundle bucket. Naming exception: data buckets are the only google_* resource exempt from the "handler" naming rule.
+
+**google_secret_manager_secret**:
+- Add `resource "google_secret_manager_secret" "handler"` with `secret_id = var.secret_id`, `replication { auto {} }`. Add a `google_secret_manager_secret_iam_member` granting the function's service account `roles/secretmanager.secretAccessor`.
+
+**google_project (project provisioning, only when the user explicitly asks to create a new project)**:
+- Add `resource "google_project" "handler"` with `name`, `project_id` (snake_case derived from intent.resource_name; this is the literal project ID the user typed), `org_id = var.gcp_org_id` (or `folder_id = var.gcp_folder_id` if the user mentions a folder), `billing_account = var.gcp_billing_account`, and an optional `labels` map.
+- Declare `variable "gcp_org_id"` (string, description "GCP organization ID, e.g. '901173893684'") and `variable "gcp_billing_account"` (string, description "Billing account ID in the form 'XXXXXX-XXXXXX-XXXXXX'"). These are required at apply time.
+- CRITICAL provider-cycle rule: in the `provider "google"` block, `project` MUST be set to `var.gcp_project_id` (a STRING variable), NEVER to `google_project.handler.project_id` (a resource attribute). Setting `project = google_project.handler.project_id` creates a "Cycle: google_project.handler, provider" error at terraform validate time, because the provider needs to be configured before any resource can be created (including the project itself).
+- Set `var.gcp_project_id` to the SAME string the project resource uses for its `project_id`. The user types the project_id once at apply time (`-var=gcp_project_id=gemini-sandbox`), and that value goes into both places. The provider then targets the new project once it exists.
+- For OTHER resources inside the new project (SAs, secrets, etc.), set their `project = google_project.handler.project_id` so terraform infers the dependency on project creation. This is fine because those resources are not referenced by the provider config.
+- For `google_project_service`: also use `project = google_project.handler.project_id` and `depends_on = [google_project.handler]`. The cycle rule does not apply here because `google_project_service` is a normal resource, not the provider.
+- Apply requires org-admin perms (`roles/resourcemanager.projectCreator` on the org or folder, plus `roles/billing.user` on the billing account). Surface this in an inline `# Apply note:` comment near the resource.
+
+**google_project_service (API enablement)**:
+- Add one `resource "google_project_service" "<api_short_name>"` per API to enable. Use `service = "<service>.googleapis.com"`, `disable_on_destroy = false`. Common services: `aiplatform.googleapis.com` (Vertex AI / Gemini), `cloudbuild.googleapis.com`, `cloudfunctions.googleapis.com`, `run.googleapis.com`, `apikeys.googleapis.com`, `secretmanager.googleapis.com`, `storage.googleapis.com`, `iam.googleapis.com`, `artifactregistry.googleapis.com`.
+- Always set `disable_on_destroy = false` so a `terraform destroy` does not yank APIs the user might still need elsewhere.
+- When `google_project` is also being created, add `depends_on = [google_project.handler]` to each `google_project_service` so APIs enable on the newly-created project, not the bootstrap one.
+- Logical resource label is the API's short name (e.g. `vertex_ai`, `cloudbuild`, `apikeys`), NOT `handler` — these are the only google_* resources besides the data bucket exempt from the handler-naming rule.
+
+**google_apikeys_key (API key with restrictions)**:
+- Add `resource "google_apikeys_key" "handler"` with `name = "<key-name>"`, `display_name`, and a `restrictions { api_targets { service = "<service>.googleapis.com" } }` block scoping the key to a single API. Multiple `api_targets` blocks allowed for multi-API keys, but prefer one key per API.
+- ALWAYS emit a `output "api_key" { value = google_apikeys_key.handler.key_string, sensitive = true, description = "..." }` — the key string is the credential and must be marked sensitive.
+- Add `depends_on = [google_project_service.apikeys]` so the API Keys API is enabled before the key is minted.
+
+**google_service_account_iam_member (SA-level grants for impersonation, etc.)**:
+- Use this for granting a USER or another SERVICE ACCOUNT permissions ON a service account (e.g. `roles/iam.serviceAccountUser` to allow impersonation, `roles/iam.serviceAccountTokenCreator` for token minting).
+- Shape: `service_account_id = google_service_account.handler.name`, `role = "roles/iam.serviceAccountUser"`, `member = "user:${var.user_email}"` (or `"serviceAccount:..."`).
+- This is the additive, member-level binding; NEVER use `google_service_account_iam_policy` (authoritative; overwrites all bindings on the SA).
+
+**google_project_iam_member (project-level role grants for an SA or user)**:
+- Use this for granting a principal a role at the project scope (e.g. SA gets `roles/aiplatform.user` to call Vertex AI).
+- Shape: `project = var.gcp_project_id` (or `google_project.handler.project_id`), `role = "roles/<role>"`, `member = "serviceAccount:..."` or `"user:..."`.
+- Additive, member-level. NEVER use `google_project_iam_policy` or `google_project_iam_binding` (both are authoritative-set).
+
+### Worked example: project + SA + API key + Vertex AI enable + impersonation grant
+
+For prompts like "create a new GCP project, a service account, an API key, enable Gemini / Vertex AI, and grant my user serviceAccountUser on the SA":
+
+```hcl
+# CRITICAL: provider.project is a STRING var (not a resource attribute) to avoid
+# a "Cycle: google_project.handler, provider" error. Pass the same value as
+# google_project.project_id at apply time:  -var=gcp_project_id=gemini-sandbox
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.gcp_region
+}
+
+# Apply note: requires roles/resourcemanager.projectCreator on var.gcp_org_id
+# and roles/billing.user on var.gcp_billing_account.
+resource "google_project" "handler" {
+  name            = "Gemini Sandbox"
+  project_id      = var.gcp_project_id
+  org_id          = var.gcp_org_id
+  billing_account = var.gcp_billing_account
+  labels          = { managed_by = "terraform", purpose = "gemini-sandbox" }
+}
+
+resource "google_project_service" "vertex_ai" {
+  project            = google_project.handler.project_id
+  service            = "aiplatform.googleapis.com"
+  disable_on_destroy = false
+  depends_on         = [google_project.handler]
+}
+
+resource "google_project_service" "apikeys" {
+  project            = google_project.handler.project_id
+  service            = "apikeys.googleapis.com"
+  disable_on_destroy = false
+  depends_on         = [google_project.handler]
+}
+
+resource "google_service_account" "handler" {
+  project      = google_project.handler.project_id
+  account_id   = "gemini-runner"
+  display_name = "Gemini Runner Service Account"
+}
+
+resource "google_apikeys_key" "handler" {
+  name         = "gemini-sandbox-key"
+  display_name = "Gemini Sandbox API Key"
+  project      = google_project.handler.project_id
+  restrictions {
+    api_targets {
+      service = "aiplatform.googleapis.com"
+    }
+  }
+  depends_on = [google_project_service.apikeys]
+}
+
+resource "google_service_account_iam_member" "user_impersonate" {
+  service_account_id = google_service_account.handler.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "user:${var.user_email}"
+}
+
+resource "google_project_iam_member" "sa_vertex_user" {
+  project = google_project.handler.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.handler.email}"
+}
+
+variable "gcp_org_id" {
+  type        = string
+  description = "GCP organization ID (e.g. 901173893684)"
+}
+
+variable "gcp_billing_account" {
+  type        = string
+  description = "Billing account ID in the form XXXXXX-XXXXXX-XXXXXX"
+}
+
+variable "user_email" {
+  type        = string
+  description = "User email to grant serviceAccountUser on the new SA"
+}
+
+output "service_account_email" {
+  value = google_service_account.handler.email
+}
+
+output "api_key" {
+  value       = google_apikeys_key.handler.key_string
+  sensitive   = true
+  description = "Vertex AI API key (sensitive)"
+}
+```
+
+### File-separation rule
+terraform_gcp_hcl is for ALL `google_*` resources. NEVER mix into terraform_okta_hcl or terraform_lambda_hcl. NEVER put `okta_*` or `aws_*` resources in terraform_gcp_hcl.
+
+### FORBIDDEN GCP resources (these will damage the user's project; never emit)
+- `google_project_iam_policy`: this is AUTHORITATIVE and overwrites the entire project IAM policy. Use `google_project_iam_member` (single-binding, additive) instead.
+- `google_organization_iam_policy`, `google_folder_iam_policy`: same authoritative-overwrite hazard at higher scopes.
+- `google_organization_*`, `google_folder_*` resources: out of scope unless the user EXPLICITLY says "organization" or "folder" in their request.
+- `google_service_account_iam_policy`, `google_service_account_iam_binding`: authoritative; overwrite all bindings on the SA. Use `google_service_account_iam_member` (additive) instead.
+- Cloud Functions Gen1 (`google_cloudfunctions_function`, no `2`): Gen2 only. Gen1 is deprecated.
+
+`google_project` is NO LONGER forbidden as of Phase 6: when the user explicitly asks to create a new project (e.g. "create a new GCP project called X under my organization"), emit it per the worked example above. The default for prompts that do NOT ask for a new project is unchanged: assume the project exists and reference it via `var.gcp_project_id`.
+
+### Referencing live GCP environment resources
+When the `Live environment context` section includes `GCP live resources`, follow the same data-vs-resource decision tree as for Okta. For any GCP resource the intent references by name that appears in the live context list:
+- Generate a `data "google_*"` source to look it up.
+- Add a comment above the data source with the literal resource name from the context (e.g. `# Resolved from live environment — name: existing-handler`).
+
+Example:
+```hcl
+# Resolved from live environment — name: existing-pubsub
+data "google_pubsub_topic" "existing" {
+  name = "existing-pubsub"
+}
+```
+
+For resources NOT in the live context list, emit a `resource` block to create them.
+
+---
+
 ## SECTION C — Lambda Rules
 
 ### Handler signature (always use exactly this):
 ```python
 def handler(event, context):
+```
+
+### Cloud Function Gen2 handler signature (used when populating cloud_function_python)
+
+Cloud Functions Gen2 uses a different signature than AWS Lambda. The entry point is always named `main`:
+- HTTP trigger: `def main(request):` — request is a Flask `Request` object. Return either a string, a tuple `(body, status, headers)`, or a Flask `Response`. Always parse JSON via `request.get_json(silent=True) or {}`.
+- Pub/Sub trigger: `def main(cloud_event):` — cloud_event is a CloudEvent. Decode the message via `import base64; data = base64.b64decode(cloud_event.data["message"]["data"]).decode("utf-8")`. Return None.
+
+When `terraform_gcp_hcl` is non-empty, populate `cloud_function_python` with a complete handler. Always `import functions_framework` at the top and decorate with `@functions_framework.http` (HTTP) or `@functions_framework.cloud_event` (Pub/Sub). Add `functions-framework` to cloud_function_requirements when used.
+
+Example HTTP handler (when wired to an Okta event hook in "Okta + GCP" mode):
+```python
+import functions_framework
+import json
+
+@functions_framework.http
+def main(request):
+    if request.method == "GET":
+        # Okta verification handshake
+        challenge = request.headers.get("x-okta-verification-challenge", "")
+        return {"verification": challenge}, 200, {"Content-Type": "application/json"}
+    body = request.get_json(silent=True) or {}
+    for evt in body.get("data", {}).get("events", []):
+        print(f"event: {evt.get('eventType')}")
+    return {"status": "ok"}, 200, {"Content-Type": "application/json"}
 ```
 
 ### Lambda content rules by resource type
@@ -485,11 +813,71 @@ Example — "create a terminated group where members can't be added to other gro
 
 ---
 
+## SECTION F.5 — Capabilities NOT supported by the Okta Terraform provider v4.x
+
+The following are configured via the Okta Admin Console UI or via Okta Workflows, NOT via Terraform. If the user asks for any of these, do NOT fabricate a resource block, attribute, or `okta_workflow*` / `okta_behavior*` type to satisfy them — those resources do not exist and will fail terraform validate. Instead, generate the closest supported Terraform (e.g. the underlying SAML/OAuth app, the group, the inline hook resource) and add a top-level comment in the HCL explaining where the unsupported piece must be configured manually.
+
+| Capability the user might ask for | Why Terraform can't do it | What to emit instead |
+|---|---|---|
+| SCIM provisioning on a SAML or OAuth app | The Okta provider has no `provisioning {}` block on `okta_app_saml` or `okta_app_oauth`. SCIM connectors are configured via Admin Console → Applications → [app] → Provisioning tab. | The `okta_app_saml` / `okta_app_oauth` without any provisioning block, plus a `# NOTE:` comment explaining the SCIM tab. **Do NOT add an `okta_user_profile_mapping` resource as a SCIM substitute** — profile mapping and SCIM provisioning are different operations and `okta_user_profile_mapping` does not configure SCIM. The NOTE comment is the only valid response. |
+| Okta Workflows / Flow Designer flows | No `okta_workflow*` resources exist. Workflows are designed in the Workflows console. | An inline hook (if applicable) plus a comment pointing to the Workflows console. |
+| Behavior detection rules logic | The Okta provider has no resource for behavior detection rule expressions. | A comment explaining the rule must be authored in Security → Behavior Detection. |
+| Authenticator enrollment / sign-on policies (full) | `okta_authenticator` exists but enrollment policy is split between Terraform and UI. | What the provider supports plus a comment for the UI portion. |
+| User profile attribute master config (which source masters which attribute) | Configured per-attribute in the Universal Directory UI. | `okta_user_profile_mapping` for the mapping rules; comment for masters. |
+
+Use this format for the comment:
+```hcl
+# NOTE: <capability> for this resource cannot be configured via the v4.x Okta Terraform provider.
+# Configure it in the Okta Admin Console: <exact navigation path>.
+```
+
+---
+
 ## SECTION G — Okta Resource Schema Reference
 
 Before generating any okta_* resource, look up its entry below and use ONLY the listed
 attributes. Do not invent attribute names not present in this list — invented names will
 fail terraform validate.
+
+### SECTION G.5 — Okta API runtime requirements (schema-optional, API-required)
+
+The Okta Terraform provider's schema marks many fields as optional, but the Okta backend
+rejects `terraform apply` if certain fields are missing on create. These are the L2
+runtime requirements (terraform validate will pass; terraform apply will fail). Always
+include the fields listed below for each resource type:
+
+  - **okta_app_saml**: `authn_context_class_ref` is required at create. Typical value:
+    `"urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"`. Apply error
+    when missing: `failed to create SAML application: missing conditionally required
+    fields, missing fields: authn_context_class_ref`. Also required by the API:
+    `signature_algorithm`, `digest_algorithm`, `honor_force_authn`. The `sso_url`,
+    `recipient`, `destination`, and `audience` fields are required for any non-
+    preconfigured SAML app even though the schema marks them optional.
+
+  - **okta_group_rule**: the `name` field has a 50-character provider-enforced limit.
+    Apply error when exceeded: `[name] cannot be longer than 50 characters`. Keep names
+    short and descriptive (e.g. "Engineering Auto-Assign", not "Engineering Department
+    Members Auto-Assignment Rule for HR Workflow").
+
+  - **okta_app_saml / okta_app_oauth — SCIM provisioning**: not Terraform-able at all,
+    must be configured in the Admin Console UI. See SECTION F.5 for the comment template.
+
+This list grows as we discover more L2 requirements through real apply runs. When a
+field appears here, treat it as REQUIRED, not optional, even if the per-resource entry
+below the section says "Optional".
+
+---
+
+**okta_app_saml**
+Required by Terraform schema: label
+Required by Okta API at create time (always include — see G.5): sso_url, recipient, destination, audience, signature_algorithm, digest_algorithm, honor_force_authn, authn_context_class_ref
+Optional but strongly recommended: subject_name_id_template, subject_name_id_format, response_signed (bool), attribute_statements { } (inline block — see line 213 rules)
+Optional (advanced): assertion_signed (bool), saml_signed_request_enabled (bool), inline_hook_id, idp_issuer, sp_issuer, single_logout_url, single_logout_issuer, single_logout_certificate, default_relay_state, request_compressed (bool), saml_version ("2.0"|"1.1"), key_name, key_years_valid, preconfigured_app, app_settings_json, app_links_json, status ("ACTIVE"|"INACTIVE"), user_name_template, user_name_template_type, user_name_template_suffix, user_name_template_push_status, acs_endpoints (list, max 100), authentication_policy, hide_ios (bool), hide_web (bool), auto_submit_toolbar (bool), implicit_assignment (bool), enduser_note, admin_note
+FORBIDDEN — these blocks/attributes do NOT exist on okta_app_saml v4.x and fail terraform validate with "Unsupported argument" or "Unsupported block type":
+  - `provisioning { }` block (does NOT exist; SCIM provisioning on SAML apps is configured via the Okta Admin Console UI, NOT Terraform)
+  - `provisioning_type`, `scim_enabled`, `scim_url`, `scim_settings`, `scim_connector` (none exist)
+  - `users { }` or `groups` attribute (use `okta_app_user` and `okta_app_group_assignment` resources)
+  - `okta_app_saml_attribute_statements` separate resource (does not exist; use inline `attribute_statements` block)
 
 **okta_app_oauth**
 Required: label, type ("web"|"native"|"browser"|"service"), grant_types (list of strings)
@@ -499,7 +887,53 @@ Optional: token_endpoint_auth_method ("client_secret_basic"|"client_secret_post"
   consent_method ("REQUIRED"|"TRUSTED"|"IMPLICIT"), login_uri, post_logout_redirect_uris,
   wildcard_redirect, pkce_required (bool), status ("ACTIVE"|"INACTIVE"),
   groups_claim { type, filter_type, name, value }
-FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy
+FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy,
+  `provisioning { }` block (does NOT exist; SCIM provisioning on OAuth/OIDC apps is configured via the Okta Admin Console UI, NOT Terraform),
+  `scim_enabled`, `scim_url`, `scim_settings` (none exist)
+
+**okta_group**
+Required: name (string, the group's display name)
+Optional: description (string), custom_profile_attributes (JSON-encoded string for custom attributes)
+FORBIDDEN: type (no top-level type attribute exists for okta_group), users (the okta_group resource does not manage memberships; use okta_group_rule or okta_group_memberships)
+
+**okta_group_rule**
+Required: name (string, MAXIMUM 50 CHARACTERS, the Okta provider rejects longer names with `[name] cannot be longer than 50 characters` at terraform validate time. Pick a SHORT identifier like `engineering_auto_assign` or `Engineering Auto-Assign`; do NOT echo the user's full sentence as the rule name. WORKED EXAMPLE: prompt "Rule: add users to the Management group when their title contains Manager" must NOT produce name="Add users to Management group when title contains Manager" (57 chars, REJECTED). Correct names: "Management Auto-Assign" (22 chars), "Auto-Assign Managers" (20 chars), "Title to Management" (19 chars). Count characters before emitting; if length > 50, abbreviate by removing filler words ("when their", "users to", "based on") until under the limit.),
+  expression_value (Okta expression string — see EXPRESSION SYNTAX below),
+  group_assignments (list of okta_group resource IDs that matching users will be ADDED to)
+Optional: status (`ACTIVE` or `INACTIVE`, default `ACTIVE`),
+  expression_type (default and ONLY valid value: `urn:okta:expression:1.0`),
+  users_excluded (list of user IDs to exclude when the rule is processed),
+  remove_assigned_users (bool, default false)
+
+EXPRESSION SYNTAX (CRITICAL — group rules special-case profile attributes):
+The Okta group rule API rejects `user.profile.X` syntax with "Invalid property profile in expression ..." at terraform apply (this is an L2 runtime check, not a schema check, so terraform validate passes but apply fails). Group rules access user profile attributes via the shorthand `user.X` form, NOT the fully-qualified `user.profile.X` form used in inline hooks or SCIM mappings.
+
+  - CORRECT: `user.department == "Engineering"`
+  - CORRECT: `user.title == "Manager"`
+  - CORRECT: `user.department == "Engineering" and user.employeeType == "FTE"`
+  - WRONG: `user.profile.department == "Engineering"` — fails apply
+  - WRONG: `user.profile.title == "Manager"` — fails apply
+
+String literals in Okta expressions use double quotes. Escape them in HCL as `\"` so the rendered expression contains the literal quotes. Example: `expression_value = "user.department == \"Engineering\""`.
+
+FORBIDDEN — these are hallucinations that fail at apply time even when terraform validate passes:
+  - name attribute longer than 50 characters — Okta enforces a 50-char limit; if the user's prompt is verbose, abbreviate to a short identifier rather than copying the prompt verbatim
+  - `type` (no top-level `type = "group_rule"` attribute exists; the rule type is implicit)
+  - `group_ids` (use `group_assignments` — `group_ids` is invalid in the v4.x schema)
+  - `expression` (use `expression_value` — bare `expression` is invalid in the v4.x schema)
+  - Any expression_type value other than `urn:okta:expression:1.0` — NOT `urn:okta:expression:GroupRule`, NOT `urn:okta:expression:group:pred:expression`, NOT any other variant
+  - `user.profile.X` syntax inside `expression_value` (use `user.X` shorthand — see EXPRESSION SYNTAX above)
+
+Canonical example:
+```hcl
+resource "okta_group_rule" "engineering_auto_assign" {
+  name              = "engineering_auto_assign"
+  status            = "ACTIVE"
+  expression_type   = "urn:okta:expression:1.0"
+  expression_value  = "user.department == \"Engineering\""
+  group_assignments = [okta_group.engineering.id]
+}
+```
 
 **okta_user_profile_mapping**
 Required: source_id (the app or directory source ID), always_apply (bool, usually false)
@@ -540,11 +974,16 @@ Optional: access_token_lifetime_minutes (int), refresh_token_lifetime_minutes (i
   refresh_token_window_minutes (int), inline_hook_id
 FORBIDDEN: rule_id, token_lifetime, allowed_clients
 
-**okta_factor**
-Required: provider_id (string: "GOOGLE","OKTA","DUO","FIDO","RSA","SYMANTEC","YUBICO"),
-  status ("ACTIVE"|"INACTIVE")
-Optional: active (bool — deprecated, prefer status)
-FORBIDDEN: factor_type (not a top-level attribute), okta_policy, policy_id
+**okta_factor** (okta/okta v4.x, locked at 4.20.0)
+Required: provider_id (string, lowercase canonical name; allowed values:
+  "okta_otp", "okta_push", "okta_question", "okta_sms", "okta_call",
+  "okta_email", "okta_password", "google_otp", "duo", "fido_u2f",
+  "fido_webauthn", "yubikey_token", "rsa_token", "symantec_vip", "hotp")
+Optional: active (bool, default true)
+FORBIDDEN: status (does NOT exist in v4.x; the v3-era "status" attribute was
+  replaced by "active"; emitting status fails terraform validate with
+  "Unsupported argument"); factor_type (not a top-level attribute);
+  okta_policy, policy_id (okta_factor is a standalone org-level resource)
 
 **okta_network_zone**
 Required: name, type ("IP"|"DYNAMIC")
@@ -572,15 +1011,16 @@ INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and 
 
 {user_input}"""
 
-GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda Python for the following confirmed intent:
+GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda/Cloud Function Python for the following confirmed intent:
 
 {intent_json}
 
 OUTPUT MODE: {output_mode}
 {multi_resource_section}
 {aws_resource_section}
+{gcp_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}
 {repo_context_section}
-Return only the JSON object. Always include the four required keys and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
+Return only the JSON object. Always include the seven required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements) and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""

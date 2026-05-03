@@ -97,11 +97,16 @@ class TestCase:
     prompt: str
     okta_types: list = field(default_factory=list)
     aws_types: list = field(default_factory=list)
+    gcp_types: list = field(default_factory=list)
     expected_resource_type: Optional[str] = None
     # strings that MUST appear in terraform_okta_hcl
     must_contain: list = field(default_factory=list)
     # strings that must NOT appear in terraform_okta_hcl
     must_not_contain_okta: list = field(default_factory=list)
+    # strings that MUST appear in terraform_gcp_hcl (GCP/Okta+GCP modes)
+    must_contain_gcp: list = field(default_factory=list)
+    # strings that must NOT appear in terraform_gcp_hcl
+    must_not_contain_gcp: list = field(default_factory=list)
     notes: str = ""
 
 
@@ -113,7 +118,46 @@ HALLUCINATED_REMOVE_ATTRS = [
     "unassign_group_ids",
 ]
 
-FORBIDDEN_EVENT_HOOK_ATTRS = ['"events"', '"filters"', '"auth_type"']
+# Wrong attribute names / values that have shipped in real generations and would
+# fail terraform validate against okta/okta ~> 4.0. Block in QA so the regression
+# cannot return.
+FORBIDDEN_GROUP_RULE_ATTRS = [
+    # Match the bad attribute as an assignment, not as a substring of a variable
+    # name like `group_ids_for_rule` which is legitimate.
+    "group_ids =",
+    "group_ids=",
+    'type = "group_rule"',
+    "urn:okta:expression:GroupRule",
+    "urn:okta:expression:group:pred:expression",
+]
+
+FORBIDDEN_EVENT_HOOK_ATTRS = ['events_filter', '"filters"', '"auth_type"']
+
+# Hallucinated provisioning block on okta_app_saml / okta_app_oauth.
+# SCIM provisioning on app resources is NOT supported by the v4.x Okta provider —
+# it is configured via the Okta Admin Console UI, not Terraform. Any provisioning {}
+# block on a SAML or OAuth app will fail terraform validate.
+FORBIDDEN_BRAND_ATTRS = ["logo", "primary_color", "secondary_color"]
+FORBIDDEN_NETWORK_ZONE_ATTRS = ["ip_list", "allowed_ips", "blocked_ips", "cidr_ranges"]
+
+# GCP — never emit. google_project_iam_policy is AUTHORITATIVE and overwrites
+# the entire project IAM policy on apply (use google_project_iam_member instead).
+# Cloud Functions Gen1 (no `2`) is deprecated; we ship Gen2 only.
+FORBIDDEN_GCP_RESOURCES = [
+    "google_project_iam_policy",
+    "google_organization_iam_policy",
+    "google_folder_iam_policy",
+    "google_cloudfunctions_function",  # Gen1, deprecated
+]
+
+FORBIDDEN_APP_SCIM_ATTRS = [
+    "provisioning {",
+    "provisioning_type",
+    "scim_enabled",
+    "scim_url",
+    "scim_settings",
+    "scim_connector",
+]
 
 TEST_CASES = [
     # ── okta_group ────────────────────────────────────────────────────────────
@@ -132,19 +176,24 @@ TEST_CASES = [
     # ── okta_group_rule (add-only — never remove) ─────────────────────────────
     TestCase("GR01", "Create a rule that adds users with department=Engineering to the Engineering group",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR02", "Automatically add contractors to the Contractors group based on their job title",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR03", "Create a group rule assigning US employees when their country attribute is US",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR04", "Rule: add users to the Management group when their title contains Manager",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
     TestCase("GR05", "Assign all sales department users to the Sales group automatically",
              expected_resource_type="okta_group_rule",
-             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS),
+             must_contain=["expression_value", "group_assignments"],
+             must_not_contain_okta=HALLUCINATED_REMOVE_ATTRS + FORBIDDEN_GROUP_RULE_ATTRS),
 
     # ── okta_event_hook — group membership scenarios (must use group.user_membership.add) ──
     TestCase("EH01",
@@ -207,6 +256,9 @@ TEST_CASES = [
              okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml"),
     TestCase("AS05", "Add a new SAML app integration for Box",
              okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml"),
+    TestCase("AS06", "Create a SAML app called HR Portal for Workday with SCIM provisioning",
+             okta_types=["okta_app_saml"], expected_resource_type="okta_app_saml",
+             must_contain=["okta_app_saml"]),
 
     # ── okta_app_oauth ────────────────────────────────────────────────────────
     TestCase("AO01", "Create an OAuth 2.0 app for our internal dashboard",
@@ -264,9 +316,10 @@ TEST_CASES = [
 
     # ── AWS mode (Both) — Lambda must be generated ────────────────────────────
     TestCase("AW01", "Create an event hook that fires when a user is deactivated",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function"],
              must_contain=["user.lifecycle.deactivate"],
-             notes="output_mode=Both: lambda_python must not be empty"),
+             notes="output_mode=Both: okta_event_hook + lambda_python both required"),
     TestCase("AW02", "Set up a scheduled Lambda that checks for inactive Okta users daily",
              aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule"],
              notes="EventBridge rule must appear in terraform_lambda_hcl"),
@@ -328,19 +381,45 @@ TEST_CASES = [
              expected_resource_type="okta_auth_server",
              must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim"]),
 
+    # ── Complex multi-resource Okta workflows (added 2026-04-29) ──────────────
+    TestCase("COMP09",
+             "Set up a complete onboarding workflow: create groups for Engineering, Sales, and HR. Create group rules that auto-assign users to each group based on their department attribute. Create a SAML app for Workday with attribute statements for department and manager, and assign all three groups to it. Add an event hook that fires when a new user is created in Okta and notifies a Lambda for downstream provisioning.",
+             okta_types=["okta_group", "okta_group_rule", "okta_app_saml", "okta_event_hook"],
+             aws_types=["aws_lambda_function"],
+             must_contain=["okta_group", "okta_group_rule", "okta_app_saml", "okta_event_hook",
+                           "user.lifecycle.create", "okta_app_group_assignment"],
+             notes="Composite onboarding: 3 groups + 3 rules + SAML app + 3 assignments + event hook + Lambda"),
+    TestCase("COMP10",
+             "Set up a custom authorization server for our internal API. Define three scopes: read:data, write:data, and admin:data. Add two custom claims: a groups claim sourced from user.groups and a role claim sourced from user.profile.role. Create an access policy that allows read:data to all authenticated users but restricts write:data and admin:data to users in the API-Admins group. Create two OAuth apps: a public mobile app that requests only read:data and a confidential web app that requests all three scopes.",
+             okta_types=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
+                         "okta_auth_server_policy", "okta_auth_server_policy_rule", "okta_app_oauth"],
+             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
+                           "okta_auth_server_policy", "okta_app_oauth", "read:data", "write:data", "admin:data"],
+             notes="Zero-trust API access: full OAuth machinery (auth server + 3 scopes + 2 claims + policy + rule + 2 apps)"),
+    TestCase("COMP11",
+             "Build an offboarding pipeline: create a Terminated group; a group rule that adds users with employmentStatus equal to Terminated to that group; an event hook that fires on the user being added to the Terminated group; and a Lambda that calls the Okta API to deactivate the user, sends an SNS alert to the security team, and revokes their active sessions. Also enable Okta Verify push notifications as an MFA factor for the org.",
+             okta_types=["okta_group", "okta_group_rule", "okta_event_hook", "okta_factor"],
+             aws_types=["aws_lambda_function", "aws_sns_topic"],
+             must_contain=["okta_group", "okta_group_rule", "okta_event_hook", "okta_factor",
+                           "group.user_membership.add"],
+             notes="Offboarding pipeline: group + rule + event hook on group.user_membership.add + Lambda + SNS + Okta Verify factor"),
+
     # ── optional_tf collision tests (Both mode) ───────────────────────────────
     TestCase("OPT01",
              "When a user is removed from the Contractors group, deactivate their account. Also run a daily Lambda sweep for contractors whose end date has passed.",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule"],
              must_contain=["group.user_membership.remove"],
              notes="optional_tf must not redefine aws_lambda_function or aws_iam_role"),
     TestCase("OPT02",
              "Fire an event hook when a user is added to the Terminated group and send an SNS alert to the security team",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function", "aws_sns_topic"],
              must_contain=["group.user_membership.add"],
              notes="optional_tf must not redefine Lambda or use IAM policy name 'handler'"),
     TestCase("OPT03",
              "Create an event hook for user deactivation that calls a Lambda. Add a CloudWatch alarm on Lambda errors.",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function"],
              must_contain=["user.lifecycle.deactivate"],
              notes="optional_tf CloudWatch alarm must reference aws_lambda_function.handler, not redeclare it"),
@@ -350,6 +429,7 @@ TEST_CASES = [
              notes="optional_tf must not add a second aws_lambda_function resource"),
     TestCase("OPT05",
              "Set up an event hook for new user creation that triggers Lambda and also publishes to SNS for audit logging",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function", "aws_sns_topic"],
              must_contain=["user.lifecycle.create"],
              notes="SNS resources in optional_tf must not redefine Lambda or duplicate IAM policy"),
@@ -466,7 +546,7 @@ TEST_CASES = [
     # ── okta_factor additional types ──────────────────────────────────────────
     TestCase("MFA03", "Enable Duo Security as a supported MFA factor for the org",
              expected_resource_type="okta_factor",
-             must_contain=["okta_factor", "DUO"],
+             must_contain=["okta_factor", "duo"],
              must_not_contain_okta=["okta_policy"]),
     TestCase("MFA04", "Enable FIDO2 WebAuthn as an MFA factor",
              expected_resource_type="okta_factor",
@@ -527,11 +607,14 @@ TEST_CASES = [
              "Create an OAuth service account app using client credentials grant for a backend microservice",
              okta_types=["okta_app_oauth"], expected_resource_type="okta_app_oauth",
              must_contain=["grant_types"],
-             must_not_contain_okta=["redirect_uris", "client_credentials {"]),
+             # Match the bad attribute as an assignment (not as a substring of a
+             # legitimate explanatory comment like "does not require redirect_uris").
+             must_not_contain_okta=["redirect_uris =", "redirect_uris=", "client_credentials {"]),
 
     # ── AWS mode additional scenarios ─────────────────────────────────────────
     TestCase("AWX01",
              "Create an event hook for user deactivation with a REST API Gateway endpoint instead of a direct Lambda URL",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function", "aws_api_gateway_rest_api"],
              must_contain=["user.lifecycle.deactivate"],
              notes="API Gateway resources must appear in terraform_lambda_hcl"),
@@ -541,9 +624,10 @@ TEST_CASES = [
              notes="EventBridge + SNS must both appear in terraform_lambda_hcl"),
     TestCase("AWX03",
              "Set up a Lambda that fires when a user is added to the Offboarding group and sends an SNS notification to the security team",
+             okta_types=["okta_event_hook"],
              aws_types=["aws_lambda_function", "aws_sns_topic"],
              must_contain=["group.user_membership.add"],
-             notes="output_mode=Both: lambda_python and SNS topic must be present"),
+             notes="output_mode=Both: okta_event_hook + lambda_python + SNS topic all required"),
     TestCase("AWX04",
              "Create a scheduled Lambda that runs weekly to deprovision Okta users whose access end date has passed",
              aws_types=["aws_lambda_function", "aws_cloudwatch_event_rule"],
@@ -611,6 +695,110 @@ TEST_CASES = [
              must_contain=["attribute_statements"],
              must_not_contain_okta=["okta_app_saml_attribute_statements"],
              notes="Regression: no hallucinated separate attribute resource"),
+
+    # ── GCP module — Phase 1 verification ─────────────────────────────────────
+    TestCase("GCP01",
+             "Create a Cloud Function that responds to HTTP requests and returns a JSON status",
+             gcp_types=["google_cloudfunctions2_function"],
+             must_contain_gcp=[
+                 'provider "google"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 'resource "google_service_account" "handler"',
+                 'runtime     = "python311"',
+                 'entry_point = "main"',
+             ],
+             notes="Single-function HTTP trigger — exercises the standard Gen2 stack: SA + source bucket + function"),
+    TestCase("GCP02",
+             "Create a Pub/Sub topic called demo-events with a Cloud Function subscriber that logs each message",
+             gcp_types=["google_cloudfunctions2_function", "google_pubsub_topic"],
+             must_contain_gcp=[
+                 'resource "google_pubsub_topic" "handler"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 "event_trigger",
+                 "google.cloud.pubsub.topic.v1.messagePublished",
+             ],
+             notes="Pub/Sub trigger — function must wire event_trigger to the topic"),
+    TestCase("GCP03",
+             "Deploy a Cloud Run service called internal-api running a custom container",
+             gcp_types=["google_cloud_run_v2_service"],
+             must_contain_gcp=[
+                 'resource "google_cloud_run_v2_service"',
+                 "template",
+                 "containers",
+                 'google_service_account.',
+             ],
+             notes="Cloud Run Gen2 service: must use the v2 resource and template/containers shape. Service-account reference is checked by substring (any whitespace, any resource name)."),
+    TestCase("GCP04",
+             "Create a daily scheduled Cloud Function that runs at 9 AM UTC and processes pending records",
+             gcp_types=["google_cloudfunctions2_function", "google_cloud_scheduler_job"],
+             must_contain_gcp=[
+                 'resource "google_cloud_scheduler_job" "handler"',
+                 'resource "google_cloudfunctions2_function" "handler"',
+                 "http_target",
+                 "oidc_token",
+             ],
+             notes="Scheduler + Function — scheduler must invoke the function via OIDC"),
+    TestCase("GCP05",
+             "Create an Okta event hook that fires on user deactivation and calls a GCP Cloud Function",
+             okta_types=["okta_event_hook"],
+             gcp_types=["google_cloudfunctions2_function"],
+             expected_resource_type="okta_event_hook",
+             must_contain=['resource "okta_event_hook"', "user.lifecycle.deactivate"],
+             must_contain_gcp=[
+                 'resource "google_cloudfunctions2_function" "handler"',
+             ],
+             notes="Okta + GCP composite — Okta event hook with channel.uri pointing at the Cloud Function URI, no AWS Lambda"),
+
+    # ── Complex multi-resource GCP workflows (added 2026-04-29) ───────────────
+    TestCase("GCPX01",
+             "Create a Pub/Sub topic called orders that fans out to two Cloud Functions: one called order-processor that records the order to a database, and one called order-notifier that sends an email confirmation to the customer. Both functions must be triggered by the same topic.",
+             gcp_types=["google_cloudfunctions2_function", "google_pubsub_topic"],
+             must_contain_gcp=[
+                 'resource "google_pubsub_topic"',
+                 'resource "google_cloudfunctions2_function"',
+                 "google.cloud.pubsub.topic.v1.messagePublished",
+                 "event_trigger",
+             ],
+             must_not_contain_gcp=["google_cloudfunctions_function"],
+             notes="Pub/Sub fan-out: 1 topic, 2 subscriber functions. Both functions must wire event_trigger to the same topic."),
+    TestCase("GCPX02",
+             "Create a Cloud Storage bucket called document-uploads. When a new object is finalized in the bucket, fire a Cloud Function called document-processor that reads the object, extracts metadata, and writes a JSON summary to a separate metadata bucket.",
+             gcp_types=["google_cloudfunctions2_function", "google_storage_bucket"],
+             must_contain_gcp=[
+                 'resource "google_storage_bucket"',
+                 'resource "google_cloudfunctions2_function"',
+                 "google.cloud.storage.object.v1.finalized",
+                 "event_trigger",
+             ],
+             must_not_contain_gcp=["google_cloudfunctions_function"],
+             notes="GCS object-finalize trigger: bucket + Cloud Function that fires on new object upload."),
+    TestCase("GCPX03",
+             "Create a Cloud Function that reads an API key from Secret Manager at runtime and calls an external weather API to return the forecast for a given city. The function's service account must have only secretmanager.secretAccessor on that specific secret.",
+             gcp_types=["google_cloudfunctions2_function", "google_secret_manager_secret"],
+             must_contain_gcp=[
+                 'resource "google_secret_manager_secret"',
+                 'resource "google_cloudfunctions2_function"',
+                 "roles/secretmanager.secretAccessor",
+             ],
+             must_not_contain_gcp=["google_project_iam_policy"],
+             notes="Secret Manager + Cloud Function: SA reads secret at runtime via least-privilege IAM binding (member, not policy)."),
+    TestCase("GCPX04",
+             "Create a new GCP project called gemini-sandbox under my organization, create a service account called gemini-runner inside it, mint an API key for that project, enable the Gemini / Vertex AI API, and grant my user (oleg@example.com) the serviceAccountUser role on the gemini-runner SA so I can impersonate it locally.",
+             gcp_types=["google_project", "google_service_account",
+                        "google_apikeys_key", "google_project_service",
+                        "google_service_account_iam_member"],
+             must_contain_gcp=[
+                 'resource "google_project"',
+                 'resource "google_service_account"',
+                 'resource "google_apikeys_key"',
+                 "aiplatform.googleapis.com",
+                 "roles/iam.serviceAccountUser",
+             ],
+             must_not_contain_gcp=["google_project_iam_policy",
+                                   "google_organization_iam_policy",
+                                   "google_service_account_iam_policy"],
+             notes="Project provisioning + Vertex AI + API key + SA impersonation grant. "
+                   "Apply requires org-admin perms (org_id, billing_account)."),
 ]
 
 
@@ -655,22 +843,219 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             issues.append(f"Hallucinated attribute '{attr}' in okta HCL")
 
     # ── 3. Forbidden event hook attribute names ────────────────────────────
-    if "okta_event_hook" in okta_hcl:
+    # Strip comment lines so explanatory NOTE/guidance prose mentioning
+    # `resource "okta_event_hook"` (e.g. "use okta_event_hook for the
+    # remove-from-group case instead") does not trigger event_hook checks
+    # on a group_rule output. Mirrors the SCIM block below.
+    non_comment_okta_hcl = "\n".join(
+        line for line in okta_hcl.split("\n")
+        if not line.lstrip().startswith("#")
+    )
+    if 'resource "okta_event_hook"' in non_comment_okta_hcl:
         for f in FORBIDDEN_EVENT_HOOK_ATTRS:
-            if f in okta_hcl:
+            if f in non_comment_okta_hcl:
                 issues.append(f"Forbidden event hook attribute {f}")
-        if "channel" not in okta_hcl:
+        if "channel" not in non_comment_okta_hcl:
             issues.append("okta_event_hook missing 'channel' block")
-        if "events_filter" not in okta_hcl:
-            issues.append("okta_event_hook missing 'events_filter' block")
+        # v4.x schema: `events = [...]` is a flat set attribute (not the
+        # legacy `events_filter = { items = [...] }` envelope). Match the
+        # attribute via regex anchored at line start so substrings inside
+        # other constructs do not satisfy the check.
+        if not re.search(r'^\s*events\s*=', non_comment_okta_hcl, re.MULTILINE):
+            issues.append("okta_event_hook missing 'events' attribute (v4.x schema)")
 
     # ── 4. Group membership scenarios must include group.user_membership.* ──
     is_group_scenario = any(kw in tc.prompt.lower() for kw in
                             ["added to", "remove from", "joins the", "mutual exclusiv",
                              "role transition", "only be in one"])
-    if is_group_scenario and "okta_event_hook" in okta_hcl:
-        if "group.user_membership" not in okta_hcl:
+    if is_group_scenario and "okta_event_hook" in non_comment_okta_hcl:
+        if "group.user_membership" not in non_comment_okta_hcl:
             issues.append("Group-membership scenario missing group.user_membership.* event — check event types")
+
+    # ── 4a. SCIM provisioning hallucination on app resources ───────────────
+    # Strip comment lines so explanatory NOTE blocks (which legitimately mention
+    # "provisioning {} block" in prose) don't false-positive.
+    if "okta_app_saml" in okta_hcl or "okta_app_oauth" in okta_hcl:
+        non_comment_hcl = "\n".join(
+            line for line in okta_hcl.split("\n")
+            if not line.lstrip().startswith("#")
+        )
+        for attr in FORBIDDEN_APP_SCIM_ATTRS:
+            if attr in non_comment_hcl:
+                issues.append(
+                    f"Hallucinated SCIM/provisioning attribute '{attr}' on app resource, "
+                    f"the v4.x Okta provider has no provisioning block; SCIM is UI-only"
+                )
+
+    # ── 4b. Forbidden okta_brand attributes (logo, primary_color, secondary_color) ──
+    # The v4.x provider does not support these — apply fails with "Unsupported
+    # argument". Scan only inside a `resource "okta_brand"` block so unrelated
+    # resources that legitimately use a `logo` attribute aren't false-positived.
+    brand_block_match = re.search(
+        r'resource\s+"okta_brand"\s+"[^"]+"\s*\{([\s\S]*?)\n\}',
+        okta_hcl,
+    )
+    if brand_block_match:
+        body = brand_block_match.group(1)
+        body_no_comments = "\n".join(
+            line for line in body.split("\n")
+            if not line.lstrip().startswith("#")
+        )
+        for attr in FORBIDDEN_BRAND_ATTRS:
+            if re.search(rf'\b{re.escape(attr)}\s*=', body_no_comments) or \
+               re.search(rf'\b{re.escape(attr)}\s*\{{', body_no_comments):
+                issues.append(
+                    f"Forbidden okta_brand attribute '{attr}' — not supported by v4.x provider; "
+                    f"logo upload is an Admin Console operation."
+                )
+
+    # ── 4b.2 Forbidden okta_network_zone attributes ──────────────────────────
+    if 'resource "okta_network_zone"' in okta_hcl:
+        for attr in FORBIDDEN_NETWORK_ZONE_ATTRS:
+            if re.search(rf'\b{re.escape(attr)}\s*=', okta_hcl):
+                issues.append(
+                    f"Forbidden okta_network_zone attribute '{attr}' — use `gateways` "
+                    f"(IP zones) or `dynamic_locations`/`asns` (DYNAMIC zones) instead."
+                )
+        # IP/DYNAMIC mutual exclusivity: a single zone declaring both gateways
+        # and dynamic_locations/asns is a hallucination of zone shape.
+        nz_blocks = re.findall(
+            r'resource\s+"okta_network_zone"\s+"[^"]+"\s*\{([\s\S]*?)\n\}',
+            okta_hcl,
+        )
+        for body in nz_blocks:
+            has_gateways = re.search(r'\bgateways\s*=', body) or re.search(r'\bgateways\s*\{', body)
+            has_dynamic = re.search(r'\bdynamic_locations\s*=', body) or re.search(r'\basns\s*=', body)
+            if has_gateways and has_dynamic:
+                issues.append(
+                    "okta_network_zone mixes `gateways` with `dynamic_locations`/`asns` — "
+                    "IP and DYNAMIC zone fields are mutually exclusive."
+                )
+
+    # ── 4c. Unescaped Okta Expression Language in HCL string literals ──────
+    # `${user.email}` is interpolation in Terraform. Okta Expression Language
+    # placeholders must be escaped as `$${user.email}` in source so the literal
+    # `${user.email}` ships to Okta. Bare `${...}` fails terraform validate
+    # with "Reference to undeclared resource".
+    bad_expr_pattern = re.compile(
+        r'(subject_name_id_template|user_name_template)\s*=\s*"\$\{[^$][^}]*\}"'
+    )
+    for m in bad_expr_pattern.finditer(okta_hcl):
+        issues.append(
+            f"Unescaped Okta Expression Language: `{m.group(0)}`. "
+            f"Use `$$` (double dollar) so Terraform does not parse it as an interpolation."
+        )
+
+    # ── 4d. SCIM prompt must include the NOTE comment block ───────────────
+    # If the prompt mentions SCIM and the output includes okta_app_saml or
+    # okta_app_oauth, the output must include a `# NOTE:` comment block that
+    # references the Admin Console Provisioning tab (per SECTION F.5 and
+    # commit 47a3de6).
+    prompt_mentions_scim = "scim" in tc.prompt.lower()
+    output_has_app = "okta_app_saml" in okta_hcl or "okta_app_oauth" in okta_hcl
+    if prompt_mentions_scim and output_has_app:
+        scim_note = re.search(
+            r"#\s*NOTE:.*SCIM.*Admin Console.*Provisioning",
+            okta_hcl,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not scim_note:
+            issues.append(
+                "SCIM prompt missing required `# NOTE:` comment block referencing "
+                "Admin Console Provisioning tab (regression of commit 47a3de6)."
+            )
+
+    # ── 4f. SCIM SAML prompt must not produce over-scope secondary resources
+    # Today's regression: model added okta_group_rule and
+    # okta_user_profile_mapping to a "SAML + assign to group" prompt.
+    # Per prompts.py:210 allow-list, neither is permitted as a secondary
+    # resource for an okta_app_saml intent unless the prompt explicitly
+    # asks for them. SCIM substitution via okta_user_profile_mapping is
+    # specifically called out as forbidden in SECTION F.5.
+    if "okta_app_saml" in okta_hcl and "scim" in tc.prompt.lower():
+        prompt_asks_for_rule = bool(re.search(
+            r"\b(rule|auto[- ]?assign|matching|for users where)\b",
+            tc.prompt,
+            re.IGNORECASE,
+        ))
+        prompt_asks_for_mapping = "profile mapping" in tc.prompt.lower()
+        if not prompt_asks_for_rule and "okta_group_rule" in okta_hcl:
+            issues.append(
+                "Over-scope: okta_group_rule emitted on a SAML+assign prompt "
+                "that did not ask for an auto-assignment rule. Group assignment "
+                "for a SAML app uses okta_app_group_assignment, never a rule."
+            )
+        if not prompt_asks_for_mapping and "okta_user_profile_mapping" in okta_hcl:
+            issues.append(
+                "Over-scope: okta_user_profile_mapping emitted as a SCIM "
+                "substitute. SCIM provisioning is UI-only per SECTION F.5 and "
+                "the NOTE comment is the only valid response."
+            )
+
+    # ── 4e. okta_app_saml must include API-required fields (L2 layer) ─────
+    # The Okta backend rejects creates that omit these fields, even though
+    # the Terraform provider schema marks them optional. See SECTION G.5.
+    # Discovered via apply failure on run 25023847132 (2026-04-27).
+    if "okta_app_saml" in okta_hcl:
+        saml_blocks = re.findall(
+            r'resource\s+"okta_app_saml"\s+"[^"]+"\s*\{[^}]*?\n\}',
+            okta_hcl,
+            re.DOTALL,
+        )
+        # Fallback for nested attribute_statements blocks: take everything
+        # between the resource opener and the first `^}` at column 0.
+        if not saml_blocks:
+            saml_blocks = re.findall(
+                r'resource\s+"okta_app_saml"\s+"[^"]+"\s*\{.*?\n\}',
+                okta_hcl,
+                re.DOTALL,
+            )
+        api_required = [
+            "authn_context_class_ref",
+            "signature_algorithm",
+            "digest_algorithm",
+            "honor_force_authn",
+        ]
+        for block in saml_blocks:
+            for field in api_required:
+                if field not in block:
+                    issues.append(
+                        f"okta_app_saml missing API-required field `{field}` "
+                        f"(SECTION G.5; apply will fail with 'missing conditionally "
+                        f"required fields')."
+                    )
+
+    # ── 4g. okta_group_rule expression must use user.X (not user.profile.X) ──
+    # Okta's group rule API rejects user.profile.X syntax with "Invalid
+    # property profile in expression ..." at apply time (L2 runtime check,
+    # not schema). Group rules special-case profile attributes via the
+    # shorthand user.X form. Discovered via apply failure on run 25031083752
+    # (2026-04-28).
+    if "okta_group_rule" in okta_hcl:
+        bad_expr_pattern = re.compile(
+            r'expression_value\s*=\s*"[^"]*\buser\.profile\.[a-zA-Z_]'
+        )
+        for m in bad_expr_pattern.finditer(okta_hcl):
+            issues.append(
+                "okta_group_rule.expression_value uses `user.profile.X` syntax. "
+                "Group rules require the shorthand `user.X` form (e.g. "
+                "`user.department`, not `user.profile.department`). Apply "
+                "fails with `Invalid property profile in expression ...`."
+            )
+
+    # ── 4b. okta_group_rule name must be ≤50 chars (provider-enforced) ─────
+    if "okta_group_rule" in okta_hcl:
+        rule_name_pattern = re.compile(
+            r'resource\s+"okta_group_rule"\s+"[^"]+"\s*\{[^}]*?name\s*=\s*"([^"]+)"',
+            re.DOTALL,
+        )
+        for m in rule_name_pattern.finditer(okta_hcl):
+            name_val = m.group(1)
+            if len(name_val) > 50:
+                issues.append(
+                    f"okta_group_rule name '{name_val}' exceeds 50 chars "
+                    f"(length {len(name_val)}) — Okta provider limit"
+                )
 
     # ── 5. must_contain checks ─────────────────────────────────────────────
     for s in tc.must_contain:
@@ -738,7 +1123,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         # exact resource match only — avoid substring hits (e.g. okta_auth_server_policy)
         "okta_auth_server":         ["audiences", "issuer_mode"],
         "okta_auth_server_policy":  ["client_whitelist", "priority"],
-        "okta_factor":              ["provider_id", "status"],
+        "okta_factor":              ["provider_id"],
         "okta_network_zone":        ["type"],
         "okta_email_customization": ["brand_id", "template_name", "body"],
     }
@@ -752,7 +1137,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     FORBIDDEN_ATTR_MAP = {
         "okta_app_oauth":           [r"client_id_scheme", r"app_type\s*=", r"client_credentials\s*\{"],
         "okta_auth_server":         [r"\bissuer\s*=", r"\borg_url\s*="],
-        "okta_factor":              [r"\bfactor_type\s*=", r"\bpolicy_id\s*="],
+        "okta_factor":              [r"\bfactor_type\s*=", r"\bpolicy_id\s*=", r"^\s*status\s*=\s*\"ACTIVE\""],
         "okta_network_zone":        [r"\bip_list\s*=", r"\bcidr_ranges\s*="],
         "okta_email_customization": [r"\blocale\s*="],
     }
@@ -770,6 +1155,69 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if okta_in_lambda:
         issues.append(f"okta_* resource(s) found in terraform_lambda_hcl: {okta_in_lambda}")
 
+    # ── 15. GCP module checks ───────────────────────────────────────────────
+    gcp_hcl = outputs.get("terraform_gcp_hcl", "") or ""
+
+    # 15a. Mode contract: GCP-only mode means everything else empty
+    if output_mode == "GCP only":
+        if okta_hcl.strip():
+            issues.append("terraform_okta_hcl not empty in GCP only mode")
+        if lambda_hcl.strip():
+            issues.append("terraform_lambda_hcl not empty in GCP only mode")
+        if outputs.get("lambda_python", "").strip():
+            issues.append("lambda_python not empty in GCP only mode")
+    if output_mode == "Okta + GCP":
+        if lambda_hcl.strip():
+            issues.append("terraform_lambda_hcl not empty in Okta + GCP mode")
+        if outputs.get("lambda_python", "").strip():
+            issues.append("lambda_python not empty in Okta + GCP mode")
+
+    # 15b. When GCP HCL is non-empty: provider boilerplate + Gen2 + naming + must_contain_gcp
+    if gcp_hcl.strip():
+        if 'provider "google"' not in gcp_hcl:
+            issues.append('terraform_gcp_hcl missing `provider "google"` block')
+        # In Okta + GCP composite mode, `merge_terraform_blocks` intentionally
+        # moves required_providers entries into terraform_okta_hcl and strips
+        # the entire `terraform {}` block from terraform_gcp_hcl. Skip this
+        # check there; check the okta side instead.
+        if output_mode == "Okta + GCP":
+            okta_hcl_check = outputs.get("terraform_okta_hcl", "")
+            if 'required_providers' not in okta_hcl_check or 'google = {' not in okta_hcl_check:
+                issues.append(
+                    "Okta+GCP composite: terraform_okta_hcl must declare both okta and google "
+                    "in required_providers after merge_terraform_blocks runs"
+                )
+        elif 'required_providers' not in gcp_hcl:
+            issues.append("terraform_gcp_hcl missing `required_providers` block")
+
+        # Forbidden GCP resources (auth-overwriting IAM policies, Gen1 functions)
+        for forbidden in FORBIDDEN_GCP_RESOURCES:
+            if re.search(rf'resource\s+"{re.escape(forbidden)}"', gcp_hcl):
+                issues.append(
+                    f"Forbidden GCP resource '{forbidden}' — see SECTION C2 forbidden list "
+                    f"(authoritative IAM policies overwrite project state; Gen1 functions are deprecated)."
+                )
+
+        # No okta_* or aws_* in terraform_gcp_hcl
+        cross_okta = re.findall(r'resource\s+"(okta_[^"]+)"', gcp_hcl)
+        if cross_okta:
+            issues.append(f"okta_* resource(s) found in terraform_gcp_hcl: {cross_okta}")
+        cross_aws = re.findall(r'resource\s+"(aws_[^"]+)"', gcp_hcl)
+        if cross_aws:
+            issues.append(f"aws_* resource(s) found in terraform_gcp_hcl: {cross_aws}")
+
+        # 15c. must_contain_gcp / must_not_contain_gcp from the test case
+        for needle in tc.must_contain_gcp:
+            if needle not in gcp_hcl:
+                issues.append(f"Expected '{needle}' in terraform_gcp_hcl")
+        for needle in tc.must_not_contain_gcp:
+            if needle in gcp_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_gcp_hcl")
+
+    # 15d. GCP modes must produce non-empty terraform_gcp_hcl
+    if output_mode in ("GCP only", "Okta + GCP") and not gcp_hcl.strip():
+        issues.append(f"terraform_gcp_hcl empty in {output_mode} mode")
+
     return issues
 
 
@@ -779,11 +1227,32 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
 
 def build_intent(tc: TestCase, client, model: str) -> dict:
     intent = parse_intent(tc.prompt, client, model=model, resource_type_hints=tc.okta_types)
+    # Parser is an Okta-infrastructure analyst; on GCP/AWS-only prompts (e.g.
+    # "Deploy a Cloud Run service") it can return operation_type="unknown".
+    # When the test author has supplied explicit type hints we already know the
+    # operation is a create, so override the unknown to keep validate_intent
+    # from hard-failing at the parser layer.
+    if intent.get("operation_type") == "unknown" and (tc.gcp_types or tc.aws_types or tc.okta_types):
+        intent["operation_type"] = "create"
     if tc.okta_types:
         intent["resource_types"] = tc.okta_types
     if tc.aws_types:
         intent["aws_resource_types"] = tc.aws_types
-    intent["output_mode"] = "Both" if tc.aws_types else "Okta Terraform only"
+    if tc.gcp_types:
+        intent["gcp_resource_types"] = tc.gcp_types
+    # Mode mapping mirrors app.py:Stage 1 (after-parse):
+    # both okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
+    # okta alone → "Okta Terraform only", aws alone (rare) → "Lambda only".
+    if tc.gcp_types and tc.okta_types:
+        intent["output_mode"] = "Okta + GCP"
+    elif tc.gcp_types:
+        intent["output_mode"] = "GCP only"
+    elif tc.aws_types and tc.okta_types:
+        intent["output_mode"] = "Both"
+    elif tc.aws_types:
+        intent["output_mode"] = "Lambda only"
+    else:
+        intent["output_mode"] = "Okta Terraform only"
     intent["answers"] = {}
     intent["provider_version"] = "~> 4.0"
     return intent
@@ -909,9 +1378,61 @@ def _parse_passes(argv: list[str]) -> tuple[int, set[int]]:
     return 1, set()
 
 
+def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[int, int, int]:
+    """Run terraform init + validate against each test's generated HCL.
+    Mutates `results` in place: adds `terraform_validate_pass` (bool|None)
+    and `terraform_validate_error` (str|None). On a validate failure also
+    appends a "terraform validate: ..." entry to `issues` and flips status
+    to FAIL. Returns (passed, failed, skipped) counts."""
+    from tf_validate import (
+        PLUGIN_CACHE,
+        WORKSPACE_ROOT,
+        make_env,
+        run_terraform,
+        write_workspace,
+    )
+
+    env = make_env()
+    print(f"\nterraform-validate: {len(results)} test(s)")
+    print(f"  plugin cache: {PLUGIN_CACHE}")
+    print(f"  workspaces:   {WORKSPACE_ROOT}")
+    print("=" * 72)
+
+    passed = failed = skipped = 0
+    for r in results:
+        tid = r["id"]
+        outputs = outputs_by_id.get(tid)
+        has_hcl = outputs and any(
+            (outputs.get(k) or "").strip()
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl")
+        )
+        if not has_hcl:
+            r["terraform_validate_pass"] = None
+            r["terraform_validate_error"] = None
+            skipped += 1
+            print(f"  {tid:<8} SKIP (no HCL)")
+            continue
+        workdir = write_workspace(tid, outputs)
+        ok, msg = run_terraform(workdir, env)
+        r["terraform_validate_pass"] = ok
+        r["terraform_validate_error"] = None if ok else msg
+        if ok:
+            passed += 1
+            print(f"  {tid:<8} PASS")
+        else:
+            failed += 1
+            print(f"  {tid:<8} FAIL  {msg}")
+            r.setdefault("issues", []).append(f"terraform validate: {msg}")
+            if r.get("status") == "PASS":
+                r["status"] = "FAIL"
+    print("=" * 72)
+    return passed, failed, skipped
+
+
 def main():
     argv = sys.argv[1:]
     replay_mode = "--replay" in argv
+    validate_mode = "--terraform-validate" in argv
     passes, skip_indices = _parse_passes(argv)
     filter_ids = set(
         a.upper() for i, a in enumerate(argv)
@@ -965,6 +1486,29 @@ def main():
     print(f"  TOTAL  : {len(cases)}")
 
     _print_usage_totals()
+
+    v_passed = v_failed = v_skipped = 0
+    if validate_mode:
+        # Snapshot static-QA pass count BEFORE validate, since validate may
+        # flip PASS -> FAIL when re-tallying for the exit code below.
+        static_passed = passed
+        outputs_by_id: dict[str, dict] = {}
+        if replay_mode:
+            if CACHE_PATH.exists():
+                with open(CACHE_PATH) as f:
+                    cache = json.load(f)
+                outputs_by_id = {tid: entry["outputs"] for tid, entry in cache.items() if "outputs" in entry}
+        else:
+            outputs_by_id = {tid: entry["outputs"] for tid, entry in _OUTPUT_CACHE.items() if "outputs" in entry}
+        v_passed, v_failed, v_skipped = _run_terraform_validate(results, outputs_by_id)
+        passed = sum(1 for r in results if r["status"] == "PASS")
+        failed = sum(1 for r in results if r["status"] == "FAIL")
+        errored = sum(1 for r in results if r["status"] not in ("PASS", "FAIL"))
+        v_total = v_passed + v_failed
+        skip_note = f" (skipped {v_skipped})" if v_skipped else ""
+        print(f"\n  Static QA           : {static_passed}/{len(cases)}")
+        print(f"  Terraform validate  : {v_passed}/{v_total}{skip_note}")
+        print(f"  Both                : {passed}/{len(cases)}")
 
     if passes > 1:
         pass_at_1 = sum(1 for r in results if r["status"] == "PASS" and r.get("attempt_count", 1) == 1)

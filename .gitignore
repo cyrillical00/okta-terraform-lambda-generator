@@ -1,5 +1,8 @@
 .streamlit/secrets.toml
 .streamlit/command_history.json
+.streamlit/audit_local.jsonl
+.streamlit/usage_local.json
+.streamlit/secret_rotation.json
 generated/
 __pycache__/
 *.pyc
@@ -9,3 +12,5 @@ venv/
 *.zip
 qa_outputs_cache.json
 qa_report.json
+qa_full_run.log
+_tftool/

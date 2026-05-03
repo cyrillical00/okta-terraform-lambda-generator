@@ -2,7 +2,147 @@ import io
 import zipfile
 import streamlit as st
 
-OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only"]
+from ui.css import pill, mode_chip_html
+
+OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP"]
+
+
+# Starter chips shown on the empty state. Each chip prefills the user-input
+# textarea via session_state so they read as suggestions, not commitments.
+_STARTER_CHIPS = [
+    ("Okta",     "Create a SAML app for Salesforce with attribute statements for department and manager"),
+    ("AWS",      "Build a Lambda that fires when a user is added to the Offboarding group and sends an SNS alert"),
+    ("GCP",      "Create a Pub/Sub topic called orders that fans out to two Cloud Functions"),
+    ("Composite", "Create a new GCP project, a service account, an API key, and enable Vertex AI"),
+]
+
+
+def _infer_mode(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> str:
+    """Mirror app.py's mode-inference logic so the read-only chip stays in sync."""
+    if gcp_types and okta_types:
+        return "Okta + GCP"
+    if gcp_types:
+        return "GCP only"
+    if aws_types and okta_types:
+        return "Both"
+    if aws_types:
+        return "Lambda only"
+    return "Okta Terraform only"
+
+
+def render_hero_starters() -> None:
+    """Render the empty-state hero block + starter chips. Call only when no
+    outputs and no parse error are present. Chips prefill the textarea via
+    session_state.user_input_area on click; they do not auto-parse.
+    """
+    st.markdown(
+        '<div class="tf-hero">'
+        '<h1>Plain English to deployable Terraform</h1>'
+        '<p>Across Okta, AWS Lambda, and GCP. One prompt, one click, one PR.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Try one to start:")
+    cols = st.columns(len(_STARTER_CHIPS))
+    for i, (label, prompt) in enumerate(_STARTER_CHIPS):
+        with cols[i]:
+            if st.button(label, key=f"starter_{label.lower()}", use_container_width=True, help=prompt):
+                st.session_state["user_input_area"] = prompt
+                # Reset any in-flight intent / outputs so the user starts fresh.
+                st.session_state["intent"] = None
+                st.session_state["outputs"] = None
+                st.session_state["parse_error"] = None
+                st.session_state["validation_result"] = None
+                st.session_state["commit_url"] = None
+                st.rerun()
+
+
+def render_mode_chip(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> None:
+    """Render a small read-only mode pill that reflects the current checkbox
+    selection. Pure presentation; does NOT change `output_mode` in state.
+    """
+    mode = _infer_mode(okta_types, aws_types, gcp_types)
+    st.markdown(mode_chip_html(mode), unsafe_allow_html=True)
+
+
+def render_env_pills(env_context: dict) -> None:
+    """Render a horizontal row of Okta / AWS / GCP status pills at the top of
+    the main panel. Tooltip exposes resource counts. Pure presentation."""
+    okta = (env_context or {}).get("okta", {})
+    aws = (env_context or {}).get("aws", {})
+    gcp = (env_context or {}).get("gcp", {})
+
+    pills = []
+
+    # Okta
+    if okta.get("connected"):
+        n_groups = len(okta.get("groups", []))
+        n_apps = len(okta.get("apps", []))
+        n_hooks = len(okta.get("event_hooks", []))
+        tooltip = f"{n_groups} groups, {n_apps} apps, {n_hooks} event hooks"
+        pills.append(pill(f"Okta ({n_groups + n_apps + n_hooks})", "on", tooltip))
+    else:
+        pills.append(pill("Okta", "off", okta.get("error", "Not configured")))
+
+    # AWS
+    if aws.get("connected"):
+        n_fns = len(aws.get("lambda_functions", []))
+        n_roles = len(aws.get("iam_roles", []))
+        tooltip = f"{n_fns} lambdas, {n_roles} roles"
+        pills.append(pill(f"AWS ({n_fns + n_roles})", "on", tooltip))
+    else:
+        pills.append(pill("AWS", "off", aws.get("error", "Not configured")))
+
+    # GCP, with warn state when partial errors are present
+    if gcp.get("connected"):
+        n_fns = len(gcp.get("functions", []))
+        n_sa = len(gcp.get("service_accounts", []))
+        n_topics = len(gcp.get("pubsub_topics", []))
+        partial = gcp.get("partial_errors") or []
+        tooltip = f"{n_fns} functions, {n_sa} SAs, {n_topics} topics"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} services unavailable)"
+        pills.append(pill(f"GCP ({n_fns + n_sa + n_topics})", state, tooltip))
+    else:
+        pills.append(pill("GCP", "off", gcp.get("error", "Not configured")))
+
+    st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
+
+
+def render_gcp_partial_warning(env_context: dict) -> None:
+    """Promote GCP partial errors from a sidebar caption to a top-of-page
+    warning when present. No-op when there are no partial errors.
+    """
+    gcp = (env_context or {}).get("gcp", {})
+    partial = gcp.get("partial_errors") or []
+    if not partial:
+        return
+    summary = ", ".join(p.split(":")[0] for p in partial[:3])
+    extra = f" (+{len(partial) - 3} more)" if len(partial) > 3 else ""
+    st.warning(
+        f"GCP live context is partial: {summary}{extra}. "
+        "Generation will use placeholder vars for these services. "
+        "Check API enablement and SA roles, or click Refresh environment."
+    )
+
+
+def render_success_card(commit_url: str, mode: str, file_count: int) -> bool:
+    """Render the post-commit success card. Returns True if "Generate another"
+    was clicked, in which case the caller should reset the relevant state keys.
+    """
+    st.markdown(
+        f'''<div class="tf-success-card">
+        <div class="title">Pushed to GitHub</div>
+        <div class="meta">Mode: <b>{mode}</b> · Files: <b>{file_count}</b></div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.link_button("View commit", commit_url, use_container_width=True)
+    with col_b:
+        return st.button("Generate another", use_container_width=True, key="generate_another_btn")
 
 _RESOURCE_LABEL_TO_TF = {
     "Workflow": "okta_event_hook",
@@ -10,6 +150,9 @@ _RESOURCE_LABEL_TO_TF = {
     "Group": "okta_group",
     "Policy": "okta_auth_server_policy",
     "User Object": "okta_user_profile_mapping",
+    "Network Zone": "okta_network_zone",
+    "Brand": "okta_brand",
+    "MFA Factor": "okta_factor",
 }
 
 _APP_TYPE_TO_TF = {
@@ -25,13 +168,24 @@ _AWS_RESOURCE_LABEL_TO_TF = {
     "SNS": "aws_sns_topic",
 }
 
+_GCP_RESOURCE_LABEL_TO_TF = {
+    "Cloud Function": "google_cloudfunctions2_function",
+    "Cloud Run": "google_cloud_run_v2_service",
+    "Pub/Sub": "google_pubsub_topic",
+    "Scheduler": "google_cloud_scheduler_job",
+    "GCS Bucket": "google_storage_bucket",
+    "Secret": "google_secret_manager_secret",
+}
 
-def render_resource_type_selector() -> tuple[list[str], list[str]]:
-    """Two-section checkbox selector. Returns (okta_types, aws_types)."""
+
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str]]:
+    """Three-section checkbox selector. Returns (okta_types, aws_types, gcp_types)."""
     okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
     aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
+    gcp_labels = list(_GCP_RESOURCE_LABEL_TO_TF.keys())
     okta_selected: list[str] = []
     aws_selected: list[str] = []
+    gcp_selected: list[str] = []
 
     # Okta row
     okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
@@ -63,7 +217,16 @@ def render_resource_type_selector() -> tuple[list[str], list[str]]:
             if st.checkbox(label, key=f"rsel_aws_{label.lower().replace(' ', '_')}"):
                 aws_selected.append(_AWS_RESOURCE_LABEL_TO_TF[label])
 
-    return okta_selected, aws_selected
+    # GCP row
+    gcp_cols = st.columns([0.7] + [1] * len(gcp_labels))
+    with gcp_cols[0]:
+        st.markdown("**GCP**")
+    for i, label in enumerate(gcp_labels):
+        with gcp_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_gcp_{label.lower().replace(' ', '_').replace('/', '_')}"):
+                gcp_selected.append(_GCP_RESOURCE_LABEL_TO_TF[label])
+
+    return okta_selected, aws_selected, gcp_selected
 
 
 def render_intent_card(intent: dict) -> dict | None:
@@ -107,28 +270,47 @@ def render_intent_card(intent: dict) -> dict | None:
 
 
 def render_code_panels(outputs: dict, mode: str):
-    show_tf = mode in ("Both", "Okta Terraform only")
-    show_lambda = mode in ("Both", "Lambda only")
+    show_okta_tf = mode in ("Both", "Okta Terraform only", "Okta + GCP")
+    show_lambda_tf = mode in ("Both", "Lambda only")
+    show_lambda_py = mode in ("Both", "Lambda only")
+    show_gcp_tf = mode in ("GCP only", "Okta + GCP")
+    show_gcp_py = mode in ("GCP only", "Okta + GCP")
 
-    if show_tf and show_lambda:
+    has_tf = show_okta_tf or show_lambda_tf or show_gcp_tf
+    has_code = show_lambda_py or show_gcp_py
+
+    if has_tf and has_code:
         left, right = st.columns(2)
         with left:
-            _render_terraform(outputs)
+            _render_terraform(outputs, show_okta_tf, show_lambda_tf, show_gcp_tf)
         with right:
-            _render_lambda(outputs)
-    elif show_tf:
-        _render_terraform(outputs)
+            if show_gcp_py:
+                _render_cloud_function(outputs)
+            else:
+                _render_lambda(outputs)
+    elif has_tf:
+        _render_terraform(outputs, show_okta_tf, show_lambda_tf, show_gcp_tf)
+    elif show_gcp_py:
+        _render_cloud_function(outputs)
     else:
         _render_lambda(outputs)
 
 
-def _render_terraform(outputs: dict):
+def _render_terraform(outputs: dict, show_okta: bool, show_lambda: bool, show_gcp: bool):
     st.subheader("Terraform")
-    tf_tab1, tf_tab2 = st.tabs(["okta.tf", "lambda.tf"])
-    with tf_tab1:
-        st.code(outputs["terraform_okta_hcl"], language="hcl")
-    with tf_tab2:
-        st.code(outputs["terraform_lambda_hcl"], language="hcl")
+    tabs_to_show = []
+    if show_okta:
+        tabs_to_show.append(("okta.tf", outputs.get("terraform_okta_hcl", "")))
+    if show_lambda:
+        tabs_to_show.append(("lambda.tf", outputs.get("terraform_lambda_hcl", "")))
+    if show_gcp:
+        tabs_to_show.append(("gcp.tf", outputs.get("terraform_gcp_hcl", "")))
+    if not tabs_to_show:
+        return
+    tabs = st.tabs([label for label, _ in tabs_to_show])
+    for tab, (_, content) in zip(tabs, tabs_to_show):
+        with tab:
+            st.code(content, language="hcl")
 
 
 def _render_lambda(outputs: dict):
@@ -139,15 +321,34 @@ def _render_lambda(outputs: dict):
             st.code(outputs["lambda_requirements"], language="text")
 
 
+def _render_cloud_function(outputs: dict):
+    st.subheader("Cloud Function Python")
+    st.code(outputs.get("cloud_function_python", ""), language="python")
+    if outputs.get("cloud_function_requirements", "").strip():
+        with st.expander("Cloud Function requirements.txt"):
+            st.code(outputs["cloud_function_requirements"], language="text")
+
+
 def build_project_zip(outputs: dict, mode: str) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        if mode in ("Both", "Okta Terraform only"):
-            zf.writestr("terraform/okta.tf", outputs["terraform_okta_hcl"])
-            zf.writestr("terraform/lambda.tf", outputs["terraform_lambda_hcl"])
+        if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+            okta_hcl = outputs.get("terraform_okta_hcl", "")
+            if okta_hcl.strip():
+                zf.writestr("terraform/okta.tf", okta_hcl)
+        if mode in ("Both",):
+            lambda_hcl = outputs.get("terraform_lambda_hcl", "")
+            if lambda_hcl.strip():
+                zf.writestr("terraform/lambda.tf", lambda_hcl)
         if mode in ("Both", "Lambda only"):
-            zf.writestr("lambda/lambda_function.py", outputs["lambda_python"])
+            zf.writestr("lambda/lambda_function.py", outputs.get("lambda_python", ""))
             zf.writestr("lambda/requirements.txt", outputs.get("lambda_requirements", ""))
+        if mode in ("GCP only", "Okta + GCP"):
+            gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+            if gcp_hcl.strip():
+                zf.writestr("terraform/gcp.tf", gcp_hcl)
+            zf.writestr("cloud_function/main.py", outputs.get("cloud_function_python", ""))
+            zf.writestr("cloud_function/requirements.txt", outputs.get("cloud_function_requirements", ""))
         optional_tf = outputs.get("optional_tf", "")
         if optional_tf and optional_tf.strip():
             zf.writestr("terraform/optional_extensions.tf", optional_tf)
@@ -203,7 +404,12 @@ def render_validation_result(result: dict) -> bool:
     return st.button("Fix Issues", type="primary")
 
 
-def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[bool, bool, str, str, str]:
+def render_action_buttons(
+    outputs: dict,
+    mode: str,
+    default_repo: str,
+    auto_basename: str = "",
+) -> tuple[bool, bool, str, str, str, str]:
     st.divider()
 
     with st.expander("GitHub push settings"):
@@ -216,6 +422,24 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             "Branch",
             value="main",
             placeholder="main",
+        )
+        if auto_basename:
+            placeholder_text = f"auto-derived from intent: {auto_basename}"
+        else:
+            placeholder_text = "e.g. hr_portal — leave blank for legacy 'okta.tf'"
+        file_basename = st.text_input(
+            "Resource basename (optional)",
+            value="",
+            placeholder=placeholder_text,
+            help=(
+                "Filename base for the pushed files. When blank, we auto-derive "
+                "from the parsed intent's resource_name (so prompt #2 lands at "
+                "terraform/hr_portal_workday.tf without you typing anything). "
+                "Type something here to override the auto-derived value, or "
+                "leave blank for the auto-derive default. If both this and "
+                "the auto-derive are empty, the legacy single-file path "
+                "(terraform/okta.tf) is used."
+            ),
         )
 
     extra_instructions = st.text_area(
@@ -242,4 +466,17 @@ def render_action_buttons(outputs: dict, mode: str, default_repo: str) -> tuple[
             use_container_width=True,
         )
 
-    return push_clicked, regenerate_clicked, extra_instructions, repo_override.strip(), branch_override.strip()
+    # If the user did not type anything, fall back to the auto-derived basename
+    # so per-prompt files always have a stable, unique path. Empty user input
+    # AND empty auto_basename means "use legacy okta.tf path" — exactly the
+    # behavior that was here before this auto-derive feature.
+    effective_basename = file_basename.strip() or auto_basename
+
+    return (
+        push_clicked,
+        regenerate_clicked,
+        extra_instructions,
+        repo_override.strip(),
+        branch_override.strip(),
+        effective_basename,
+    )

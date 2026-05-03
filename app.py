@@ -8,7 +8,7 @@ load_dotenv()
 
 st.set_page_config(
     page_title="Okta TF+Lambda Generator",
-    page_icon="",
+    page_icon="🔐",
     layout="wide",
 )
 
@@ -16,10 +16,23 @@ from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
 from generator.validator import validate_outputs, fix_outputs, refine_outputs
+from generator.okta_group_sanitizer import sanitize_okta_group_refs
+from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
 from gh_push.push import push_to_github, build_commit_message
-from ui.components import render_intent_card, render_code_panels, render_action_buttons, render_validation_result, render_optional_tf, render_tfvars_example, render_resource_type_selector
+from ui.components import (
+    render_intent_card, render_code_panels, render_action_buttons,
+    render_validation_result, render_optional_tf, render_tfvars_example,
+    render_resource_type_selector, render_hero_starters, render_mode_chip,
+    render_env_pills, render_gcp_partial_warning, render_success_card,
+)
+from ui.css import inject_global_css
 import history as _history
 from history import add_entry, get_entries
+import audit as _audit
+import cost as _cost
+import roles as _roles
+import redact as _redact
+import secret_rotation as _rotation
 from env_context import build_env_context, format_context_for_prompt
 from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
@@ -65,27 +78,116 @@ def _get_client() -> anthropic.Anthropic:
     if not api_key.startswith("sk-ant"):
         st.error(f"ANTHROPIC_API_KEY looks wrong — it should start with 'sk-ant' but starts with '{api_key[:8]}...'. Check your Streamlit secrets.")
         st.stop()
-    return anthropic.Anthropic(api_key=api_key)
+    raw = anthropic.Anthropic(api_key=api_key)
+    # Wrap the client so every messages.create() records usage against the
+    # signed-in user. Has no effect if st.user isn't available yet (e.g. at
+    # auth-gate render time, before login).
+    email = getattr(getattr(st, "user", None), "email", "") or "anonymous"
+    return _cost.wrap_client(raw, email)
+
+
+def _quota_block_or_warn() -> bool:
+    """Check the signed-in user's daily quota. Returns True if blocked
+    (caller should refuse the action). Renders an inline error when
+    blocked. Quota of 0 means unlimited (admins by default)."""
+    email = getattr(getattr(st, "user", None), "email", "") or ""
+    if not email:
+        return False
+    spent = _cost.today_usd(email)
+    if _roles.is_quota_exhausted(email, spent):
+        cap = _roles.daily_quota_usd(email)
+        st.error(
+            f"Daily spend limit reached: ${spent:.2f} of ${cap:.2f} used today (UTC). "
+            "Resets at midnight UTC. Contact an admin to raise your quota."
+        )
+        _audit.log(email, "quota_blocked", extra={"role": _roles.get_role(email), "spent_usd": spent, "cap_usd": cap})
+        return True
+    return False
 
 
 def _get_model(default: str) -> str:
     return _get_secret("ANTHROPIC_MODEL") or default
 
 
-def _build_files(outputs: dict, mode: str) -> dict[str, str]:
+def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
+    """Build the file map for GitHub push.
+
+    base: optional filename base used to namespace generated files so that
+    multiple prompts can coexist in the same target repo without overwriting
+    each other (e.g. prompt #1 -> base="engineering" -> terraform/engineering.tf;
+    prompt #2 -> base="hr_portal" -> terraform/hr_portal.tf). When empty, the
+    legacy fixed paths (terraform/okta.tf, terraform/lambda.tf, etc.) are used
+    so single-prompt usage is unchanged.
+
+    Empty-content outputs are skipped so an Okta-only generation does not push
+    a zero-byte terraform/lambda.tf placeholder.
+    """
     files = {}
-    if mode in ("Both", "Okta Terraform only"):
-        files["terraform/okta.tf"] = outputs["terraform_okta_hcl"]
-        files["terraform/lambda.tf"] = outputs["terraform_lambda_hcl"]
-    if mode in ("Both", "Lambda only"):
-        files["lambda/lambda_function.py"] = outputs["lambda_python"]
-        files["lambda/requirements.txt"] = outputs.get("lambda_requirements", "")
+    okta_hcl = outputs.get("terraform_okta_hcl", "")
+    lambda_hcl = outputs.get("terraform_lambda_hcl", "")
+    gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+    lambda_py = outputs.get("lambda_python", "")
+    lambda_reqs = outputs.get("lambda_requirements", "")
+    cloud_function_py = outputs.get("cloud_function_python", "")
+    cloud_function_reqs = outputs.get("cloud_function_requirements", "")
     optional_tf = outputs.get("optional_tf", "")
-    if optional_tf and optional_tf.strip():
-        files["terraform/optional_extensions.tf"] = optional_tf
     tfvars = outputs.get("terraform_tfvars_example", "")
+
+    if base:
+        okta_path = f"terraform/{base}.tf"
+        lambda_tf_path = f"terraform/{base}_lambda.tf"
+        gcp_tf_path = f"terraform/{base}_gcp.tf"
+        lambda_py_path = f"lambda/{base}.py"
+        lambda_reqs_path = f"lambda/{base}_requirements.txt"
+        cloud_function_py_path = f"cloud_function/{base}.py"
+        cloud_function_reqs_path = f"cloud_function/{base}_requirements.txt"
+        optional_path = f"terraform/{base}_optional_extensions.tf"
+        tfvars_path = f"terraform/{base}.tfvars.example"
+    else:
+        okta_path = "terraform/okta.tf"
+        lambda_tf_path = "terraform/lambda.tf"
+        gcp_tf_path = "terraform/gcp.tf"
+        lambda_py_path = "lambda/lambda_function.py"
+        lambda_reqs_path = "lambda/requirements.txt"
+        cloud_function_py_path = "cloud_function/main.py"
+        cloud_function_reqs_path = "cloud_function/requirements.txt"
+        optional_path = "terraform/optional_extensions.tf"
+        tfvars_path = "terraform/terraform.tfvars.example"
+
+    # When base is set, the file lives alongside an existing terraform/okta.tf
+    # (or providers.tf) that already declares the boilerplate. Stripping
+    # avoids "Duplicate ..." init errors. When base is empty, this is the
+    # canonical single-file push and the boilerplate must remain.
+    if base:
+        if okta_hcl:
+            okta_hcl = strip_provider_boilerplate(okta_hcl)
+        if lambda_hcl:
+            lambda_hcl = strip_provider_boilerplate(lambda_hcl)
+        if gcp_hcl:
+            gcp_hcl = strip_provider_boilerplate(gcp_hcl)
+
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+        if okta_hcl and okta_hcl.strip():
+            files[okta_path] = okta_hcl
+    if mode in ("Both",):
+        if lambda_hcl and lambda_hcl.strip():
+            files[lambda_tf_path] = lambda_hcl
+    if mode in ("Both", "Lambda only"):
+        if lambda_py and lambda_py.strip():
+            files[lambda_py_path] = lambda_py
+        if lambda_reqs and lambda_reqs.strip():
+            files[lambda_reqs_path] = lambda_reqs
+    if mode in ("GCP only", "Okta + GCP"):
+        if gcp_hcl and gcp_hcl.strip():
+            files[gcp_tf_path] = gcp_hcl
+        if cloud_function_py and cloud_function_py.strip():
+            files[cloud_function_py_path] = cloud_function_py
+        if cloud_function_reqs and cloud_function_reqs.strip():
+            files[cloud_function_reqs_path] = cloud_function_reqs
+    if optional_tf and optional_tf.strip():
+        files[optional_path] = optional_tf
     if tfvars and tfvars.strip():
-        files["terraform/terraform.tfvars.example"] = tfvars
+        files[tfvars_path] = tfvars
     return files
 
 
@@ -124,6 +226,15 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 output_mode=intent.get("output_mode", "Both"),
             )
 
+            # Deterministic post-refinement cleanup: rewrite hallucinated
+            # `data "okta_group"` blocks (name not in live org) into
+            # `resource "okta_group"` blocks. No-op when Okta is not connected.
+            live_groups = (st.session_state.env_context or {}).get("okta", {}).get("groups") or []
+            outputs = sanitize_okta_group_refs(outputs, live_groups)
+            # Note: sanitize_okta_brand_refs runs centrally in generate_all so it
+            # applies to every code path (app.py, qa_runner, future tools), not
+            # just the refinement loop here.
+
             status.update(label="Done", state="complete", expanded=False)
         except GenerationError as e:
             error = e
@@ -139,22 +250,38 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
 
 def _load_env_context() -> None:
-    """Fetch Okta/AWS context once per session. Skips if already loaded."""
+    """Fetch Okta/AWS/GCP context once per session. Skips if already loaded.
+    Wraps the live-context fetch in st.status so the user sees activity when
+    Okta or AWS is slow to respond.
+    """
     if st.session_state.env_context is not None:
         return
-    st.session_state.env_context = build_env_context(
-        okta_org_url=_get_secret("OKTA_ORG_URL"),
-        okta_api_token=_get_secret("OKTA_API_TOKEN"),
-        aws_region=_get_secret("AWS_REGION"),
-        aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
-        aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
-    )
+    with st.status("Connecting to Okta, AWS, GCP...", expanded=False) as status:
+        st.session_state.env_context = build_env_context(
+            okta_org_url=_get_secret("OKTA_ORG_URL"),
+            okta_api_token=_get_secret("OKTA_API_TOKEN"),
+            aws_region=_get_secret("AWS_REGION"),
+            aws_access_key=_get_secret("AWS_ACCESS_KEY_ID"),
+            aws_secret_key=_get_secret("AWS_SECRET_ACCESS_KEY"),
+            gcp_project_id=_get_secret("GCP_PROJECT_ID"),
+            gcp_sa_json=_get_secret("GCP_SA_JSON"),
+            gcp_region=_get_secret("GCP_REGION") or "us-central1",
+        )
+        ctx = st.session_state.env_context or {}
+        connected = sum(
+            1 for k in ("okta", "aws", "gcp") if ctx.get(k, {}).get("connected")
+        )
+        status.update(
+            label=f"Live context ready: {connected} of 3 providers connected",
+            state="complete",
+        )
 
 
 def _render_env_sidebar() -> None:
     ctx = st.session_state.env_context or {}
     okta = ctx.get("okta", {})
     aws = ctx.get("aws", {})
+    gcp = ctx.get("gcp", {})
 
     st.sidebar.divider()
     st.sidebar.markdown("**Environment**")
@@ -176,7 +303,22 @@ def _render_env_sidebar() -> None:
         err = aws.get("error", "Not configured")
         st.sidebar.caption(f"AWS: {err}")
 
+    if gcp.get("connected"):
+        n_fns = len(gcp.get("functions", []))
+        n_sa = len(gcp.get("service_accounts", []))
+        n_topics = len(gcp.get("pubsub_topics", []))
+        st.sidebar.success(f"GCP: {n_fns} functions · {n_sa} SAs · {n_topics} topics")
+        partial = gcp.get("partial_errors") or []
+        if partial:
+            with st.sidebar.expander(f"GCP partial: {len(partial)} service(s) unavailable"):
+                for p in partial:
+                    st.caption(f"· {p[:140]}")
+    else:
+        err = gcp.get("error", "Not configured")
+        st.sidebar.caption(f"GCP: {err}")
+
     if st.sidebar.button("Refresh environment", use_container_width=True):
+        _audit.log(st.user.email, "env_refresh")
         st.session_state.env_context = None
         st.rerun()
 
@@ -236,6 +378,38 @@ def _render_repo_sidebar(default_repo: str) -> None:
             st.sidebar.warning("No .tf files found at that path.")
 
 
+def _render_audit_sidebar(email: str) -> None:
+    """Show the user's last 10 privileged actions plus a CSV export button."""
+    st.sidebar.divider()
+    st.sidebar.markdown("**Audit log**")
+    entries = _audit.recent(email, limit=10)
+    if not entries:
+        st.sidebar.caption("No actions logged yet.")
+        return
+    for entry in entries:
+        ts = (entry.get("timestamp_utc") or "")[:19].replace("T", " ")
+        action = entry.get("action", "")
+        rt = entry.get("resource_type", "")
+        cost = entry.get("cost_estimate_usd", 0.0) or 0.0
+        meta = f"`{action}`"
+        if rt:
+            meta += f" · `{rt}`"
+        if cost > 0:
+            meta += f" · ${cost:.4f}"
+        st.sidebar.caption(meta)
+        st.sidebar.markdown(f"<span style='font-size:0.78em;color:#777'>{ts} UTC</span>", unsafe_allow_html=True)
+    csv_text = _audit.export_csv(email)
+    if csv_text:
+        st.sidebar.download_button(
+            "Export full audit (CSV)",
+            data=csv_text,
+            file_name=f"audit_{_audit._email_hash(email)}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="audit_export_btn",
+        )
+
+
 def _render_history_sidebar(email: str) -> None:
     entries = get_entries(email)
     st.sidebar.divider()
@@ -270,6 +444,18 @@ _history.configure(
     github_token=_get_secret("GITHUB_TOKEN"),
     github_repo=_get_secret("GITHUB_REPO"),
 )
+_audit.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
+_cost.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
+_rotation.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
 
 # Auth gate
 if not hasattr(st.user, "is_logged_in"):
@@ -285,41 +471,150 @@ if not st.user.is_logged_in:
     st.button("Sign in with Google", on_click=st.login, args=("google",))
     st.stop()
 
+# ── Session-idle timeout (30 minutes) ────────────────────────────────────
+# Streamlit has no native session timeout. Track activity in session_state
+# and force re-login when idle past the threshold. Updated on every render.
+import time as _time
+
+SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
+_now = _time.time()
+_last = st.session_state.get("last_activity_ts")
+if _last and (_now - _last) > SESSION_IDLE_TIMEOUT_SECONDS:
+    _audit.log(st.user.email, "session_timeout")
+    # Wipe everything except the audit_signin_logged flag (which would
+    # cause a duplicate sign_in log), and the env_context which is
+    # already cached. Force re-login by logging out.
+    for k in list(st.session_state.keys()):
+        if k not in ("env_context",):
+            del st.session_state[k]
+    st.warning("Session timed out after 30 minutes of inactivity. Please sign in again.")
+    st.button("Sign in again", on_click=st.logout)
+    st.stop()
+st.session_state["last_activity_ts"] = _now
+
+# Log sign-in once per session (the first time the user reaches authed state).
+if not st.session_state.get("audit_signin_logged"):
+    _audit.log(st.user.email, "sign_in")
+    st.session_state["audit_signin_logged"] = True
+
+
+def _signout_with_audit():
+    _audit.log(st.user.email, "sign_out")
+    st.logout()
+
+
+def _render_role_and_cost_sidebar(email: str) -> None:
+    """Show the user's role badge, today's cost / quota usage, and (admin-only)
+    a redaction-bypass toggle plus a stale-secret warning."""
+    role = _roles.get_role(email)
+    spent = _cost.today_usd(email)
+    cap = _roles.daily_quota_usd(email)
+    st.sidebar.markdown(f"<small style='color:#777'>Role:</small> <b>{role}</b>", unsafe_allow_html=True)
+    if cap == 0:
+        st.sidebar.caption(f"Today: ${spent:.4f} (no cap)")
+    else:
+        pct = min(1.0, spent / cap) if cap else 0.0
+        st.sidebar.caption(f"Today: ${spent:.4f} of ${cap:.2f}")
+        st.sidebar.progress(pct)
+    # Admin-only: per-session redaction toggle + stale-secret warnings
+    if _roles.can("manage_roles", role):
+        st.sidebar.checkbox(
+            "Disable PII redaction (this session)",
+            key="redact_disabled",
+            help="Admin-only. When checked, prompts are sent to Claude as-is. Use sparingly.",
+        )
+        stale = _rotation.stale_list()
+        if stale:
+            with st.sidebar.expander(f"⚠️ {len(stale)} stale secret(s)"):
+                for s in stale:
+                    age = s.get("age_days")
+                    age_str = f"{age}d" if age is not None else "never"
+                    st.caption(f"`{s['name']}` — {age_str} (target {s['target_days']}d): {s['reason']}")
+
+
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
-    st.button("Sign out", on_click=st.logout)
+    _render_role_and_cost_sidebar(st.user.email)
+    st.button("Sign out", on_click=_signout_with_audit)
+
+inject_global_css()
 
 _load_env_context()
 _render_env_sidebar()
 _render_repo_sidebar(_get_secret("GITHUB_REPO"))
+_render_audit_sidebar(st.user.email)
 _render_history_sidebar(st.user.email)
 
-st.title("Okta Terraform + Lambda Generator")
-st.caption("Describe an Okta operation in plain English and get production-ready Terraform HCL and AWS Lambda Python.")
+# Top-of-page status row + GCP partial-error banner
+render_env_pills(st.session_state.env_context or {})
+render_gcp_partial_warning(st.session_state.env_context or {})
+
+# Empty-state hero with starter chips, only on first load
+if (
+    st.session_state.outputs is None
+    and st.session_state.intent is None
+    and not st.session_state.parse_error
+):
+    render_hero_starters()
+
+st.title("Okta + AWS + GCP Terraform Generator")
+st.caption("Describe an operation in plain English and get production-ready Terraform HCL plus Lambda or Cloud Function code.")
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types = render_resource_type_selector()
+    okta_types, aws_types, gcp_types = render_resource_type_selector()
+    render_mode_chip(okta_types, aws_types, gcp_types)
     user_input = st.text_area(
-        "Describe the Okta operation",
+        "Describe the operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
         height=100,
         key="user_input_area",
     )
-    parse_clicked = st.button("Parse Intent", type="primary")
+    _can_parse = _roles.can("parse", st.user.email)
+    _can_generate = _roles.can("generate", st.user.email)
+    if not _can_generate:
+        st.caption(
+            f"Your role ({_roles.get_role(st.user.email)}) is read-only. "
+            "Parsing is allowed; generation requires contributor or higher."
+        )
+    parse_clicked = st.button(
+        "Parse Intent",
+        type="primary",
+        disabled=not _can_parse,
+        help=("" if _can_parse else "Your role does not permit parsing prompts."),
+    )
 
 if parse_clicked and user_input.strip():
+    if not _roles.can("parse", st.user.email):
+        st.error("Your role does not permit parsing prompts. Contact an admin.")
+        st.stop()
+    if _quota_block_or_warn():
+        st.stop()
+    # Redact PII / secrets BEFORE handing the prompt to the LLM. Admins can
+    # opt out per session via a sidebar toggle (see _render_role_and_cost_sidebar).
+    raw_input = user_input.strip()
+    if st.session_state.get("redact_disabled") and _roles.can("manage_roles", st.user.email):
+        cleaned_input, redact_summary = raw_input, {}
+    else:
+        cleaned_input, redact_summary = _redact.redact(raw_input)
+    if redact_summary:
+        st.info(f"Redacted before sending to Claude: {_redact.format_summary(redact_summary)}.")
+        _audit.log(
+            st.user.email,
+            "redact",
+            extra={"summary": redact_summary, "preview": cleaned_input[:200]},
+        )
     st.session_state.parse_error = None
     st.session_state.intent = None
     st.session_state.outputs = None
     st.session_state.commit_url = None
     st.session_state.validation_result = None
-    st.session_state.last_user_input = user_input.strip()
+    st.session_state.last_user_input = cleaned_input  # store the redacted version going forward
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
     with st.spinner("Parsing intent..."):
         try:
-            intent = parse_intent(user_input.strip(), client, model=model, resource_type_hints=okta_types)
+            intent = parse_intent(cleaned_input, client, model=model, resource_type_hints=okta_types)
             # Friendly rejection: parser returned 'unknown' and the user gave no UI hints to override.
             if intent.get("resource_type") == "unknown" and not okta_types:
                 notes = intent.get("notes") or []
@@ -339,12 +634,28 @@ if parse_clicked and user_input.strip():
                     intent["resource_types"] = [intent.get("resource_type", "")]
                 if aws_types:
                     intent["aws_resource_types"] = aws_types
-                intent["output_mode"] = "Both" if aws_types else "Okta Terraform only"
+                if gcp_types:
+                    intent["gcp_resource_types"] = gcp_types
+                if gcp_types and okta_types:
+                    intent["output_mode"] = "Okta + GCP"
+                elif gcp_types:
+                    intent["output_mode"] = "GCP only"
+                elif aws_types:
+                    intent["output_mode"] = "Both"
+                else:
+                    intent["output_mode"] = "Okta Terraform only"
                 errors = validate_intent(intent)
                 if errors:
                     st.session_state.parse_error = "Validation errors: " + "; ".join(errors)
                 else:
                     st.session_state.intent = intent
+                    _audit.log(
+                        st.user.email,
+                        "parse_intent",
+                        resource_type=intent.get("resource_type", ""),
+                        output_mode=intent.get("output_mode", ""),
+                        redacted_input_preview=cleaned_input,
+                    )
         except ValueError as e:
             st.session_state.parse_error = str(e)
 
@@ -363,12 +674,24 @@ if st.session_state.intent and st.session_state.outputs is None:
 if st.session_state.generation_triggered:
     st.session_state.generation_triggered = False
     st.session_state.gen_error = None
+    if not _roles.can("generate", st.user.email):
+        st.error("Your role does not permit generation. Contact an admin.")
+        st.stop()
+    if _quota_block_or_warn():
+        st.stop()
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
     outputs = _generate_and_refine(st.session_state.intent, "", client, model)
     if outputs is not None:
         st.session_state.outputs = outputs
         add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
+        _audit.log(
+            st.user.email,
+            "generate",
+            resource_type=st.session_state.intent.get("resource_type", ""),
+            output_mode=st.session_state.intent.get("output_mode", ""),
+            redacted_input_preview=st.session_state.last_user_input,
+        )
 
 if st.session_state.gen_error:
     st.error(st.session_state.gen_error)
@@ -399,7 +722,24 @@ if st.session_state.outputs:
 
     if st.session_state.validation_result:
         fix_clicked = render_validation_result(st.session_state.validation_result)
+        if check_clicked:
+            _audit.log(
+                st.user.email,
+                "self_check",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.output_mode or "",
+                extra={
+                    "tf_issues": len(st.session_state.validation_result.get("terraform_issues", [])),
+                    "lambda_issues": len(st.session_state.validation_result.get("lambda_issues", [])),
+                },
+            )
         if fix_clicked:
+            _audit.log(
+                st.user.email,
+                "fix_issues",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.output_mode or "",
+            )
             client = _get_client()
             model = _get_model("claude-haiku-4-5-20251001")
             with st.spinner("Fixing issues..."):
@@ -455,12 +795,18 @@ if st.session_state.outputs:
                         st.code(e.raw_response)
 
     default_repo = _get_secret("GITHUB_REPO")
-    push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override = render_action_buttons(
-        st.session_state.outputs, mode, default_repo
+    auto_basename = derive_basename_from_intent(st.session_state.intent)
+    push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override, file_basename = render_action_buttons(
+        st.session_state.outputs, mode, default_repo, auto_basename=auto_basename
     )
 
     # Regenerate with automatic 3-pass refinement
     if regenerate_clicked:
+        if not _roles.can("regenerate", st.user.email):
+            st.error("Your role does not permit regeneration.")
+            st.stop()
+        if _quota_block_or_warn():
+            st.stop()
         st.session_state.gen_error = None
         client = _get_client()
         model = _get_model("claude-haiku-4-5-20251001")
@@ -469,6 +815,14 @@ if st.session_state.outputs:
             st.session_state.outputs = outputs
             st.session_state.commit_url = None
             st.session_state.validation_result = None
+            _audit.log(
+                st.user.email,
+                "regenerate",
+                resource_type=st.session_state.intent.get("resource_type", ""),
+                output_mode=st.session_state.intent.get("output_mode", ""),
+                redacted_input_preview=st.session_state.last_user_input,
+                extra={"extra_instructions": (extra_instructions or "")[:200]},
+            )
             st.rerun()
 
     # GitHub push
@@ -478,8 +832,15 @@ if st.session_state.outputs:
             st.error("GITHUB_TOKEN must be configured in secrets to push to GitHub.")
         elif not repo_override:
             st.error("Repository name is required to push to GitHub.")
+        elif not _roles.can_push_to(st.user.email, repo_override):
+            role = _roles.get_role(st.user.email)
+            st.error(
+                f"Role '{role}' cannot push to {repo_override}. "
+                "Contributors can push only to repos owned by them; ask an editor or admin."
+            )
+            _audit.log(st.user.email, "push_blocked", extra={"role": role, "repo": repo_override})
         else:
-            files = _build_files(st.session_state.outputs, mode)
+            files = _build_files(st.session_state.outputs, mode, base=file_basename)
             commit_message = build_commit_message(st.session_state.intent)
             with st.spinner("Pushing to GitHub..."):
                 try:
@@ -487,12 +848,29 @@ if st.session_state.outputs:
                         files, repo_override, github_token, commit_message, branch=branch_override
                     )
                     st.session_state.commit_url = commit_url
+                    _audit.log(
+                        st.user.email,
+                        "push",
+                        resource_type=st.session_state.intent.get("resource_type", ""),
+                        output_mode=mode,
+                        commit_url=commit_url,
+                        extra={"repo": repo_override, "branch": branch_override or "default", "file_count": len(files)},
+                    )
                 except RuntimeError as e:
                     st.error(str(e))
+                    _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
                 except Exception as e:
                     st.error(f"GitHub push failed: {e}")
+                    _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
 
 # Stage 5 — Commit URL
 if st.session_state.commit_url:
-    st.success("Successfully pushed to GitHub!")
-    st.link_button("View commit", st.session_state.commit_url)
+    mode = st.session_state.output_mode or "Both"
+    files = _build_files(st.session_state.outputs or {}, mode)
+    if render_success_card(st.session_state.commit_url, mode, len(files)):
+        st.session_state.intent = None
+        st.session_state.outputs = None
+        st.session_state.commit_url = None
+        st.session_state.validation_result = None
+        st.session_state.parse_error = None
+        st.rerun()
