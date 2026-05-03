@@ -1378,9 +1378,61 @@ def _parse_passes(argv: list[str]) -> tuple[int, set[int]]:
     return 1, set()
 
 
+def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[int, int, int]:
+    """Run terraform init + validate against each test's generated HCL.
+    Mutates `results` in place: adds `terraform_validate_pass` (bool|None)
+    and `terraform_validate_error` (str|None). On a validate failure also
+    appends a "terraform validate: ..." entry to `issues` and flips status
+    to FAIL. Returns (passed, failed, skipped) counts."""
+    from tf_validate import (
+        PLUGIN_CACHE,
+        WORKSPACE_ROOT,
+        make_env,
+        run_terraform,
+        write_workspace,
+    )
+
+    env = make_env()
+    print(f"\nterraform-validate: {len(results)} test(s)")
+    print(f"  plugin cache: {PLUGIN_CACHE}")
+    print(f"  workspaces:   {WORKSPACE_ROOT}")
+    print("=" * 72)
+
+    passed = failed = skipped = 0
+    for r in results:
+        tid = r["id"]
+        outputs = outputs_by_id.get(tid)
+        has_hcl = outputs and any(
+            (outputs.get(k) or "").strip()
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl")
+        )
+        if not has_hcl:
+            r["terraform_validate_pass"] = None
+            r["terraform_validate_error"] = None
+            skipped += 1
+            print(f"  {tid:<8} SKIP (no HCL)")
+            continue
+        workdir = write_workspace(tid, outputs)
+        ok, msg = run_terraform(workdir, env)
+        r["terraform_validate_pass"] = ok
+        r["terraform_validate_error"] = None if ok else msg
+        if ok:
+            passed += 1
+            print(f"  {tid:<8} PASS")
+        else:
+            failed += 1
+            print(f"  {tid:<8} FAIL  {msg}")
+            r.setdefault("issues", []).append(f"terraform validate: {msg}")
+            if r.get("status") == "PASS":
+                r["status"] = "FAIL"
+    print("=" * 72)
+    return passed, failed, skipped
+
+
 def main():
     argv = sys.argv[1:]
     replay_mode = "--replay" in argv
+    validate_mode = "--terraform-validate" in argv
     passes, skip_indices = _parse_passes(argv)
     filter_ids = set(
         a.upper() for i, a in enumerate(argv)
@@ -1434,6 +1486,29 @@ def main():
     print(f"  TOTAL  : {len(cases)}")
 
     _print_usage_totals()
+
+    v_passed = v_failed = v_skipped = 0
+    if validate_mode:
+        # Snapshot static-QA pass count BEFORE validate, since validate may
+        # flip PASS -> FAIL when re-tallying for the exit code below.
+        static_passed = passed
+        outputs_by_id: dict[str, dict] = {}
+        if replay_mode:
+            if CACHE_PATH.exists():
+                with open(CACHE_PATH) as f:
+                    cache = json.load(f)
+                outputs_by_id = {tid: entry["outputs"] for tid, entry in cache.items() if "outputs" in entry}
+        else:
+            outputs_by_id = {tid: entry["outputs"] for tid, entry in _OUTPUT_CACHE.items() if "outputs" in entry}
+        v_passed, v_failed, v_skipped = _run_terraform_validate(results, outputs_by_id)
+        passed = sum(1 for r in results if r["status"] == "PASS")
+        failed = sum(1 for r in results if r["status"] == "FAIL")
+        errored = sum(1 for r in results if r["status"] not in ("PASS", "FAIL"))
+        v_total = v_passed + v_failed
+        skip_note = f" (skipped {v_skipped})" if v_skipped else ""
+        print(f"\n  Static QA           : {static_passed}/{len(cases)}")
+        print(f"  Terraform validate  : {v_passed}/{v_total}{skip_note}")
+        print(f"  Both                : {passed}/{len(cases)}")
 
     if passes > 1:
         pass_at_1 = sum(1 for r in results if r["status"] == "PASS" and r.get("attempt_count", 1) == 1)
