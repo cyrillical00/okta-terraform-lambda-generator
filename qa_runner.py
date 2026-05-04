@@ -484,15 +484,15 @@ TEST_CASES = [
              expected_resource_type="okta_auth_server_policy",
              must_contain=["okta_auth_server_policy", "priority"]),
 
-    # ── okta_user_profile_mapping ─────────────────────────────────────────────
+    # ── okta_user_profile_mapping (intent label; emitted as okta_profile_mapping) ─
     TestCase("PM01", "Map the department attribute from the Workday app to the Okta user profile",
              expected_resource_type="okta_user_profile_mapping",
-             must_contain=["okta_user_profile_mapping"]),
+             must_contain=["okta_profile_mapping"]),
     TestCase("PM02", "Sync the user role attribute from Salesforce to the Okta Universal Directory",
              expected_resource_type="okta_user_profile_mapping"),
     TestCase("PM03", "Create a profile mapping that pushes the manager field from Okta to the HR portal app",
              expected_resource_type="okta_user_profile_mapping",
-             must_contain=["okta_user_profile_mapping"]),
+             must_contain=["okta_profile_mapping"]),
     TestCase("PM04", "Map custom department and costCenter attributes from our HRIS app to Okta user profiles",
              expected_resource_type="okta_user_profile_mapping"),
     TestCase("PM05", "Set up attribute mapping so the user's job title in Okta stays in sync with the HCM system",

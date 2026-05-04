@@ -464,6 +464,13 @@ Must include these resources, in this order:
 4. `google_cloudfunctions2_function` — the function itself
 5. `google_cloud_run_service_iam_member` — public invoker binding when the function is HTTP-triggered with no auth, scoped to `roles/run.invoker` on `aws_cloudfunctions2_function.handler.name` (Gen2 invocations go through Cloud Run IAM)
 
+### google_service_account.account_id constraint (CRITICAL; terraform validate enforces this)
+The `account_id` attribute on `google_service_account` MUST be 6 to 30 characters, lowercase letters/digits/hyphens only, and start with a lowercase letter. The provider rejects anything outside this range with `Error: "account_id" ("...") must be between 6 and 30 characters long`. When the function name (or any derived value) is longer than 30 chars, ABBREVIATE the account_id; do NOT reuse the verbose `var.function_name` value verbatim. Strategy: derive a short stable handle (e.g. drop adjectives, keep the noun, cap at 30 chars). Examples:
+- function_name `daily-pending-records-processor` (32 chars) -> account_id `pending-records-sa` (18 chars)
+- function_name `nightly-customer-report-emailer` (31 chars) -> account_id `customer-report-sa` (18 chars)
+- function_name `handler` (7 chars) -> account_id `handler-sa` (10 chars; pad with `-sa` suffix when the base is under 6 chars)
+The display_name field has no length limit, so put the long human-readable label there.
+
 ### CRITICAL NAMING RULE
 Every resource in terraform_gcp_hcl uses `"handler"` as the Terraform resource label, no exceptions:
 - `resource "google_cloudfunctions2_function" "handler"` — always "handler"
@@ -935,13 +942,38 @@ resource "okta_group_rule" "engineering_auto_assign" {
 }
 ```
 
-**okta_user_profile_mapping**
-Required: source_id (the app or directory source ID), always_apply (bool, usually false)
-Optional: delete_when_absent (bool)
-Child block — mappings { } (one block per attribute to sync):
-  id ("appuser.{attr}" or "user.{attr}"), expression (Okta expression string),
-  push_status ("PUSH"|"DONT_PUSH")
-FORBIDDEN: source_type, target_id, profile_attribute (use mappings block instead)
+**okta_user_profile_mapping** (intent label only; the ACTUAL Terraform resource type to emit is `okta_profile_mapping`. `okta_user_profile_mapping` does NOT exist in okta/okta v4.20.0 and will fail terraform validate with "Invalid resource type")
+EMIT AS: `resource "okta_profile_mapping" "<name>" { ... }`. Never use `resource "okta_user_profile_mapping"`.
+Required: source_id (the source profile ID, typically the app's user-type id), target_id (the target profile ID, typically `data.okta_user_profile_mapping_source.user.id` for the Okta UD)
+Optional: always_apply (bool, default false), delete_when_absent (bool, default false)
+Child block, mappings { } (one block per attribute to sync):
+  id (the target attribute name, e.g. "department" or "firstName"; NOT prefixed with "appuser." or "user."),
+  expression (Okta expression string, e.g. "appuser.department" when source is an app or "user.firstName" when source is the UD)
+Note: `push_status` is NOT a valid child-block argument in v4.20.0; push direction is determined by the source/target pairing, not a per-mapping field. Do NOT emit `push_status`.
+For the Okta Universal Directory side, declare `data "okta_user_profile_mapping_source" "ud" {}` and reference `data.okta_user_profile_mapping_source.ud.id` as either source_id or target_id depending on direction.
+FORBIDDEN: source_type, profile_attribute, push_status (none of these exist in v4.20.0; use the mappings block with id+expression only)
+
+Canonical example (sync attributes from a Workday app to the Okta UD):
+```hcl
+data "okta_user_profile_mapping_source" "ud" {}
+
+variable "workday_app_user_type_id" {
+  type        = string
+  description = "User-type id of the Workday app in Okta (used as profile mapping source)"
+}
+
+resource "okta_profile_mapping" "workday_to_ud" {
+  source_id          = var.workday_app_user_type_id
+  target_id          = data.okta_user_profile_mapping_source.ud.id
+  delete_when_absent = false
+  always_apply       = false
+
+  mappings {
+    id         = "department"
+    expression = "appuser.department"
+  }
+}
+```
 
 **okta_auth_server**
 Required: name, description, audiences (list of strings), issuer_mode ("ORG_URL"|"DYNAMIC"|"CUSTOM_URL")
