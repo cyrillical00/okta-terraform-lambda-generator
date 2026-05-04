@@ -304,6 +304,69 @@ def render_version_switcher(history: list[dict], active_index: int) -> int:
     return picked
 
 
+def _summarize_resources(hcl: str) -> list[tuple[str, str]]:
+    """Extract `resource "TYPE" "NAME"` pairs from an HCL string. Used by the
+    intent-vs-output comparison so the user can see at a glance which
+    resources Claude actually produced in each file."""
+    if not hcl:
+        return []
+    return re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"', hcl, re.MULTILINE)
+
+
+def render_intent_output_compare(intent: dict, outputs: dict) -> None:
+    """Render a collapsed expander showing the parsed intent next to a
+    structured summary of what Claude generated. Lets the user verify the
+    model interpreted the prompt correctly without scrolling through code.
+
+    Pure presentation; no state mutation. No-op when intent or outputs are
+    missing so callers don't need to guard.
+    """
+    if not intent or not outputs:
+        return
+    with st.expander("Intent vs output", expanded=False):
+        left, right = st.columns(2)
+        with left:
+            st.caption("Parsed intent (what Claude understood)")
+            shown = {
+                k: intent.get(k)
+                for k in (
+                    "operation_type", "resource_type", "resource_types",
+                    "resource_name", "output_mode", "provider_version",
+                    "aws_resource_types", "gcp_resource_types",
+                    "ambiguities", "notes", "answers",
+                )
+                if intent.get(k) not in (None, "", [], {})
+            }
+            st.json(shown, expanded=True)
+        with right:
+            st.caption("Generated resources (what Claude produced)")
+            file_keys = [
+                ("okta.tf", "terraform_okta_hcl"),
+                ("lambda.tf", "terraform_lambda_hcl"),
+                ("gcp.tf", "terraform_gcp_hcl"),
+            ]
+            shown_any = False
+            for label, key in file_keys:
+                pairs = _summarize_resources(outputs.get(key, "") or "")
+                if not pairs:
+                    continue
+                shown_any = True
+                st.markdown(f"**{label}** · {len(pairs)} resource(s)")
+                for rtype, rname in pairs:
+                    st.markdown(f"· `{rtype}.{rname}`")
+            for label, key in (
+                ("lambda_function.py", "lambda_python"),
+                ("cloud_function.py", "cloud_function_python"),
+            ):
+                content = (outputs.get(key) or "").strip()
+                if content:
+                    shown_any = True
+                    lines = content.count("\n") + 1
+                    st.markdown(f"**{label}** · {lines} line(s)")
+            if not shown_any:
+                st.caption("No resources generated yet.")
+
+
 def render_diff_viewer(prev_outputs: dict, curr_outputs: dict) -> None:
     """Render a unified-diff expander showing changes per file between the
     previous and current generation. No-op if either side is empty.

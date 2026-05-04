@@ -25,9 +25,10 @@ from ui.components import (
     render_resource_type_selector, render_hero_starters, render_mode_chip,
     render_env_pills, render_gcp_partial_warning, render_success_card,
     render_version_switcher, render_diff_viewer,
+    render_intent_output_compare,
 )
 from ui.examples import render_examples_library
-from ui.css import inject_global_css
+from ui.css import inject_global_css, inject_keyboard_shortcuts
 import history as _history
 from history import add_entry, get_entries
 import audit as _audit
@@ -35,6 +36,8 @@ import cost as _cost
 import roles as _roles
 import redact as _redact
 import secret_rotation as _rotation
+import user_prefs as _user_prefs
+from ui.onboarding import render as render_onboarding_tour
 from env_context import build_env_context, format_context_for_prompt
 from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
@@ -75,10 +78,25 @@ def _init_session_state():
         # Each entry: {"outputs": dict, "intent": dict, "ts": iso8601 str}.
         "b_output_history": [],
         "b_active_version": 0,
+        # Phase 8B B.2: cancel-mid-generation flag. Best-effort — Streamlit
+        # is single-threaded per session, so the flag is honored between
+        # refinement passes (in _on_pass) but cannot interrupt a single
+        # blocking LLM call. The sidebar button that sets this flag is
+        # therefore only clickable between script reruns; in practice that
+        # means it cancels the NEXT pass after the in-flight one finishes.
+        "cancel_requested": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+class _GenerationCancelled(Exception):
+    """Raised inside the refinement loop's per-pass callback when the user
+    has set st.session_state.cancel_requested. Caught by _generate_and_refine
+    so cancellation surfaces as a clean info message + audit entry rather
+    than an unhandled traceback."""
+    pass
 
 
 def _push_output_version(outputs: dict, intent: dict | None) -> None:
@@ -222,10 +240,15 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
     """Generate outputs then run up to 3 validate→fix passes. Uses st.status for progress."""
     outputs = None
     error = None
+    cancelled = False
     should_rerun = False
     env_section = format_context_for_prompt(st.session_state.env_context or {})
     repo_section = format_repo_context_for_prompt(st.session_state.repo_tf_files or {})
     provider_version = intent.get("provider_version", "~> 4.0")
+
+    # Reset the cancel flag at the start of every generation so a stale True
+    # from a prior session can't immediately abort this one.
+    st.session_state["cancel_requested"] = False
 
     with st.status("Generating...", expanded=True) as status:
         try:
@@ -238,6 +261,11 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 st.write(f"⚠️ Lambda syntax warning: {'; '.join(syntax_errors)}")
 
             def _on_pass(pass_num, result, has_issues):
+                # Honor a cancel request between passes. Single-threaded
+                # Streamlit means the flag can only flip between script runs,
+                # so this aborts the NEXT pass — not the in-flight LLM call.
+                if st.session_state.get("cancel_requested"):
+                    raise _GenerationCancelled(f"cancelled before pass {pass_num}")
                 progress.progress(pass_num / 3.0, text=f"Pass {pass_num}/3")
                 if has_issues:
                     n_tf = len(result.get("terraform_issues", []))
@@ -272,9 +300,23 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
             # just the refinement loop here.
 
             status.update(label="Done", state="complete", expanded=False)
+        except _GenerationCancelled:
+            cancelled = True
+            status.update(label="Cancelled", state="error", expanded=False)
         except GenerationError as e:
             error = e
             status.update(label="Generation failed", state="error", expanded=False)
+
+    if cancelled:
+        st.session_state["cancel_requested"] = False
+        st.info("Generation cancelled. The partial output above (if any) has been discarded.")
+        try:
+            email = getattr(getattr(st, "user", None), "email", "") or ""
+            if email:
+                _audit.log(email, "gen_cancelled", resource_type=intent.get("resource_type", ""), output_mode=intent.get("output_mode", ""))
+        except Exception:
+            pass
+        return None
 
     if error:
         st.session_state.gen_error = str(error)
@@ -495,6 +537,10 @@ _rotation.configure(
     github_token=_get_secret("GITHUB_TOKEN"),
     github_repo=_get_secret("GITHUB_REPO"),
 )
+_user_prefs.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    github_repo=_get_secret("GITHUB_REPO"),
+)
 
 # Auth gate
 if not hasattr(st.user, "is_logged_in"):
@@ -536,6 +582,11 @@ if not st.session_state.get("audit_signin_logged"):
     _audit.log(st.user.email, "sign_in")
     st.session_state["audit_signin_logged"] = True
 
+# Phase 8B B.2: first-time-user guided tour. No-op for returning users
+# (the seen-flag lives in user_prefs, GitHub-backed). Rendered after
+# auth + sign-in logging so the first-load audit ordering is preserved.
+render_onboarding_tour(st.user.email)
+
 
 def _signout_with_audit():
     _audit.log(st.user.email, "sign_out")
@@ -571,12 +622,30 @@ def _render_role_and_cost_sidebar(email: str) -> None:
                     st.caption(f"`{s['name']}` — {age_str} (target {s['target_days']}d): {s['reason']}")
 
 
+def _request_cancel():
+    """Set the cancel-mid-generation flag. The next refinement pass will
+    abort cleanly via the _GenerationCancelled exception. No-op if no
+    generation is in flight (the flag is reset at the start of every
+    generation)."""
+    st.session_state["cancel_requested"] = True
+
+
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
     _render_role_and_cost_sidebar(st.user.email)
+    st.button(
+        "Cancel generation",
+        on_click=_request_cancel,
+        help=(
+            "Abort the current generation between refinement passes. "
+            "Streamlit is single-threaded, so this only takes effect once "
+            "the in-flight LLM call returns; it does not interrupt mid-call."
+        ),
+    )
     st.button("Sign out", on_click=_signout_with_audit)
 
 inject_global_css()
+inject_keyboard_shortcuts()
 
 _load_env_context()
 _render_env_sidebar()
@@ -752,8 +821,12 @@ if st.session_state.outputs:
     # original code path for any first-load flow that bypasses the helper).
     if history and 0 <= new_active < len(history):
         display_outputs = history[new_active]["outputs"]
+        display_intent = history[new_active].get("intent") or st.session_state.intent
     else:
         display_outputs = st.session_state.outputs
+        display_intent = st.session_state.intent
+    # Phase 8B B.2: side-by-side intent vs output for quick interpret-check.
+    render_intent_output_compare(display_intent, display_outputs)
     render_code_panels(display_outputs, mode)
     # Diff viewer between the active version and the next-older one. Only
     # renders when the user is looking at the current version (active=0)

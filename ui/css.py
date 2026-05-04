@@ -541,3 +541,65 @@ def mode_chip_html(mode: str) -> str:
     """Return HTML for the read-only mode indicator chip."""
     safe_mode = (mode or "").replace("<", "&lt;").replace(">", "&gt;")
     return f'<div class="tf-mode-chip"><span class="label">Mode</span> &middot; {safe_mode}</div>'
+
+
+# Phase 8B B.2: keyboard shortcuts. Implemented with raw JS rather than the
+# streamlit-shortcuts package so we don't add a new wheel that might break
+# the Streamlit Cloud build (we got bitten by streamlit==1.57.0 once; pinning
+# transitive deps is a pain). Listener walks the DOM on each keypress and
+# synthesizes a click on the first matching button — silent no-op when the
+# target isn't currently rendered (e.g. Push when no outputs exist), so the
+# shortcuts never raise visible errors. Bound to the document so they fire
+# regardless of focus.
+_SHORTCUTS_JS = """
+<script>
+(function() {
+  if (window.__tfShortcutsBound) return;
+  window.__tfShortcutsBound = true;
+  function findButton(matchText) {
+    const m = matchText.toLowerCase();
+    const btns = document.querySelectorAll('button');
+    for (const b of btns) {
+      const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+      if (t === m) return b;
+    }
+    return null;
+  }
+  function clickIf(matchText) {
+    const b = findButton(matchText);
+    if (b) { b.click(); return true; }
+    return false;
+  }
+  document.addEventListener('keydown', function(e) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (clickIf('parse intent')) { e.preventDefault(); }
+    } else if (e.shiftKey && (e.key === 'G' || e.key === 'g')) {
+      if (clickIf('generate')) { e.preventDefault(); }
+    } else if (e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+      if (clickIf('push to github')) { e.preventDefault(); }
+    }
+  }, true);
+})();
+</script>
+"""
+
+
+def inject_keyboard_shortcuts() -> None:
+    """Inject the keyboard-shortcut listener once per Streamlit run.
+
+    Bindings:
+      Ctrl/Cmd+Enter      → Parse Intent
+      Ctrl/Cmd+Shift+G    → Generate (intent form submit)
+      Ctrl/Cmd+Shift+P    → Push to GitHub
+
+    Best-effort and idempotent (the script self-guards via window flag).
+    Silent no-op when the target button isn't currently rendered so the
+    shortcuts never raise a visible error.
+    """
+    try:
+        import streamlit as st
+        st.markdown(_SHORTCUTS_JS, unsafe_allow_html=True)
+    except Exception:
+        pass
