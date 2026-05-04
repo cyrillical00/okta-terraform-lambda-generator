@@ -25,7 +25,8 @@ from ui.components import (
     render_resource_type_selector, render_hero_starters, render_mode_chip,
     render_env_pills, render_gcp_partial_warning, render_success_card,
     render_version_switcher, render_diff_viewer,
-    render_intent_output_compare,
+    render_intent_output_compare, render_feedback_widget,
+    render_error_panel,
 )
 from ui.examples import render_examples_library
 from ui.css import inject_global_css, inject_keyboard_shortcuts
@@ -37,7 +38,9 @@ import roles as _roles
 import redact as _redact
 import secret_rotation as _rotation
 import user_prefs as _user_prefs
+import feedback as _feedback
 from ui.onboarding import render as render_onboarding_tour
+from ui.account import render_sidebar_links as render_account_links, render_dialogs as render_account_dialogs
 from env_context import build_env_context, format_context_for_prompt
 from repo_context import fetch_terraform_files, format_repo_context_for_prompt
 
@@ -541,6 +544,13 @@ _user_prefs.configure(
     github_token=_get_secret("GITHUB_TOKEN"),
     github_repo=_get_secret("GITHUB_REPO"),
 )
+# Feedback issues land in FEEDBACK_REPO if set, otherwise the same repo as
+# audit / cost. Lets a deployment route customer feedback to a separate
+# product repo without touching the per-user audit destination.
+_feedback.configure(
+    github_token=_get_secret("GITHUB_TOKEN"),
+    feedback_repo=_get_secret("FEEDBACK_REPO") or _get_secret("GITHUB_REPO"),
+)
 
 # Auth gate
 if not hasattr(st.user, "is_logged_in"):
@@ -633,6 +643,7 @@ def _request_cancel():
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
     _render_role_and_cost_sidebar(st.user.email)
+    render_account_links(st.user.email)
     st.button(
         "Cancel generation",
         on_click=_request_cancel,
@@ -643,6 +654,10 @@ with st.sidebar:
         ),
     )
     st.button("Sign out", on_click=_signout_with_audit)
+
+# Render whichever modal flag is set (account / help / pricing). Done
+# once per run after the sidebar has had its chance to set flags.
+render_account_dialogs(st.user.email)
 
 inject_global_css()
 inject_keyboard_shortcuts()
@@ -769,7 +784,15 @@ if parse_clicked and user_input.strip():
             st.session_state.parse_error = str(e)
 
 if st.session_state.parse_error:
-    st.error(st.session_state.parse_error)
+    render_error_panel(
+        "Could not parse this prompt",
+        st.session_state.parse_error,
+        retry_hint=(
+            "Rephrase to name a specific Okta / AWS / GCP resource (group, "
+            "app, event hook, Lambda, Pub/Sub topic, etc.) or tick the "
+            "matching checkbox above to constrain the resource type."
+        ),
+    )
 
 # Stage 2 — Clarifying questions
 if st.session_state.intent and st.session_state.outputs is None:
@@ -804,7 +827,16 @@ if st.session_state.generation_triggered:
         )
 
 if st.session_state.gen_error:
-    st.error(st.session_state.gen_error)
+    render_error_panel(
+        "Generation failed",
+        st.session_state.gen_error,
+        retry_hint=(
+            "Click Parse Intent again, then Generate. Most failures are "
+            "transient (Anthropic rate limits, network blips). Persistent "
+            "failures usually indicate a malformed intent — open Intent vs "
+            "output once you have any output to compare against."
+        ),
+    )
 
 # Stage 4 — Display + actions
 if st.session_state.outputs:
@@ -828,6 +860,9 @@ if st.session_state.outputs:
     # Phase 8B B.2: side-by-side intent vs output for quick interpret-check.
     render_intent_output_compare(display_intent, display_outputs)
     render_code_panels(display_outputs, mode)
+    # Phase 8B B.3: feedback widget. Posts a GitHub issue on submit; renders
+    # nothing when feedback is not configured.
+    render_feedback_widget(display_intent, display_outputs, st.session_state.last_user_input, st.user.email)
     # Diff viewer between the active version and the next-older one. Only
     # renders when the user is looking at the current version (active=0)
     # and at least one prior version exists.
@@ -995,10 +1030,27 @@ if st.session_state.outputs:
                         extra={"repo": repo_override, "branch": branch_override or "default", "file_count": len(files)},
                     )
                 except RuntimeError as e:
-                    st.error(str(e))
+                    render_error_panel(
+                        "GitHub push failed",
+                        str(e),
+                        retry_hint=(
+                            "Verify that GITHUB_TOKEN has `repo` scope and "
+                            "write access to the destination repo + branch. "
+                            "Then click Push to GitHub again."
+                        ),
+                        docs_url="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+                    )
                     _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
                 except Exception as e:
-                    st.error(f"GitHub push failed: {e}")
+                    render_error_panel(
+                        "GitHub push failed",
+                        str(e),
+                        retry_hint=(
+                            "This is an unexpected error from the GitHub API. "
+                            "Check the token scope and retry; if the error "
+                            "persists, copy the message above and email support."
+                        ),
+                    )
                     _audit.log(st.user.email, "push_failed", extra={"error": str(e)[:200]})
 
 # Stage 5 — Commit URL

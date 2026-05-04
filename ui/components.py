@@ -367,6 +367,120 @@ def render_intent_output_compare(intent: dict, outputs: dict) -> None:
                 st.caption("No resources generated yet.")
 
 
+_SUPPORT_EMAIL_FOR_ERRORS = "cyrillical@gmail.com"
+
+
+def render_error_panel(
+    title: str,
+    message: str,
+    *,
+    retry_hint: str | None = None,
+    docs_url: str | None = None,
+    support_email: str | None = None,
+) -> None:
+    """Structured error renderer for the high-traffic error sites
+    (parse / generate / push). Bundles three things every error needs:
+    what went wrong, how to retry, who to contact. Falls back to
+    plain st.error if streamlit is unhealthy."""
+    try:
+        st.error(f"**{title}**\n\n{message}")
+    except Exception:
+        return
+    extras = []
+    if retry_hint:
+        extras.append(f"**Try:** {retry_hint}")
+    if docs_url:
+        extras.append(f"**Docs:** [{docs_url}]({docs_url})")
+    if extras:
+        st.caption("  \n".join(extras))
+    contact = support_email or _SUPPORT_EMAIL_FOR_ERRORS
+    st.caption(f"Still stuck? Email `{contact}` with the error text above.")
+
+
+def render_feedback_widget(intent: dict, outputs: dict, user_input: str, email: str) -> None:
+    """Render a thumbs-up/down + free-text feedback widget. Submission
+    posts a GitHub issue via the feedback module. Renders nothing when
+    feedback isn't configured (no FEEDBACK_REPO + GITHUB_TOKEN), so the
+    widget silently disappears in dev environments without GitHub.
+
+    State keys: feedback_sentiment, feedback_comment, feedback_submitted_for
+    (the request_id-equivalent tied to the current outputs so re-renders
+    don't show a stale 'submitted' confirmation across regenerations).
+    """
+    try:
+        import feedback as _fb
+    except Exception:
+        return
+    if not _fb.is_configured():
+        return
+    if not intent or not outputs:
+        return
+
+    output_signature = (
+        len(outputs.get("terraform_okta_hcl", "") or "")
+        + len(outputs.get("terraform_lambda_hcl", "") or "")
+        + len(outputs.get("terraform_gcp_hcl", "") or "")
+        + len(outputs.get("lambda_python", "") or "")
+        + len(outputs.get("cloud_function_python", "") or "")
+    )
+    submitted_for = st.session_state.get("feedback_submitted_for")
+    if submitted_for == output_signature:
+        url = st.session_state.get("feedback_last_url", "")
+        msg = "Feedback submitted. Thanks!"
+        if url:
+            msg += f" [View issue]({url})"
+        st.success(msg)
+        return
+
+    with st.expander("Was this output helpful?", expanded=False):
+        col_up, col_down, _ = st.columns([1, 1, 4])
+        with col_up:
+            up_clicked = st.button("👍", key="fb_up", help="Helpful — output matched the request")
+        with col_down:
+            down_clicked = st.button("👎", key="fb_down", help="Not helpful — flag for review")
+
+        if up_clicked:
+            st.session_state["feedback_sentiment"] = "up"
+        if down_clicked:
+            st.session_state["feedback_sentiment"] = "down"
+
+        sentiment = st.session_state.get("feedback_sentiment")
+        if sentiment:
+            label = "What was good?" if sentiment == "up" else "What went wrong?"
+            comment = st.text_area(
+                label,
+                placeholder="Optional. Specifics help us tune the prompts.",
+                height=90,
+                key="fb_comment",
+            )
+            if st.button("Send feedback", key="fb_submit", type="primary"):
+                output_summary = {
+                    "okta_resources": len(_summarize_resources(outputs.get("terraform_okta_hcl", "") or "")),
+                    "lambda_resources": len(_summarize_resources(outputs.get("terraform_lambda_hcl", "") or "")),
+                    "gcp_resources": len(_summarize_resources(outputs.get("terraform_gcp_hcl", "") or "")),
+                    "lambda_py_lines": (outputs.get("lambda_python", "") or "").count("\n") + 1,
+                }
+                url = _fb.submit(
+                    email=email,
+                    sentiment=sentiment,
+                    comment=comment or "",
+                    intent=intent,
+                    user_input=user_input,
+                    output_summary=output_summary,
+                )
+                if url:
+                    st.session_state["feedback_submitted_for"] = output_signature
+                    st.session_state["feedback_last_url"] = url
+                    st.session_state["feedback_sentiment"] = None
+                    st.session_state["fb_comment"] = ""
+                    st.rerun()
+                else:
+                    st.error(
+                        "Could not post the feedback issue. Check that GITHUB_TOKEN "
+                        "has issue-create permission on the configured FEEDBACK_REPO."
+                    )
+
+
 def render_diff_viewer(prev_outputs: dict, curr_outputs: dict) -> None:
     """Render a unified-diff expander showing changes per file between the
     previous and current generation. No-op if either side is empty.
