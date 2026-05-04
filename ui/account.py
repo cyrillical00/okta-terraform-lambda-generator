@@ -221,15 +221,17 @@ def show_pricing_dialog() -> None:
 
 
 def render_sidebar_links(email: str) -> None:
-    """Render Account / Help / Pricing buttons in the sidebar. Each click
-    flips a session-state flag; the dialogs themselves render once per
-    run from app.py based on those flags. Routing lives in the caller so
-    this module stays one-direction (data → UI, no callbacks)."""
+    """Render Account / Help link buttons into the current container.
+    Each click flips a session-state flag; the dialogs themselves render
+    once per run from app.py based on those flags. Container-agnostic:
+    caller decides whether to mount in the bare sidebar, an Admin
+    expander, or a Settings expander (the new sidebar layout uses the
+    latter two)."""
     try:
         import streamlit as st
     except Exception:
         return
-    col_a, col_h = st.sidebar.columns(2)
+    col_a, col_h = st.columns(2)
     with col_a:
         if st.button("Account", key="sb_account_btn", use_container_width=True):
             st.session_state["show_account_dialog"] = True

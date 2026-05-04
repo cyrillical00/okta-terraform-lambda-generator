@@ -359,61 +359,67 @@ def _load_env_context() -> None:
 
 
 def _render_env_sidebar() -> None:
+    """Renders Okta/AWS/GCP status into the current container. Caller is
+    responsible for placing this inside an outer sidebar group; calls use
+    bare `st.*` so the writes flow into whatever container the caller
+    has open (an expander, in the new sidebar layout)."""
     ctx = st.session_state.env_context or {}
     okta = ctx.get("okta", {})
     aws = ctx.get("aws", {})
     gcp = ctx.get("gcp", {})
 
-    st.sidebar.divider()
-    st.sidebar.markdown("**Environment**")
+    st.markdown("**Environment**")
 
     if okta.get("connected"):
         n_groups = len(okta.get("groups", []))
         n_apps = len(okta.get("apps", []))
         n_hooks = len(okta.get("event_hooks", []))
-        st.sidebar.success(f"Okta: {n_groups} groups · {n_apps} apps · {n_hooks} hooks")
+        st.success(f"Okta: {n_groups} groups · {n_apps} apps · {n_hooks} hooks")
     else:
         err = okta.get("error", "Not configured")
-        st.sidebar.caption(f"Okta: {err}")
+        st.caption(f"Okta: {err}")
 
     if aws.get("connected"):
         n_fns = len(aws.get("lambda_functions", []))
         n_roles = len(aws.get("iam_roles", []))
-        st.sidebar.success(f"AWS: {n_fns} functions · {n_roles} roles")
+        st.success(f"AWS: {n_fns} functions · {n_roles} roles")
     else:
         err = aws.get("error", "Not configured")
-        st.sidebar.caption(f"AWS: {err}")
+        st.caption(f"AWS: {err}")
 
     if gcp.get("connected"):
         n_fns = len(gcp.get("functions", []))
         n_sa = len(gcp.get("service_accounts", []))
         n_topics = len(gcp.get("pubsub_topics", []))
-        st.sidebar.success(f"GCP: {n_fns} functions · {n_sa} SAs · {n_topics} topics")
+        st.success(f"GCP: {n_fns} functions · {n_sa} SAs · {n_topics} topics")
         partial = gcp.get("partial_errors") or []
         if partial:
-            with st.sidebar.expander(f"GCP partial: {len(partial)} service(s) unavailable"):
-                for p in partial:
-                    st.caption(f"· {p[:140]}")
+            # Flattened from an inner expander to inline captions; Streamlit
+            # 1.56 forbids nested expanders, and this block now lives inside
+            # the outer Connections expander.
+            st.caption(f"GCP partial: {len(partial)} service(s) unavailable")
+            for p in partial:
+                st.caption(f"· {p[:140]}")
     else:
         err = gcp.get("error", "Not configured")
-        st.sidebar.caption(f"GCP: {err}")
+        st.caption(f"GCP: {err}")
 
-    if st.sidebar.button("Refresh environment", use_container_width=True):
+    if st.button("Refresh environment", use_container_width=True):
         _audit.log(st.user.email, "env_refresh")
         st.session_state.env_context = None
         st.rerun()
 
 
 def _render_repo_sidebar(default_repo: str) -> None:
+    """Renders the connected-repo input + load/clear into the current container."""
     github_token = _get_secret("GITHUB_TOKEN")
-    st.sidebar.divider()
-    st.sidebar.markdown("**Connected Terraform Repo**")
+    st.markdown("**Connected Terraform Repo**")
 
     if not github_token:
-        st.sidebar.caption("Add GITHUB_TOKEN to secrets to enable repo import.")
+        st.caption("Add GITHUB_TOKEN to secrets to enable repo import.")
         return
 
-    repo_input = st.sidebar.text_input(
+    repo_input = st.text_input(
         "Repository (owner/repo)",
         value=default_repo,
         placeholder="owner/repo-name",
@@ -422,7 +428,7 @@ def _render_repo_sidebar(default_repo: str) -> None:
     # Persist the user's repo choice across reruns and into the push panel.
     if repo_input and repo_input.strip() != (st.session_state.get("b_persisted_repo") or ""):
         st.session_state.b_persisted_repo = repo_input.strip()
-    path_input = st.sidebar.text_input(
+    path_input = st.text_input(
         "Terraform path",
         value="terraform",
         placeholder="terraform",
@@ -430,7 +436,7 @@ def _render_repo_sidebar(default_repo: str) -> None:
         help="Directory inside the repo containing .tf files (e.g. 'terraform', 'infra', or leave blank for root)",
     )
 
-    col_load, col_clear = st.sidebar.columns(2)
+    col_load, col_clear = st.columns(2)
     load_clicked = col_load.button("Load", use_container_width=True, key="repo_tf_load")
     clear_clicked = col_clear.button("Clear", use_container_width=True, key="repo_tf_clear")
 
@@ -450,25 +456,25 @@ def _render_repo_sidebar(default_repo: str) -> None:
         st.rerun()
 
     if st.session_state.repo_tf_error:
-        st.sidebar.error(st.session_state.repo_tf_error)
+        st.error(st.session_state.repo_tf_error)
     elif st.session_state.repo_tf_files is not None:
         files = st.session_state.repo_tf_files
         if files:
-            st.sidebar.success(f"{len(files)} .tf file(s) loaded — generation will use this context")
+            st.success(f"{len(files)} .tf file(s) loaded — generation will use this context")
             for path in files:
                 lines = files[path].count("\n") + 1
-                st.sidebar.caption(f"· {path} ({lines} lines)")
+                st.caption(f"· {path} ({lines} lines)")
         else:
-            st.sidebar.warning("No .tf files found at that path.")
+            st.warning("No .tf files found at that path.")
 
 
 def _render_audit_sidebar(email: str) -> None:
-    """Show the user's last 10 privileged actions plus a CSV export button."""
-    st.sidebar.divider()
-    st.sidebar.markdown("**Audit log**")
+    """Show the user's last 10 privileged actions plus a CSV export button.
+    Renders into the current container; caller wraps in an outer expander."""
+    st.markdown("**Audit log**")
     entries = _audit.recent(email, limit=10)
     if not entries:
-        st.sidebar.caption("No actions logged yet.")
+        st.caption("No actions logged yet.")
         return
     for entry in entries:
         ts = (entry.get("timestamp_utc") or "")[:19].replace("T", " ")
@@ -480,11 +486,11 @@ def _render_audit_sidebar(email: str) -> None:
             meta += f" · `{rt}`"
         if cost > 0:
             meta += f" · ${cost:.4f}"
-        st.sidebar.caption(meta)
-        st.sidebar.markdown(f'<span class="tf-sidebar-timestamp">{ts} UTC</span>', unsafe_allow_html=True)
+        st.caption(meta)
+        st.markdown(f'<span class="tf-sidebar-timestamp">{ts} UTC</span>', unsafe_allow_html=True)
     csv_text = _audit.export_csv(email)
     if csv_text:
-        st.sidebar.download_button(
+        st.download_button(
             "Export full audit (CSV)",
             data=csv_text,
             file_name=f"audit_{_audit._email_hash(email)}.csv",
@@ -495,11 +501,11 @@ def _render_audit_sidebar(email: str) -> None:
 
 
 def _render_history_sidebar(email: str) -> None:
+    """Show the last 30 prompts with reuse buttons. Container-agnostic."""
     entries = get_entries(email)
-    st.sidebar.divider()
-    st.sidebar.markdown("**Command History**")
+    st.markdown("**Command History**")
     if not entries:
-        st.sidebar.caption("No history yet. Generate something to start building your library.")
+        st.caption("No history yet. Generate something to start building your library.")
         return
 
     for i, entry in enumerate(entries[:30]):
@@ -507,8 +513,8 @@ def _render_history_sidebar(email: str) -> None:
         badge = f"`{entry['operation_type']}` · `{entry['resource_type']}`"
         ts = entry.get("timestamp", "")[:10]
 
-        with st.sidebar.container():
-            col_text, col_btn = st.sidebar.columns([5, 1])
+        with st.container():
+            col_text, col_btn = st.columns([5, 1])
             with col_text:
                 st.caption(f"{badge}  {ts}")
                 st.markdown(f'<span class="tf-sidebar-preview">{preview}</span>', unsafe_allow_html=True)
@@ -603,48 +609,53 @@ def _signout_with_audit():
     st.logout()
 
 
-def _render_role_and_cost_sidebar(email: str) -> None:
-    """Show the user's role badge, today's cost / quota usage, and (admin-only)
-    a redaction-bypass toggle plus a stale-secret warning."""
+def _render_identity_strip(email: str) -> None:
+    """Always-visible identity strip at the top of the sidebar: role pill +
+    today's cost / quota progress. Container-agnostic; the new layout
+    calls this from inside `with st.sidebar:` so writes flow into the
+    sidebar directly (no expander wrap)."""
     role = _roles.get_role(email)
     spent = _cost.today_usd(email)
     cap = _roles.daily_quota_usd(email)
-    st.sidebar.markdown(f'<span class="tf-sidebar-role">Role <b>{role}</b></span>', unsafe_allow_html=True)
+    st.markdown(f'<span class="tf-sidebar-role">Role <b>{role}</b></span>', unsafe_allow_html=True)
     if cap == 0:
-        st.sidebar.caption(f"Today: ${spent:.4f} (no cap)")
+        st.caption(f"Today: ${spent:.4f} (no cap)")
     else:
         pct = min(1.0, spent / cap) if cap else 0.0
-        st.sidebar.caption(f"Today: ${spent:.4f} of ${cap:.2f}")
-        st.sidebar.progress(pct)
-    # Admin-only: per-session redaction toggle + stale-secret warnings.
-    # Help text removed: in Streamlit 1.56 the inline (?) tooltip can bleed
-    # into the next sidebar element when the surrounding column is narrow.
-    if _roles.can("manage_roles", role):
-        st.sidebar.checkbox(
-            "Disable PII redaction (session)",
-            key="redact_disabled",
+        st.caption(f"Today: ${spent:.4f} of ${cap:.2f}")
+        st.progress(pct)
+
+
+def _render_admin_block(email: str) -> None:
+    """Admin-only block: per-session redaction toggle + stale-secret warnings.
+    Container-agnostic; the new layout calls this from inside the Admin
+    expander. Stale-secrets used to be an inner expander; flattened to
+    inline captions because Streamlit 1.56 forbids nested expanders."""
+    role = _roles.get_role(email)
+    if not _roles.can("manage_roles", role):
+        return
+    st.checkbox(
+        "Disable PII redaction (session)",
+        key="redact_disabled",
+    )
+    stale = _rotation.stale_list()
+    if not stale:
+        return
+    overdue = [s for s in stale if s.get("age_days") is not None]
+    if not overdue:
+        st.caption(
+            f"Add _tftool/secret_rotation.json to track rotation cadence "
+            f"({len(stale)} secret(s) untracked)."
         )
-        stale = _rotation.stale_list()
-        if stale:
-            # Collapse the common "fresh deploy, no rotation file yet" case
-            # into a single muted line. Only show the per-secret expander when
-            # we have at least one ACTUALLY overdue (recorded but expired)
-            # entry, since that's the case admins need to act on.
-            overdue = [s for s in stale if s.get("age_days") is not None]
-            if not overdue:
-                st.sidebar.caption(
-                    f"Add _tftool/secret_rotation.json to track rotation cadence "
-                    f"({len(stale)} secret(s) untracked)."
-                )
-            else:
-                with st.sidebar.expander(f"⚠️ {len(overdue)} overdue secret(s)"):
-                    for s in overdue:
-                        age = s.get("age_days")
-                        st.caption(f"`{s['name']}` · {age}d (target {s['target_days']}d)")
-                if len(stale) > len(overdue):
-                    st.sidebar.caption(
-                        f"+ {len(stale) - len(overdue)} untracked (no recorded rotation date)."
-                    )
+        return
+    st.markdown(f"**⚠️ {len(overdue)} overdue secret(s)**")
+    for s in overdue:
+        age = s.get("age_days")
+        st.caption(f"`{s['name']}` · {age}d (target {s['target_days']}d)")
+    if len(stale) > len(overdue):
+        st.caption(
+            f"+ {len(stale) - len(overdue)} untracked (no recorded rotation date)."
+        )
 
 
 def _request_cancel():
@@ -655,10 +666,45 @@ def _request_cancel():
     st.session_state["cancel_requested"] = True
 
 
+inject_global_css()
+inject_keyboard_shortcuts()
+
+# Live-context fetch happens before sidebar render so the Connections
+# group has the env data ready to display.
+_load_env_context()
+
+# Sidebar layout: identity strip stays always-visible; everything else
+# folds into collapsible groups so the sidebar fits a single viewport.
+# Streamlit forbids nested expanders — Examples library is a top-level
+# expander on its own (already), and the GCP partial-errors / stale-
+# secrets blocks have been flattened to inline captions.
+_is_admin = _roles.can("manage_roles", st.user.email)
+
 with st.sidebar:
     st.markdown(f"Signed in as **{st.user.email}**")
-    _render_role_and_cost_sidebar(st.user.email)
-    render_account_links(st.user.email)
+    _render_identity_strip(st.user.email)
+
+    with st.expander("Connections", expanded=True):
+        _render_env_sidebar()
+        st.divider()
+        _render_repo_sidebar(
+            st.session_state.get("b_persisted_repo") or _get_secret("GITHUB_REPO")
+        )
+
+    render_examples_library()
+
+    with st.expander("Activity", expanded=False):
+        _render_audit_sidebar(st.user.email)
+        st.divider()
+        _render_history_sidebar(st.user.email)
+
+    group_label = "Admin" if _is_admin else "Settings"
+    with st.expander(group_label, expanded=False):
+        if _is_admin:
+            _render_admin_block(st.user.email)
+            st.divider()
+        render_account_links(st.user.email)
+
     st.button(
         "Cancel generation",
         on_click=_request_cancel,
@@ -673,16 +719,6 @@ with st.sidebar:
 # Render whichever modal flag is set (account / help / pricing). Done
 # once per run after the sidebar has had its chance to set flags.
 render_account_dialogs(st.user.email)
-
-inject_global_css()
-inject_keyboard_shortcuts()
-
-_load_env_context()
-_render_env_sidebar()
-_render_repo_sidebar(st.session_state.get("b_persisted_repo") or _get_secret("GITHUB_REPO"))
-_render_audit_sidebar(st.user.email)
-render_examples_library()
-_render_history_sidebar(st.user.email)
 
 # Top-of-page status row + GCP partial-error banner
 render_env_pills(st.session_state.env_context or {})

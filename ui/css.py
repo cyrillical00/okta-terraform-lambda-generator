@@ -263,11 +263,14 @@ h1, h2, h3, h4, h5, h6,
 [data-testid="stExpander"] summary:hover {
   background: var(--surface-2) !important;
 }
-/* Sidebar expanders need a touch of top margin so a help-icon tooltip
-   from the previous widget can't overlap the expander's chevron arrow.
-   Non-sidebar expanders keep their natural spacing. */
+/* Sidebar expanders need a touch of margin so a help-icon tooltip
+   from the previous widget can't overlap the expander's chevron arrow,
+   and so the new sidebar groups (Connections, Activity, Admin) don't
+   visually mash together. Non-sidebar expanders keep their natural
+   spacing. */
 [data-testid="stSidebar"] [data-testid="stExpander"] {
   margin-top: 8px !important;
+  margin-bottom: 6px !important;
 }
 
 /* === TOOLTIP / HELP-ICON POPOVER ===
