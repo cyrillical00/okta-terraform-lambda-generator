@@ -392,28 +392,76 @@ def render_optional_tf(optional_tf: str) -> None:
         st.code(optional_tf, language="hcl")
 
 
+_FILE_PREFIX_RE = re.compile(
+    r"^(?P<file>okta\.tf|lambda\.tf|gcp\.tf|lambda_function\.py|cloud_function\.py|main\.py)\s*[:\s]",
+    re.IGNORECASE,
+)
+_ERROR_KEYWORDS = ("error", "missing", "fail", "invalid", "unsupported", "duplicate", "forbidden")
+_WARN_KEYWORDS = ("warn", "consider", "should", "recommend")
+
+
+def _infer_severity(issue: str) -> str:
+    low = issue.lower()
+    if any(k in low for k in _ERROR_KEYWORDS):
+        return "error"
+    if any(k in low for k in _WARN_KEYWORDS):
+        return "warn"
+    return "info"
+
+
+def _bucket_issue(issue: str, default_file: str) -> tuple[str, str]:
+    """Return (file_label, cleaned_issue). Detects an inline file prefix
+    like `okta.tf: ...` and falls back to `default_file` for the bucket
+    when the issue text doesn't name a file."""
+    m = _FILE_PREFIX_RE.match(issue.lstrip())
+    if m:
+        return m.group("file").lower(), issue[m.end():].strip().lstrip(":-").strip()
+    return default_file, issue
+
+
 def render_validation_result(result: dict) -> bool:
-    """Renders self-check result. Returns True if Fix Issues was clicked."""
+    """Renders self-check result grouped by file with severity inference.
+    Returns True if Fix Issues was clicked."""
     overall = result.get("overall", "warn")
     tf_issues = result.get("terraform_issues", [])
     lambda_issues = result.get("lambda_issues", [])
 
     if overall == "pass":
-        st.success("Self-check passed — output matches the request with no issues found.")
+        st.success("Self-check passed: output matches the request with no issues found.")
         return False
 
-    badge = "⚠️ Warning" if overall == "warn" else "❌ Failed"
-    st.warning(badge) if overall == "warn" else st.error(badge)
+    total = len(tf_issues) + len(lambda_issues)
+    badge = f"{total} issue(s) flagged"
+    if overall == "warn":
+        st.warning(badge)
+    else:
+        st.error(badge)
 
-    if tf_issues:
-        st.markdown("**Terraform issues:**")
-        for issue in tf_issues:
-            st.markdown(f"- {issue}")
+    # Bucket every issue by inferred filename. Terraform issues default to
+    # "terraform" when no file prefix is present; lambda issues default to
+    # the python source. Same data as before, better signal.
+    buckets: dict[str, list[tuple[str, str]]] = {}
+    for issue in tf_issues:
+        file_label, clean = _bucket_issue(issue, "terraform")
+        buckets.setdefault(file_label, []).append((clean, _infer_severity(clean)))
+    for issue in lambda_issues:
+        file_label, clean = _bucket_issue(issue, "lambda_function.py")
+        buckets.setdefault(file_label, []).append((clean, _infer_severity(clean)))
 
-    if lambda_issues:
-        st.markdown("**Lambda issues:**")
-        for issue in lambda_issues:
-            st.markdown(f"- {issue}")
+    file_order = ["okta.tf", "lambda.tf", "gcp.tf", "terraform",
+                  "lambda_function.py", "cloud_function.py", "main.py"]
+    ordered = [f for f in file_order if f in buckets] + \
+              [f for f in buckets if f not in file_order]
+
+    for file_label in ordered:
+        items = buckets[file_label]
+        with st.expander(f"{file_label} ({len(items)})", expanded=True):
+            for clean, sev in items:
+                icon = {"error": "✖", "warn": "▲", "info": "·"}.get(sev, "·")
+                st.markdown(
+                    f'<div><span class="tf-issue-severity-{sev}">{icon}</span> {clean}</div>',
+                    unsafe_allow_html=True,
+                )
 
     return st.button("Fix Issues", type="primary")
 

@@ -414,7 +414,7 @@ def _render_audit_sidebar(email: str) -> None:
         if cost > 0:
             meta += f" · ${cost:.4f}"
         st.sidebar.caption(meta)
-        st.sidebar.markdown(f"<span style='font-size:0.78em;color:#777'>{ts} UTC</span>", unsafe_allow_html=True)
+        st.sidebar.markdown(f'<span class="tf-sidebar-timestamp">{ts} UTC</span>', unsafe_allow_html=True)
     csv_text = _audit.export_csv(email)
     if csv_text:
         st.sidebar.download_button(
@@ -444,7 +444,7 @@ def _render_history_sidebar(email: str) -> None:
             col_text, col_btn = st.sidebar.columns([5, 1])
             with col_text:
                 st.caption(f"{badge}  {ts}")
-                st.markdown(f"<span style='font-size:0.85em'>{preview}</span>", unsafe_allow_html=True)
+                st.markdown(f'<span class="tf-sidebar-preview">{preview}</span>', unsafe_allow_html=True)
             with col_btn:
                 if st.button("↺", key=f"reuse_{i}", help=entry["input"]):
                     st.session_state.user_input_area = entry["input"]
@@ -526,7 +526,7 @@ def _render_role_and_cost_sidebar(email: str) -> None:
     role = _roles.get_role(email)
     spent = _cost.today_usd(email)
     cap = _roles.daily_quota_usd(email)
-    st.sidebar.markdown(f"<small style='color:#777'>Role:</small> <b>{role}</b>", unsafe_allow_html=True)
+    st.sidebar.markdown(f'<span class="tf-sidebar-role">Role <b>{role}</b></span>', unsafe_allow_html=True)
     if cap == 0:
         st.sidebar.caption(f"Today: ${spent:.4f} (no cap)")
     else:
