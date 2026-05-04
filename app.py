@@ -64,6 +64,11 @@ def _init_session_state():
         "env_context": None,
         "repo_tf_files": None,
         "repo_tf_error": None,
+        # Phase 8B D1.1: persistent push target across reruns. Seeded from
+        # the configured GITHUB_REPO secret on first load; user edits in the
+        # sidebar or push panel are written back here so the value survives
+        # parse/generate/regenerate cycles.
+        "b_persisted_repo": _get_secret("GITHUB_REPO"),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -202,7 +207,8 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
     with st.status("Generating...", expanded=True) as status:
         try:
-            st.write("Generating initial output...")
+            st.write("Pass 0/3: drafting initial output…")
+            progress = st.progress(0.0, text="Pass 0/3 · drafting")
             outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section, provider_version=provider_version, repo_context_section=repo_section)
 
             syntax_errors = validate_lambda_python(outputs["lambda_python"])
@@ -210,11 +216,19 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 st.write(f"⚠️ Lambda syntax warning: {'; '.join(syntax_errors)}")
 
             def _on_pass(pass_num, result, has_issues):
+                progress.progress(pass_num / 3.0, text=f"Pass {pass_num}/3")
                 if has_issues:
-                    n = len(result.get("terraform_issues", [])) + len(result.get("lambda_issues", []))
-                    st.write(f"Pass {pass_num}/3: fixing {n} issue(s)...")
+                    n_tf = len(result.get("terraform_issues", []))
+                    n_lam = len(result.get("lambda_issues", []))
+                    parts = []
+                    if n_tf:
+                        parts.append(f"{n_tf} terraform")
+                    if n_lam:
+                        parts.append(f"{n_lam} lambda")
+                    detail = " + ".join(parts) if parts else f"{n_tf + n_lam} issue(s)"
+                    st.write(f"Pass {pass_num}/3 · refining ({detail})")
                 else:
-                    st.write(f"Pass {pass_num}/3: looks good.")
+                    st.write(f"Pass {pass_num}/3 · clean")
 
             outputs = refine_outputs(
                 intent=intent,
@@ -338,6 +352,9 @@ def _render_repo_sidebar(default_repo: str) -> None:
         placeholder="owner/repo-name",
         key="repo_tf_repo_input",
     )
+    # Persist the user's repo choice across reruns and into the push panel.
+    if repo_input and repo_input.strip() != (st.session_state.get("b_persisted_repo") or ""):
+        st.session_state.b_persisted_repo = repo_input.strip()
     path_input = st.sidebar.text_input(
         "Terraform path",
         value="terraform",
@@ -541,7 +558,7 @@ inject_global_css()
 
 _load_env_context()
 _render_env_sidebar()
-_render_repo_sidebar(_get_secret("GITHUB_REPO"))
+_render_repo_sidebar(st.session_state.get("b_persisted_repo") or _get_secret("GITHUB_REPO"))
 _render_audit_sidebar(st.user.email)
 _render_history_sidebar(st.user.email)
 
@@ -794,11 +811,14 @@ if st.session_state.outputs:
                     with st.expander("Raw response from Claude"):
                         st.code(e.raw_response)
 
-    default_repo = _get_secret("GITHUB_REPO")
+    default_repo = st.session_state.get("b_persisted_repo") or _get_secret("GITHUB_REPO")
     auto_basename = derive_basename_from_intent(st.session_state.intent)
     push_clicked, regenerate_clicked, extra_instructions, repo_override, branch_override, file_basename = render_action_buttons(
         st.session_state.outputs, mode, default_repo, auto_basename=auto_basename
     )
+    # Mirror sidebar behaviour: a repo edit in the push panel also persists.
+    if repo_override and repo_override != (st.session_state.get("b_persisted_repo") or ""):
+        st.session_state.b_persisted_repo = repo_override
 
     # Regenerate with automatic 3-pass refinement
     if regenerate_clicked:

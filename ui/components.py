@@ -1,8 +1,18 @@
 import io
+import re
 import zipfile
 import streamlit as st
 
 from ui.css import pill, mode_chip_html
+
+
+def _count_resources(hcl: str) -> int:
+    """Return the number of top-level `resource "..." "..."` blocks in an HCL
+    string. Used by the output-tab badges so the tab label reads `okta.tf (4)`
+    without re-parsing the whole file."""
+    if not hcl:
+        return 0
+    return len(re.findall(r'^\s*resource\s+"', hcl, re.MULTILINE))
 
 OUTPUT_MODES = ["Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP"]
 
@@ -307,7 +317,11 @@ def _render_terraform(outputs: dict, show_okta: bool, show_lambda: bool, show_gc
         tabs_to_show.append(("gcp.tf", outputs.get("terraform_gcp_hcl", "")))
     if not tabs_to_show:
         return
-    tabs = st.tabs([label for label, _ in tabs_to_show])
+    labels = [
+        f"{name} ({_count_resources(content)})" if _count_resources(content) else name
+        for name, content in tabs_to_show
+    ]
+    tabs = st.tabs(labels)
     for tab, (_, content) in zip(tabs, tabs_to_show):
         with tab:
             st.code(content, language="hcl")
