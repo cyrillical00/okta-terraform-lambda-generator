@@ -76,6 +76,21 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main, .
   color: var(--text);
 }
 
+/* Material Icons: Streamlit's status widget, expander chevron, tooltip
+   icon, etc. all use Material Symbols / Material Icons fonts and store
+   the icon name as text (a ligature). The global font reset above stomps
+   on that font so the ligature falls back to rendering the literal name
+   ("arrow_right", "expand_more", "check_circle"). Restore the icon font
+   here so chevrons and status indicators render as glyphs. */
+.material-icons, .material-icons-outlined, .material-icons-round,
+.material-symbols-outlined, .material-symbols-rounded, .material-symbols-sharp,
+[data-testid="stIconMaterial"], [data-testid="stIcon"],
+i[class*="material-icons"], i[class*="material-symbols"],
+span[class*="material-icons"], span[class*="material-symbols"] {
+  font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
+  font-feature-settings: 'liga';
+}
+
 body, [data-testid="stAppViewContainer"], .main {
   background: var(--bg) !important;
   color: var(--text) !important;
