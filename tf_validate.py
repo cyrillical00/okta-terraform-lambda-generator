@@ -85,6 +85,8 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     """Materialise <WORKSPACE_ROOT>/<TID>/ with okta.tf / lambda.tf / gcp.tf
     plus a terraform.tfvars built from variable types. Wipes stale .tf files
     before writing so a previous mode does not bleed into this run."""
+    from generator.hcl_utils import dedupe_variable_blocks
+
     workdir = WORKSPACE_ROOT / tid
     workdir.mkdir(parents=True, exist_ok=True)
     for stale in workdir.glob("*.tf"):
@@ -92,6 +94,10 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     okta = outputs.get("terraform_okta_hcl", "") or ""
     lam = outputs.get("terraform_lambda_hcl", "") or ""
     gcp = outputs.get("terraform_gcp_hcl", "") or ""
+    if okta.strip() and lam.strip():
+        okta, lam = dedupe_variable_blocks(okta, lam)
+    if okta.strip() and gcp.strip():
+        okta, gcp = dedupe_variable_blocks(okta, gcp)
     if okta.strip():
         (workdir / "okta.tf").write_text(okta, encoding="utf-8", newline="\n")
     if lam.strip():

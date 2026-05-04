@@ -233,3 +233,76 @@ def merge_terraform_blocks(primary_hcl: str, secondary_hcl: str) -> tuple[str, s
     )
     new_secondary = (secondary_hcl[:secondary_tf[0]] + secondary_hcl[secondary_tf[3]:]).lstrip('\n')
     return new_primary, new_secondary
+
+
+_VARIABLE_HEADER_RE = re.compile(r'^variable\s+"([^"]+)"\s*\{', re.MULTILINE)
+
+
+def _find_variable_blocks(hcl: str) -> list[tuple[str, int, int]]:
+    """Return [(name, start, end)] for every top-level `variable "NAME" {...}`
+    block, using brace counting so multi-line bodies and nested braces (e.g.
+    `validation { condition = ... }`) terminate at the correct closing brace.
+    `start` is the offset of the leading `v` in `variable`; `end` is one past
+    the matching closing `}`.
+    """
+    blocks: list[tuple[str, int, int]] = []
+    for m in _VARIABLE_HEADER_RE.finditer(hcl):
+        name = m.group(1)
+        open_idx = hcl.find('{', m.end() - 1)
+        if open_idx == -1:
+            continue
+        depth = 1
+        i = open_idx + 1
+        while i < len(hcl) and depth > 0:
+            if hcl[i] == '{':
+                depth += 1
+            elif hcl[i] == '}':
+                depth -= 1
+            i += 1
+        if depth != 0:
+            continue
+        blocks.append((name, m.start(), i))
+    return blocks
+
+
+def dedupe_variable_blocks(primary_hcl: str, secondary_hcl: str) -> tuple[str, str]:
+    """Drop `variable "NAME" {...}` blocks from secondary when NAME already
+    appears in primary, preventing `terraform init` from failing with
+    "Duplicate variable declaration" when both files coexist in one module.
+
+    Used for composite output modes (Both, Okta + GCP) where the generator
+    emits the same shared variable (e.g. `okta_org_name`,
+    `event_hook_auth_token`, `terminated_group_id`) in both files because
+    each file is independently runnable. Primary keeps its declarations
+    unchanged; secondary loses any duplicates.
+
+    Idempotent. Pure function. Standard library only.
+    """
+    if not primary_hcl or not secondary_hcl:
+        return primary_hcl, secondary_hcl
+
+    primary_names = {name for name, _, _ in _find_variable_blocks(primary_hcl)}
+    if not primary_names:
+        return primary_hcl, secondary_hcl
+
+    secondary_blocks = _find_variable_blocks(secondary_hcl)
+    to_remove = [(s, e) for name, s, e in secondary_blocks if name in primary_names]
+    if not to_remove:
+        return primary_hcl, secondary_hcl
+
+    out = secondary_hcl
+    for start, end in sorted(to_remove, key=lambda p: p[0], reverse=True):
+        trail = end
+        while trail < len(out) and out[trail] in ' \t':
+            trail += 1
+        if trail < len(out) and out[trail] == '\n':
+            trail += 1
+            while trail < len(out) and out[trail] == '\n':
+                trail += 1
+                if trail - end > 2:
+                    break
+        lead = start
+        while lead > 0 and out[lead - 1] in ' \t':
+            lead -= 1
+        out = out[:lead] + out[trail:]
+    return primary_hcl, out.lstrip('\n')

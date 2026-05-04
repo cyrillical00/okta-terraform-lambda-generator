@@ -13,7 +13,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent, merge_terraform_blocks
+from generator.hcl_utils import (
+    strip_provider_boilerplate,
+    derive_basename_from_intent,
+    merge_terraform_blocks,
+    dedupe_variable_blocks,
+)
 
 
 CANONICAL_HCL_WITH_BOILERPLATE = textwrap.dedent('''\
@@ -410,6 +415,115 @@ def test_merge_preserves_resources_in_primary():
     assert 'provider "okta"' in new_okta
 
 
+# dedupe_variable_blocks tests
+
+_PRIMARY_WITH_VARS = textwrap.dedent('''\
+    variable "okta_org_name" {
+      type = string
+    }
+
+    variable "okta_api_token" {
+      type      = string
+      sensitive = true
+    }
+
+    resource "okta_group" "x" {
+      name = "X"
+    }
+    ''')
+
+_SECONDARY_WITH_DUPS = textwrap.dedent('''\
+    variable "aws_region" {
+      type    = string
+      default = "us-west-2"
+    }
+
+    variable "okta_org_name" {
+      type = string
+    }
+
+    variable "okta_api_token" {
+      type      = string
+      sensitive = true
+    }
+
+    resource "aws_lambda_function" "handler" {
+      function_name = "x"
+    }
+    ''')
+
+
+def test_dedupe_drops_dup_variables_from_secondary():
+    _, new_sec = dedupe_variable_blocks(_PRIMARY_WITH_VARS, _SECONDARY_WITH_DUPS)
+    assert 'variable "okta_org_name"' not in new_sec
+    assert 'variable "okta_api_token"' not in new_sec
+
+
+def test_dedupe_preserves_unique_variables_in_secondary():
+    _, new_sec = dedupe_variable_blocks(_PRIMARY_WITH_VARS, _SECONDARY_WITH_DUPS)
+    assert 'variable "aws_region"' in new_sec
+
+
+def test_dedupe_preserves_resources_in_secondary():
+    _, new_sec = dedupe_variable_blocks(_PRIMARY_WITH_VARS, _SECONDARY_WITH_DUPS)
+    assert 'resource "aws_lambda_function" "handler"' in new_sec
+
+
+def test_dedupe_does_not_touch_primary():
+    new_pri, _ = dedupe_variable_blocks(_PRIMARY_WITH_VARS, _SECONDARY_WITH_DUPS)
+    assert new_pri == _PRIMARY_WITH_VARS
+
+
+def test_dedupe_idempotent():
+    once_p, once_s = dedupe_variable_blocks(_PRIMARY_WITH_VARS, _SECONDARY_WITH_DUPS)
+    twice_p, twice_s = dedupe_variable_blocks(once_p, once_s)
+    assert once_p == twice_p
+    assert once_s == twice_s
+
+
+def test_dedupe_no_op_when_no_duplicates():
+    secondary = textwrap.dedent('''\
+        variable "aws_region" {
+          type = string
+        }
+        ''')
+    new_pri, new_sec = dedupe_variable_blocks(_PRIMARY_WITH_VARS, secondary)
+    assert new_pri == _PRIMARY_WITH_VARS
+    assert new_sec == secondary
+
+
+def test_dedupe_no_op_on_empty_inputs():
+    a, b = dedupe_variable_blocks('', _SECONDARY_WITH_DUPS)
+    assert a == '' and b == _SECONDARY_WITH_DUPS
+    a, b = dedupe_variable_blocks(_PRIMARY_WITH_VARS, '')
+    assert a == _PRIMARY_WITH_VARS and b == ''
+
+
+def test_dedupe_handles_nested_braces_in_validation_block():
+    primary = textwrap.dedent('''\
+        variable "topic_name" {
+          type = string
+        }
+        ''')
+    secondary = textwrap.dedent('''\
+        variable "topic_name" {
+          type = string
+          validation {
+            condition     = length(var.topic_name) > 0
+            error_message = "must not be empty"
+          }
+        }
+
+        resource "aws_sns_topic" "x" {
+          name = var.topic_name
+        }
+        ''')
+    _, new_sec = dedupe_variable_blocks(primary, secondary)
+    assert 'variable "topic_name"' not in new_sec, \
+        "multi-line variable with nested validation block must be removed entirely"
+    assert 'resource "aws_sns_topic" "x"' in new_sec
+
+
 _TESTS = [
     test_strips_terraform_block,
     test_strips_provider_okta_block,
@@ -447,6 +561,14 @@ _TESTS = [
     test_merge_no_op_when_either_input_empty,
     test_merge_does_not_duplicate_provider_already_in_primary,
     test_merge_preserves_resources_in_primary,
+    test_dedupe_drops_dup_variables_from_secondary,
+    test_dedupe_preserves_unique_variables_in_secondary,
+    test_dedupe_preserves_resources_in_secondary,
+    test_dedupe_does_not_touch_primary,
+    test_dedupe_idempotent,
+    test_dedupe_no_op_when_no_duplicates,
+    test_dedupe_no_op_on_empty_inputs,
+    test_dedupe_handles_nested_braces_in_validation_block,
 ]
 
 

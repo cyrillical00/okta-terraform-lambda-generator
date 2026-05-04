@@ -4,7 +4,7 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 from .parser import _extract_json
 from .okta_brand_sanitizer import sanitize_okta_brand_refs
 from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
-from .hcl_utils import merge_terraform_blocks
+from .hcl_utils import merge_terraform_blocks, dedupe_variable_blocks
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
@@ -197,6 +197,7 @@ def generate_all(
             result.get("terraform_okta_hcl", ""),
             result.get("terraform_gcp_hcl", ""),
         )
+        merged_okta, merged_gcp = dedupe_variable_blocks(merged_okta, merged_gcp)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_gcp_hcl"] = merged_gcp
     elif output_mode == "Both":
@@ -204,6 +205,7 @@ def generate_all(
             result.get("terraform_okta_hcl", ""),
             result.get("terraform_lambda_hcl", ""),
         )
+        merged_okta, merged_lambda = dedupe_variable_blocks(merged_okta, merged_lambda)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_lambda_hcl"] = merged_lambda
 
