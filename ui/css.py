@@ -228,6 +228,24 @@ h1, h2, h3, h4, h5, h6,
 [data-testid="stExpander"] summary:hover {
   background: var(--surface-2) !important;
 }
+/* Sidebar expanders need a touch of top margin so a help-icon tooltip
+   from the previous widget can't overlap the expander's chevron arrow.
+   Non-sidebar expanders keep their natural spacing. */
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  margin-top: 8px !important;
+}
+
+/* === TOOLTIP / HELP-ICON POPOVER ===
+   Streamlit's (?) help icon renders a tooltip via baseweb popover. In the
+   narrow sidebar column, the popover can stack underneath an adjacent
+   element if its z-index isn't lifted. Pin it above sidebar content so
+   the tooltip + arrow are always on top. */
+[data-baseweb="tooltip"], [data-baseweb="popover"] {
+  z-index: 1000 !important;
+}
+[data-testid="stTooltipIcon"], [data-testid="stTooltipHoverTarget"] {
+  z-index: 5 !important;
+}
 
 /* === TABS === */
 .stTabs [role="tablist"] {

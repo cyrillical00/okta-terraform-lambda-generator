@@ -616,20 +616,35 @@ def _render_role_and_cost_sidebar(email: str) -> None:
         pct = min(1.0, spent / cap) if cap else 0.0
         st.sidebar.caption(f"Today: ${spent:.4f} of ${cap:.2f}")
         st.sidebar.progress(pct)
-    # Admin-only: per-session redaction toggle + stale-secret warnings
+    # Admin-only: per-session redaction toggle + stale-secret warnings.
+    # Help text removed: in Streamlit 1.56 the inline (?) tooltip can bleed
+    # into the next sidebar element when the surrounding column is narrow.
     if _roles.can("manage_roles", role):
         st.sidebar.checkbox(
-            "Disable PII redaction (this session)",
+            "Disable PII redaction (session)",
             key="redact_disabled",
-            help="Admin-only. When checked, prompts are sent to Claude as-is. Use sparingly.",
         )
         stale = _rotation.stale_list()
         if stale:
-            with st.sidebar.expander(f"⚠️ {len(stale)} stale secret(s)"):
-                for s in stale:
-                    age = s.get("age_days")
-                    age_str = f"{age}d" if age is not None else "never"
-                    st.caption(f"`{s['name']}` — {age_str} (target {s['target_days']}d): {s['reason']}")
+            # Collapse the common "fresh deploy, no rotation file yet" case
+            # into a single muted line. Only show the per-secret expander when
+            # we have at least one ACTUALLY overdue (recorded but expired)
+            # entry, since that's the case admins need to act on.
+            overdue = [s for s in stale if s.get("age_days") is not None]
+            if not overdue:
+                st.sidebar.caption(
+                    f"Add _tftool/secret_rotation.json to track rotation cadence "
+                    f"({len(stale)} secret(s) untracked)."
+                )
+            else:
+                with st.sidebar.expander(f"⚠️ {len(overdue)} overdue secret(s)"):
+                    for s in overdue:
+                        age = s.get("age_days")
+                        st.caption(f"`{s['name']}` · {age}d (target {s['target_days']}d)")
+                if len(stale) > len(overdue):
+                    st.sidebar.caption(
+                        f"+ {len(stale) - len(overdue)} untracked (no recorded rotation date)."
+                    )
 
 
 def _request_cancel():
