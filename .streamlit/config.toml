@@ -1,25 +1,15 @@
 [theme]
+# Phase 9 dark-terminal palette. The full visual stack (IBM Plex Mono,
+# component overrides, motion) lives in ui/css.py via @import + custom
+# selectors so we don't depend on Streamlit theme keys that vary by
+# version. These four palette keys + base + font are the universally
+# accepted set on Streamlit 1.56.
 base = "dark"
-
-# Phase 9 dark-terminal palette. CSS custom properties on :root in ui/css.py
-# mirror these so dynamic injected snippets stay in lockstep.
+primaryColor = "#4FC3F7"
 backgroundColor = "#0A0E14"
 secondaryBackgroundColor = "#11161D"
 textColor = "#E6EDF3"
-linkColor = "#4FC3F7"
-primaryColor = "#4FC3F7"
-borderColor = "#232A36"
-
-baseRadius = "small"
-baseFontSize = 14
-showSidebarBorder = true
-
-# IBM Plex Mono everywhere: body, headings, code. Google Fonts shorthand
-# loads the @font-face declarations at first paint.
-font = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
-headingFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@600&display=swap"
-codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
-codeFontSize = 13
+font = "monospace"
 
 [server]
 headless = true
