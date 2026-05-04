@@ -24,7 +24,9 @@ from ui.components import (
     render_validation_result, render_optional_tf, render_tfvars_example,
     render_resource_type_selector, render_hero_starters, render_mode_chip,
     render_env_pills, render_gcp_partial_warning, render_success_card,
+    render_version_switcher, render_diff_viewer,
 )
+from ui.examples import render_examples_library
 from ui.css import inject_global_css
 import history as _history
 from history import add_entry, get_entries
@@ -69,10 +71,30 @@ def _init_session_state():
         # sidebar or push panel are written back here so the value survives
         # parse/generate/regenerate cycles.
         "b_persisted_repo": _get_secret("GITHUB_REPO"),
+        # Phase 8B D3: output versioning. Newest at index 0; max 3 entries.
+        # Each entry: {"outputs": dict, "intent": dict, "ts": iso8601 str}.
+        "b_output_history": [],
+        "b_active_version": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def _push_output_version(outputs: dict, intent: dict | None) -> None:
+    """Phase 8B D3: prepend the freshly generated outputs to b_output_history,
+    cap the list at 3 entries, and reset the active-version pointer to 0
+    (newest). Called from every site where new outputs land — initial
+    generation, fix-issues, and regenerate."""
+    from datetime import datetime, timezone
+    history = list(st.session_state.get("b_output_history") or [])
+    history.insert(0, {
+        "outputs": outputs,
+        "intent": intent,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    st.session_state["b_output_history"] = history[:3]
+    st.session_state["b_active_version"] = 0
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -560,6 +582,7 @@ _load_env_context()
 _render_env_sidebar()
 _render_repo_sidebar(st.session_state.get("b_persisted_repo") or _get_secret("GITHUB_REPO"))
 _render_audit_sidebar(st.user.email)
+render_examples_library()
 _render_history_sidebar(st.user.email)
 
 # Top-of-page status row + GCP partial-error banner
@@ -701,6 +724,7 @@ if st.session_state.generation_triggered:
     outputs = _generate_and_refine(st.session_state.intent, "", client, model)
     if outputs is not None:
         st.session_state.outputs = outputs
+        _push_output_version(outputs, st.session_state.intent)
         add_entry(st.user.email, st.session_state.last_user_input, st.session_state.intent)
         _audit.log(
             st.user.email,
@@ -716,9 +740,28 @@ if st.session_state.gen_error:
 # Stage 4 — Display + actions
 if st.session_state.outputs:
     mode = st.session_state.output_mode
-    render_code_panels(st.session_state.outputs, mode)
-    render_optional_tf(st.session_state.outputs.get("optional_tf", ""))
-    render_tfvars_example(st.session_state.outputs.get("terraform_tfvars_example", ""))
+    history = st.session_state.get("b_output_history") or []
+    # Version switcher: lets the user flip between the last three generations
+    # without losing earlier work. No-op when history has fewer than 2 entries.
+    new_active = render_version_switcher(history, st.session_state.get("b_active_version", 0))
+    if new_active != st.session_state.get("b_active_version", 0):
+        st.session_state["b_active_version"] = new_active
+        st.rerun()
+    # Display the active version's outputs (defaults to whatever's currently
+    # in st.session_state.outputs when history is empty, which preserves the
+    # original code path for any first-load flow that bypasses the helper).
+    if history and 0 <= new_active < len(history):
+        display_outputs = history[new_active]["outputs"]
+    else:
+        display_outputs = st.session_state.outputs
+    render_code_panels(display_outputs, mode)
+    # Diff viewer between the active version and the next-older one. Only
+    # renders when the user is looking at the current version (active=0)
+    # and at least one prior version exists.
+    if new_active == 0 and len(history) >= 2:
+        render_diff_viewer(history[1]["outputs"], history[0]["outputs"])
+    render_optional_tf(display_outputs.get("optional_tf", ""))
+    render_tfvars_example(display_outputs.get("terraform_tfvars_example", ""))
 
     col_check, _ = st.columns([1, 3])
     with col_check:
@@ -803,6 +846,7 @@ if st.session_state.outputs:
                             fixed["optional_tf"] = optional_tf
 
                     st.session_state.outputs = fixed
+                    _push_output_version(fixed, st.session_state.intent)
                     st.session_state.validation_result = None
                     st.session_state.commit_url = None
                     st.rerun()
@@ -833,6 +877,7 @@ if st.session_state.outputs:
         outputs = _generate_and_refine(st.session_state.intent, extra_instructions, client, model)
         if outputs is not None:
             st.session_state.outputs = outputs
+            _push_output_version(outputs, st.session_state.intent)
             st.session_state.commit_url = None
             st.session_state.validation_result = None
             _audit.log(

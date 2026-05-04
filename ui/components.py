@@ -1,3 +1,4 @@
+import difflib
 import io
 import re
 import zipfile
@@ -277,6 +278,67 @@ def render_intent_card(intent: dict) -> dict | None:
 
     pv_constraint = provider_version.split(" ")[0]
     return {**intent, "answers": answers, "provider_version": pv_constraint}
+
+
+def render_version_switcher(history: list[dict], active_index: int) -> int:
+    """Render a horizontal radio above the output panels when more than one
+    generation exists in history. Returns the new active_index. When only
+    one version exists, returns active_index unchanged and renders nothing.
+    history is a list of dicts with key 'ts' (timestamp string)."""
+    if len(history) < 2:
+        return active_index
+    labels = []
+    for i, entry in enumerate(history):
+        ts = (entry.get("ts") or "")[11:19]  # HH:MM:SS slice
+        tag = "current" if i == 0 else f"v-{i}"
+        labels.append(f"{tag} · {ts}" if ts else tag)
+    safe_index = max(0, min(active_index, len(labels) - 1))
+    picked = st.radio(
+        "Version",
+        options=list(range(len(labels))),
+        format_func=lambda i: labels[i],
+        index=safe_index,
+        horizontal=True,
+        key="b_version_radio",
+    )
+    return picked
+
+
+def render_diff_viewer(prev_outputs: dict, curr_outputs: dict) -> None:
+    """Render a unified-diff expander showing changes per file between the
+    previous and current generation. No-op if either side is empty.
+
+    Truncates each file's diff at 500 lines so a degenerate output can't
+    blow up the page render time."""
+    if not prev_outputs or not curr_outputs:
+        return
+    file_keys = [
+        ("okta.tf", "terraform_okta_hcl"),
+        ("lambda.tf", "terraform_lambda_hcl"),
+        ("gcp.tf", "terraform_gcp_hcl"),
+        ("lambda_function.py", "lambda_python"),
+        ("cloud_function.py", "cloud_function_python"),
+    ]
+    diffs: list[tuple[str, str]] = []
+    for label, key in file_keys:
+        a = (prev_outputs.get(key) or "").splitlines(keepends=True)
+        b = (curr_outputs.get(key) or "").splitlines(keepends=True)
+        if not a and not b:
+            continue
+        diff_lines = list(difflib.unified_diff(
+            a, b, fromfile=f"prev/{label}", tofile=f"curr/{label}", n=2,
+        ))
+        if not diff_lines:
+            continue
+        if len(diff_lines) > 500:
+            diff_lines = diff_lines[:500] + [f"\n... [truncated, {len(diff_lines) - 500} more lines]\n"]
+        diffs.append((label, "".join(diff_lines)))
+    if not diffs:
+        return
+    with st.expander(f"Changes since previous generation ({len(diffs)} file(s))", expanded=False):
+        for label, diff_text in diffs:
+            st.caption(label)
+            st.code(diff_text, language="diff")
 
 
 def render_code_panels(outputs: dict, mode: str):
