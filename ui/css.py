@@ -46,6 +46,8 @@ LGRAY = TEXT_MUTED
 _GLOBAL_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons|Material+Icons+Outlined|Material+Icons+Round');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&family=Material+Symbols+Rounded&display=swap');
 
 :root {
   --bg: #0A0E14;
@@ -68,27 +70,45 @@ _GLOBAL_CSS = """
   --fs-hero: 28px;
 }
 
-/* === RESET / GLOBAL === */
+/* === RESET / GLOBAL ===
+   The font reset is intentionally narrowed (no naked `span`) so Material
+   Icons / Symbols spans are not stomped. Container-level selectors carry
+   the font down to text descendants without forcing it on icon glyphs. */
 html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main, .block-container,
-.stMarkdown, .stText, .stCaption, p, div, span, label, button, input, textarea, select,
+.stMarkdown, .stText, .stCaption, p, div, label, button, input, textarea, select,
 [data-baseweb], [data-testid="stMarkdownContainer"] {
   font-family: var(--font-mono) !important;
   color: var(--text);
 }
 
-/* Material Icons: Streamlit's status widget, expander chevron, tooltip
-   icon, etc. all use Material Symbols / Material Icons fonts and store
-   the icon name as text (a ligature). The global font reset above stomps
-   on that font so the ligature falls back to rendering the literal name
-   ("arrow_right", "expand_more", "check_circle"). Restore the icon font
-   here so chevrons and status indicators render as glyphs. */
+/* Restore the icon font for every Streamlit icon family. Streamlit 1.56
+   uses Material Symbols Rounded for stStatus chevrons, expander arrows,
+   sidebar collapse handles, info/error/success badges, etc. The icon
+   name is the element's text content (a font ligature); without the
+   right font-family the ligature renders as the literal word
+   ("arrow_right", "expand_more", "check_circle"). The selector list is
+   intentionally wide because Streamlit emits at least four naming
+   conventions across versions. */
 .material-icons, .material-icons-outlined, .material-icons-round,
 .material-symbols-outlined, .material-symbols-rounded, .material-symbols-sharp,
 [data-testid="stIconMaterial"], [data-testid="stIcon"],
+[data-testid="stExpanderToggleIcon"],
 i[class*="material-icons"], i[class*="material-symbols"],
-span[class*="material-icons"], span[class*="material-symbols"] {
-  font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
-  font-feature-settings: 'liga';
+span[class*="material-icons"], span[class*="material-symbols"],
+span[class*="icon"] [class*="material"], span[class*="Icon"] [class*="material"] {
+  font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+               'Material Icons Round', 'Material Icons Outlined',
+               'Material Icons', sans-serif !important;
+  font-feature-settings: 'liga' !important;
+  font-weight: normal !important;
+  font-style: normal !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  word-wrap: normal !important;
+  white-space: nowrap !important;
+  direction: ltr !important;
+  -webkit-font-feature-settings: 'liga' !important;
+  -webkit-font-smoothing: antialiased;
 }
 
 body, [data-testid="stAppViewContainer"], .main {
