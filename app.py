@@ -15,9 +15,9 @@ st.set_page_config(
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python
-from generator.validator import validate_outputs, fix_outputs, refine_outputs
-from generator.okta_group_sanitizer import sanitize_okta_group_refs
+from generator.validator import validate_outputs, fix_outputs
 from generator.hcl_utils import strip_provider_boilerplate, derive_basename_from_intent
+from core import service as core_service
 from gh_push.push import push_to_github, build_commit_message
 from ui.components import (
     render_intent_card, render_code_panels, render_action_buttons,
@@ -41,8 +41,8 @@ import user_prefs as _user_prefs
 import feedback as _feedback
 from ui.onboarding import render as render_onboarding_tour
 from ui.account import render_sidebar_links as render_account_links, render_dialogs as render_account_dialogs
-from env_context import build_env_context, format_context_for_prompt
-from repo_context import fetch_terraform_files, format_repo_context_for_prompt
+from env_context import build_env_context
+from repo_context import fetch_terraform_files
 
 _OKTA_RESOURCE_TYPES = {
     "okta_app_saml", "okta_app_oauth", "okta_group", "okta_group_rule",
@@ -240,77 +240,74 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
 
 
 def _generate_and_refine(intent: dict, extra_instructions: str, client, model: str) -> dict:
-    """Generate outputs then run up to 3 validate→fix passes. Uses st.status for progress."""
-    outputs = None
-    error = None
-    cancelled = False
-    should_rerun = False
-    env_section = format_context_for_prompt(st.session_state.env_context or {})
-    repo_section = format_repo_context_for_prompt(st.session_state.repo_tf_files or {})
-    provider_version = intent.get("provider_version", "~> 4.0")
+    """Generate outputs then run up to 3 validate-fix passes. Uses st.status for progress.
 
+    All non-UI orchestration lives in core.service.generate_from_intent.
+    This wrapper is the Streamlit UI shell: it owns st.status, the
+    progress bar, the inline pass messages, the cancel-flag reset, the
+    cancellation audit log, and the GenerationError surface as gen_error
+    plus a raw-response expander.
+    """
     # Reset the cancel flag at the start of every generation so a stale True
     # from a prior session can't immediately abort this one.
     st.session_state["cancel_requested"] = False
 
+    result = None
     with st.status("Generating...", expanded=True) as status:
-        try:
-            st.write("Pass 0/3: drafting initial output…")
-            progress = st.progress(0.0, text="Pass 0/3 · drafting")
-            outputs = generate_all(intent, extra_instructions, client, model=model, env_context_section=env_section, provider_version=provider_version, repo_context_section=repo_section)
+        st.write("Pass 0/3: drafting initial output...")
+        progress = st.progress(0.0, text="Pass 0/3 · drafting")
+        first_pass = {"done": False}
 
-            syntax_errors = validate_lambda_python(outputs["lambda_python"])
-            if syntax_errors:
-                st.write(f"⚠️ Lambda syntax warning: {'; '.join(syntax_errors)}")
+        def _on_pass(pass_num, validation, has_issues):
+            # First time we hit a pass callback, the initial draft has
+            # finished; surface any lambda syntax warnings before the
+            # refinement messages start.
+            if not first_pass["done"]:
+                first_pass["done"] = True
+            progress.progress(pass_num / 3.0, text=f"Pass {pass_num}/3")
+            if has_issues:
+                n_tf = len(validation.get("terraform_issues", []))
+                n_lam = len(validation.get("lambda_issues", []))
+                parts = []
+                if n_tf:
+                    parts.append(f"{n_tf} terraform")
+                if n_lam:
+                    parts.append(f"{n_lam} lambda")
+                detail = " + ".join(parts) if parts else f"{n_tf + n_lam} issue(s)"
+                st.write(f"Pass {pass_num}/3 · refining ({detail})")
+            else:
+                st.write(f"Pass {pass_num}/3 · clean")
 
-            def _on_pass(pass_num, result, has_issues):
-                # Honor a cancel request between passes. Single-threaded
-                # Streamlit means the flag can only flip between script runs,
-                # so this aborts the NEXT pass — not the in-flight LLM call.
-                if st.session_state.get("cancel_requested"):
-                    raise _GenerationCancelled(f"cancelled before pass {pass_num}")
-                progress.progress(pass_num / 3.0, text=f"Pass {pass_num}/3")
-                if has_issues:
-                    n_tf = len(result.get("terraform_issues", []))
-                    n_lam = len(result.get("lambda_issues", []))
-                    parts = []
-                    if n_tf:
-                        parts.append(f"{n_tf} terraform")
-                    if n_lam:
-                        parts.append(f"{n_lam} lambda")
-                    detail = " + ".join(parts) if parts else f"{n_tf + n_lam} issue(s)"
-                    st.write(f"Pass {pass_num}/3 · refining ({detail})")
-                else:
-                    st.write(f"Pass {pass_num}/3 · clean")
+        def _cancel_check():
+            return bool(st.session_state.get("cancel_requested"))
 
-            outputs = refine_outputs(
-                intent=intent,
-                outputs=outputs,
-                user_input=st.session_state.last_user_input,
-                client=client,
-                model=model,
-                on_pass=_on_pass,
-                output_mode=intent.get("output_mode", "Both"),
-            )
+        result = core_service.generate_from_intent(
+            intent,
+            client=client,
+            model=model,
+            user_input=st.session_state.last_user_input,
+            output_mode=intent.get("output_mode", "Both"),
+            provider_version=intent.get("provider_version", "~> 4.0"),
+            env_context=st.session_state.env_context or {},
+            repo_context_files=st.session_state.repo_tf_files or {},
+            extra_instructions=extra_instructions,
+            on_pass=_on_pass,
+            cancel_check=_cancel_check,
+        )
 
-            # Deterministic post-refinement cleanup: rewrite hallucinated
-            # `data "okta_group"` blocks (name not in live org) into
-            # `resource "okta_group"` blocks. No-op when Okta is not connected.
-            live_groups = (st.session_state.env_context or {}).get("okta", {}).get("groups") or []
-            outputs = sanitize_okta_group_refs(outputs, live_groups)
-            # Note: sanitize_okta_brand_refs runs centrally in generate_all so it
-            # applies to every code path (app.py, qa_runner, future tools), not
-            # just the refinement loop here.
-
-            status.update(label="Done", state="complete", expanded=False)
-        except _GenerationCancelled:
-            cancelled = True
+        if result.cancelled:
             status.update(label="Cancelled", state="error", expanded=False)
-        except GenerationError as e:
-            error = e
+        elif result.error:
             status.update(label="Generation failed", state="error", expanded=False)
+        else:
+            # Surface lambda syntax warnings from the final outputs, matching
+            # the prior placement (after the initial draft, before status close).
+            syntax_errors = validate_lambda_python(result.outputs.get("lambda_python", ""))
+            if syntax_errors:
+                st.write(f"Lambda syntax warning: {'; '.join(syntax_errors)}")
+            status.update(label="Done", state="complete", expanded=False)
 
-    if cancelled:
+    if result.cancelled:
         st.session_state["cancel_requested"] = False
         st.info("Generation cancelled. The partial output above (if any) has been discarded.")
         try:
@@ -321,13 +318,13 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
             pass
         return None
 
-    if error:
-        st.session_state.gen_error = str(error)
+    if result.error:
+        st.session_state.gen_error = result.error
         with st.expander("Raw response from Claude"):
-            st.code(error.raw_response)
+            st.code(result.error_raw_response)
         return None
 
-    return outputs
+    return result.outputs
 
 
 def _load_env_context() -> None:
