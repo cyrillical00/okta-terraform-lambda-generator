@@ -70,6 +70,63 @@ _GLOBAL_CSS = """
   --fs-hero: 28px;
 }
 
+/* === LIGHT THEME OVERRIDES (Phase 8B B.3 polish) ===
+   Toggled via document.documentElement[data-theme="light"], set by
+   inject_theme() based on the user_prefs theme value. The dark tokens
+   above are the default; everything below flips background, surface,
+   and text values to a light palette while keeping the ACCENT blue
+   (per CLAUDE.md design constants) and the same Plex Mono typography.
+   Color choices target WCAG AA contrast for body text on bg
+   (#1A1A2E on #FAFAFA gives roughly 14:1, well above 4.5:1). */
+[data-theme="light"] {
+  --bg: #FAFAFA;
+  --surface: #FFFFFF;
+  --surface-2: #F0F2F5;
+  --border: #D8DEE5;
+  --text: #1A1A2E;
+  --text-muted: #5A6470;
+  --accent: #2D6A9F;
+  --accent-hover: #1F4F7A;
+  --accent-grad: linear-gradient(135deg, #2D6A9F 0%, #6A4FB5 100%);
+  --success: #2E7D32;
+  --warn: #C66900;
+  --error: #C62828;
+}
+
+/* Pill / chip border tints depend on success / warn rgba values that
+   were hard-coded for the dark theme. Re-tune them so the borders
+   stay visible on white surfaces in light mode. */
+[data-theme="light"] .tf-pill-on {
+  border-color: rgba(46, 125, 50, 0.55);
+}
+[data-theme="light"] .tf-pill-on .dot {
+  box-shadow: 0 0 6px rgba(46, 125, 50, 0.4);
+}
+[data-theme="light"] .tf-pill-warn {
+  border-color: rgba(198, 105, 0, 0.55);
+}
+[data-theme="light"] .tf-pill-warn .dot {
+  box-shadow: 0 0 6px rgba(198, 105, 0, 0.4);
+}
+
+/* Code-block keyword color (the inline `code` tag) needs slightly more
+   contrast against the surface-2 background in light mode. */
+[data-theme="light"] code {
+  color: #1F4F7A;
+}
+
+/* Primary button text: the dark theme uses var(--bg) on var(--accent),
+   which works because bg is near-black. In light mode bg is near-white,
+   so a primary button would render white-on-blue with poor legibility.
+   Force white text on the accent button for AA-compliant contrast. */
+[data-theme="light"] .stButton > button[kind="primary"],
+[data-theme="light"] button[kind="primary"] {
+  color: #FFFFFF !important;
+}
+[data-theme="light"] .stButton > button[kind="primary"]:hover {
+  color: #FFFFFF !important;
+}
+
 /* === RESET / GLOBAL ===
    The font reset is intentionally narrowed (no naked `span`) so Material
    Icons / Symbols spans are not stomped. Container-level selectors carry
@@ -556,6 +613,85 @@ hr, [data-testid="stDivider"] {
 .tf-issue-severity-error { color: var(--error); }
 .tf-issue-severity-warn  { color: var(--warn); }
 .tf-issue-severity-info  { color: var(--text-muted); }
+
+/* === MOBILE BREAKPOINT (Phase 8B B.3 polish) ===
+   Single breakpoint at 768px. Streamlit auto-collapses the sidebar
+   below ~640px on its own; the rules below tighten the layout for
+   the 640-768 band and reflow the multi-column code panels into a
+   stacked single column so generated Terraform / Lambda code is
+   readable on phone-width screens. Keep this block last so the
+   media query overrides win against the general styles above. */
+@media (max-width: 768px) {
+  .main .block-container {
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
+    padding-top: 1rem !important;
+  }
+
+  /* Hero font shrink for narrow viewports */
+  .tf-hero {
+    padding: 1rem 0 0.75rem 0;
+  }
+  .tf-hero h1 {
+    font-size: 22px !important;
+    line-height: 1.25;
+  }
+  .tf-hero p {
+    font-size: 13px;
+  }
+
+  /* Status pill row: allow wrap (already flex-wrap above, restated for
+     clarity) and shrink the per-pill padding so 3-4 pills fit on a row. */
+  .tf-pill-row {
+    gap: 6px;
+  }
+  .tf-pill, .tf-mode-chip {
+    padding: 3px 9px;
+    font-size: 11px;
+  }
+
+  /* Tabs: allow the tab bar to wrap when there are too many tabs to fit */
+  .stTabs [role="tablist"] {
+    flex-wrap: wrap;
+  }
+  .stTabs [role="tab"] {
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+  }
+
+  /* Code panels: app.py:render_code_panels uses st.columns(2) for the
+     Terraform / Lambda split. st.columns has no native breakpoint hook,
+     so force the columns to stack vertically by overriding the flex
+     basis on Streamlit's horizontal block. */
+  [data-testid="stHorizontalBlock"] {
+    flex-direction: column !important;
+  }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+  [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    min-width: 100% !important;
+  }
+
+  /* Code blocks: shrink the font slightly so long lines wrap less often */
+  [data-testid="stCodeBlock"], [data-testid="stCodeBlock"] pre,
+  [data-testid="stCodeBlock"] code {
+    font-size: 12px !important;
+  }
+
+  /* Sidebar: when expanded on a narrow screen, occupy more of the
+     viewport width so its contents are not cropped. Streamlit's own
+     auto-collapse keeps this from being an issue below ~640px. */
+  [data-testid="stSidebar"] {
+    width: 85vw !important;
+    min-width: 85vw !important;
+  }
+
+  /* Intent card / mode chip: make sure they wrap rather than overflow */
+  .tf-mode-chip {
+    margin-bottom: 0.4rem;
+  }
+}
 </style>
 """
 
@@ -573,6 +709,45 @@ def inject_global_css() -> None:
     except Exception:
         # If Streamlit is mid-initialization or the runtime is unusual,
         # we'd rather lose styling than crash the page.
+        pass
+
+
+def inject_theme(theme: str) -> None:
+    """Set the data-theme attribute on <html> so the CSS variable
+    overrides for light mode (defined under [data-theme="light"]) take
+    effect. Accepts "dark", "light", or "auto"; "auto" defers to the
+    user's OS-level prefers-color-scheme via a small media query check.
+
+    Streamlit does not expose a body-attribute API, so we ship a tiny
+    inline script that runs on every render and sets the attribute on
+    documentElement. The script is idempotent (it can run many times per
+    session without compounding effects) and runs inside the iframe-free
+    main document, so the data-theme selector flips immediately.
+
+    Best-effort: any rendering failure is swallowed so a Streamlit
+    runtime quirk cannot break the rest of the page.
+    """
+    try:
+        import streamlit as st
+        choice = (theme or "dark").strip().lower()
+        if choice not in ("dark", "light", "auto"):
+            choice = "dark"
+        if choice == "auto":
+            script = (
+                "<script>(function(){"
+                "var prefers=window.matchMedia&&"
+                "window.matchMedia('(prefers-color-scheme: light)').matches;"
+                "document.documentElement.setAttribute("
+                "'data-theme', prefers?'light':'dark');"
+                "})();</script>"
+            )
+        else:
+            script = (
+                f"<script>document.documentElement.setAttribute("
+                f"'data-theme','{choice}');</script>"
+            )
+        st.markdown(script, unsafe_allow_html=True)
+    except Exception:
         pass
 
 

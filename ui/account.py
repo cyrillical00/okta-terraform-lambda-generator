@@ -109,6 +109,38 @@ def show_account_dialog(email: str) -> None:
                 st.markdown(f"{meta}  ·  <span class='tf-sidebar-timestamp'>{ts} UTC</span>", unsafe_allow_html=True)
 
         st.divider()
+        st.caption("Appearance")
+        # Phase 8B B.3 polish: per-user theme switcher. Persisted via
+        # user_prefs.update; the next render of app.py reads the value
+        # back and feeds it to inject_theme(). "Auto" defers to the
+        # browser's prefers-color-scheme so the user's OS pick wins.
+        try:
+            import user_prefs as _user_prefs
+            current_theme = _user_prefs.load(email).get("theme", "dark")
+        except Exception:
+            current_theme = "dark"
+        options = ["dark", "light", "auto"]
+        try:
+            idx = options.index(current_theme)
+        except ValueError:
+            idx = 0
+        chosen = st.radio(
+            "Theme",
+            options,
+            index=idx,
+            horizontal=True,
+            key="account_theme_choice",
+            help="Switch between the dark default, a light variant, or auto (follows your operating system).",
+        )
+        if chosen != current_theme:
+            try:
+                import user_prefs as _user_prefs
+                _user_prefs.update(email, theme=chosen)
+            except Exception:
+                pass
+            st.rerun()
+
+        st.divider()
         col_pricing, col_close = st.columns([1, 1])
         with col_pricing:
             if st.button("View pricing", key="account_view_pricing", use_container_width=True):

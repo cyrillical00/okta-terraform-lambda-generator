@@ -29,7 +29,7 @@ from ui.components import (
     render_error_panel,
 )
 from ui.examples import render_examples_library
-from ui.css import inject_global_css, inject_keyboard_shortcuts
+from ui.css import inject_global_css, inject_keyboard_shortcuts, inject_theme
 import history as _history
 from history import add_entry, get_entries
 import audit as _audit
@@ -665,6 +665,16 @@ def _request_cancel():
 
 inject_global_css()
 inject_keyboard_shortcuts()
+
+# Phase 8B B.3 polish: per-user theme. Reads the saved preference from
+# user_prefs (GitHub-backed, with a local fallback) and injects the
+# matching data-theme attribute. Defaults to dark for any user without
+# a saved preference. The toggle UI lives in the Account modal.
+try:
+    _saved_theme = _user_prefs.load(st.user.email).get("theme", "dark")
+except Exception:
+    _saved_theme = "dark"
+inject_theme(_saved_theme)
 
 # Live-context fetch happens before sidebar render so the Connections
 # group has the env data ready to display.
