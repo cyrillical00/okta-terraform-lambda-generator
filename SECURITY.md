@@ -46,7 +46,7 @@ viewer      = 0.50
 | Sign in / sign out | Nothing | Audit log on GitHub |
 | Parse intent | The user's prompt (after PII redaction; see below) | Audit log + cost log |
 | Generate / regenerate / fix | Same as parse, plus the parsed intent JSON | Audit log + cost log |
-| Push to GitHub | Generated HCL/Python files only — no prompt content | Audit log + commit on GitHub |
+| Push to GitHub | Generated HCL/Python files only (no prompt content) | Audit log + commit on GitHub |
 | Env refresh | Nothing (live-context calls go to Okta / AWS / GCP, not Anthropic) | Audit log |
 
 Audit records live in `_tftool/audit/<email-hash>.jsonl` in the configured GitHub repo. Append-only; the application never edits or deletes records. Each record carries a UUID `request_id`, the actor's email, the action name, the inferred resource type, the output mode, the cost-estimate in USD, and the first 200 characters of the redacted prompt for context.
@@ -100,9 +100,17 @@ Admins see a sidebar warning when any tracked secret is older than its target ro
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 90 days |
 | `GCP_SA_JSON` | 180 days |
 
-Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app widget — coming in B.3 — or directly in GitHub).
+Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app sidebar widget, or directly in GitHub).
 
-## What's NOT in this build (Thread C — future)
+## Additions since Thread A
+
+A few non-runtime additions have shipped on top of the Thread A baseline; calling them out so reviewers know what's in the binary:
+
+- **In-app feedback widget** (`feedback.py`): submit button in the help drawer posts the text + the signed-in user's email to a new GitHub issue in `GITHUB_REPO`. Treat this as a data-export channel; whatever a user types in the feedback box leaves Streamlit and lands in the configured GitHub repo. The text is not run through `redact.py`. Disable by removing the widget from `ui/account.py` if your org needs to gate outbound text.
+- **Terraform-validate guardrail** (`tf_validate.py` + `qa_runner.py --terraform-validate`, default ON): catches schema-drift output bugs that would otherwise emit invalid HCL to the customer's GitHub repo. Not a runtime security control, but it directly reduces the chance of a generation regression shipping to production Terraform.
+- **Stop hook** (`.claude/check-unpushed.ps1` + `.claude/settings.json`): developer-tooling only. Blocks ending a Claude Code turn with unpushed commits in this repo. No runtime impact on the deployed app.
+
+## What's NOT in this build (Thread C, future)
 
 - SAML SSO (Streamlit Cloud only supports Google OAuth via `st.login`).
 - SCIM provisioning of users into the tool.
@@ -111,7 +119,7 @@ Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via 
 - Multi-tenant org isolation within one app instance (current model is one Streamlit Cloud app per customer).
 - SLA framework, Data Processing Agreement template, SOC2 Type 2 attestation.
 
-If a customer requires any of the above on day 1, deploy a single-tenant per-customer Streamlit Cloud instance behind their own SAML proxy and route their audit log to a GitHub repo they own. That's the supported short-term path while Thread C (self-hosted Docker / GKE rebuild with native SAML/SCIM/CMK) is being built.
+If a customer requires any of the above on day 1, deploy a single-tenant per-customer Streamlit Cloud instance behind their own SAML proxy and route their audit log to a GitHub repo they own. That's the supported short-term path while Thread C (self-hosted Docker / GKE rebuild with native SAML, SCIM, CMK) is being built.
 
 ## Reporting a vulnerability
 
