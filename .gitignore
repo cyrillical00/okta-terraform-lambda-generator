@@ -14,3 +14,5 @@ qa_outputs_cache.json
 qa_report.json
 qa_full_run.log
 _tftool/
+error screens/
+qa_full_run_postfix.log

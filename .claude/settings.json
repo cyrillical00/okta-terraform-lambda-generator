@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\cbot\\TF Tool\\.claude\\check-unpushed.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}
