@@ -366,6 +366,19 @@ EXAMPLE for "Set up a Lambda that fires when a user is added to the Offboarding 
   okta_event_hook.events MUST be exactly `["group.user_membership.add"]`.
   NOT user.lifecycle.deactivate (the group's purpose does not change the trigger).
   NOT user.lifecycle.create. NOT user.account.update_profile. NOT group.membership.update.
+
+EXAMPLE for multi-tier mutual exclusivity ("user can only be in one of: A, B, or C"):
+  Prompt: "Enforce that users can only be in one of: Free, Pro, or Enterprise tier group"
+  okta_event_hook.events MUST be exactly `["group.user_membership.add"]` (single event in the list).
+  The exclusivity logic lives in the Lambda body, which inspects which tier group the user just joined and calls the Okta API to remove them from the other two.
+  Multi-tier scenarios NEVER use multiple events on the hook. NEVER use user.lifecycle.update. NEVER use a group.membership.* variant other than the canonical .add or .remove pair. The number of mutually-exclusive groups (2, 3, or N) does not change the event type.
+  Same rule for "Enforce that a user can only be in one Tableau role group at a time: Creator, Explorer, or Viewer" and any other role-exclusivity prompt.
+
+EXAMPLE for transition language ("user transitions from A to B, remove them from A"):
+  Prompt: "When a user transitions from the Free tier to the Pro tier group, remove them from Free"
+  okta_event_hook.events MUST be exactly `["group.user_membership.add"]`.
+  The trigger is the ADD to Pro. The Lambda body does the remove from Free.
+  Transitions are NEVER expressed as group.user_membership.remove on the trigger side; the remove happens inside the Lambda.
   The phrase "added to a group" maps to exactly one event type: group.user_membership.add.
   The Lambda then handles whatever business logic the group-name implies (sending SNS, deactivating user, etc.); that is downstream of the event, not part of the event_type selection.
 
