@@ -100,9 +100,15 @@ def generate_all(
     )
     messages = [{"role": "user", "content": user_content}]
 
+    # Phase 10 Track 1 Step 1: temperature=0.2 reduces sampling-class
+    # event-hook event-type drift on ambiguous prompts. The decision tree
+    # in prompts.py is correct; the model just doesn't follow it
+    # consistently at temperature=1.0. Parser + validator stay at default
+    # to preserve interpretation creativity and review independence.
     response = client.messages.create(
         model=model,
         max_tokens=8192,
+        temperature=0.2,
         system=[
             {
                 "type": "text",
@@ -127,6 +133,7 @@ def generate_all(
         retry_response = client.messages.create(
             model=model,
             max_tokens=8192,
+            temperature=0.2,
             system=[
                 {
                     "type": "text",
