@@ -652,7 +652,7 @@ TEST_CASES = [
     TestCase("COMP07",
              "Create a SAML app for Workday and map the costCenter and department attributes from Workday to the Okta user profile",
              expected_resource_type="okta_app_saml",
-             must_contain=["okta_app_saml", "okta_user_profile_mapping"]),
+             must_contain=["okta_app_saml", "okta_profile_mapping"]),
     TestCase("COMP08",
              "Set up the complete onboarding email sequence: customize the activation email and the welcome email template",
              expected_resource_type="okta_email_customization",

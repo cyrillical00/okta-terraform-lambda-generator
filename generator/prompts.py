@@ -231,7 +231,7 @@ For resources NOT in the live context list, continue using var.* declarations as
 
   Three over-scope failure modes to avoid (each has been observed in dog-food and is now flagged by qa_runner):
     (a) Adding `okta_group_rule "..."` to an `okta_app_saml` intent because the prompt mentions a group. Group assignment for an app uses `okta_app_group_assignment`, never a rule.
-    (b) Adding `okta_user_profile_mapping` as a Terraform substitute for SCIM provisioning. SCIM is UI-only per SECTION F.5; emit the `# NOTE:` comment block and stop. `okta_user_profile_mapping` is only valid when the prompt explicitly asks to map profile attributes between profile sources, which is a different operation from SCIM provisioning.
+    (b) Adding a profile-mapping resource as a Terraform substitute for SCIM provisioning. SCIM is UI-only per SECTION F.5; emit the `# NOTE:` comment block and stop. Profile mapping is only valid when the prompt explicitly asks to map profile attributes between profile sources, which is a different operation from SCIM provisioning. When it IS valid (the user asks to map attributes from app A to Okta UD, or vice versa), the resource type to emit is `okta_profile_mapping` (NOT `okta_user_profile_mapping`; that name does not exist in v4.20.0). See SECTION G's `okta_user_profile_mapping` entry for the full schema and the canonical example.
     (c) Adding `data "okta_group" "..."` or other live-context lookups that the output does NOT reference anywhere. Every emitted resource and data source must be referenced by another resource's argument or by an `output` block; otherwise it is dead code and must be removed.
 
   Each over-scope addition clutters the dev-org state and degrades the tool's credibility on a demo. When the intent says "create a SAML app and assign it to a group", emit a SAML app, an assignment, and (if the group is new) the group. Nothing else.
@@ -385,7 +385,7 @@ output "lambda_function_url" {
 - For okta_auth_server: include name, description, audiences (list), issuer_mode. Also generate child resources okta_auth_server_scope (include name, description, consent, metadata_publish) and okta_auth_server_claim (include name, status, claim_type, value_type, value, always_include_in_token)
 - For okta_auth_server_policy: include name, status, description, priority, client_whitelist (use ["ALL_CLIENTS"] unless specific clients are named), and an okta_auth_server_policy_rule child resource with name, policy_id, status, priority, grant_type_whitelist, scope_whitelist, group_whitelist
 - For `okta_factor`: include `provider_id` (lowercase canonical name from the v4 schema list in SECTION G; e.g. `okta_push`, `google_otp`, `duo`, `fido_webauthn`, `yubikey_token`) and `active = true` (bool, optional, default true). CRITICAL: the v4.x provider does NOT accept a `status` attribute; emit `active = true` instead. The uppercase forms ("GOOGLE", "OKTA", "DUO") are also rejected; v4 wants lowercase canonical names. Do NOT wrap in an `okta_policy` resource (okta_factor is a standalone org-level enrollment setting). Do NOT include `factor_type` as a top-level attribute (it is FORBIDDEN per SECTION G).
-- For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo), gateways (list of objects with type="CIDR" and value=var.*) for IP zones; for DYNAMIC zones use asns or dynamic_locations instead of gateways
+- For okta_network_zone: include name, type ("IP" for allowlist/blocklist or "DYNAMIC" for ASN/geo). For IP zones, `gateways` is a Set of String (plain CIDR or range strings like "203.0.113.0/24" or "1.2.3.4-1.2.3.10"), NOT a list of objects with type/value. For DYNAMIC zones, use `asns` (Set of String) OR `dynamic_locations` (Set of String of ISO-3166 codes) instead of gateways. NEVER mix gateways with asns/dynamic_locations on the same zone.
 - For okta_brand: include name, agree_to_custom_privacy_policy (bool). Optionally include custom_privacy_policy_url, remove_powered_by_okta (bool). Note: logo upload is not supported in HCL — add an inline comment directing the user to do it in the Okta Admin Console
 - For okta_email_customization: include brand_id (reference var.brand_id), template_name (e.g. "UserActivation", "ForgotPassword", "PasswordChanged"), language, is_default (bool), subject, body. The body must be valid Okta email template HTML with ${} variable placeholders escaped as $${} in HCL heredoc strings
 - Use var.* for ALL credentials, tokens, URLs, and IDs — NEVER hardcode any value that would differ between environments
@@ -520,8 +520,41 @@ For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "goog
 **google_cloud_scheduler_job (scheduled trigger)**:
 - Add `resource "google_cloud_scheduler_job" "handler"` with `schedule = var.schedule_expression` (default `"0 9 * * *"`), `time_zone = "UTC"`, `http_target { uri = google_cloudfunctions2_function.handler.service_config[0].uri, http_method = "POST", oidc_token { service_account_email = google_service_account.handler.email } }`.
 
-**google_cloud_run_v2_service**:
-- Add `resource "google_cloud_run_v2_service" "handler"` with `name = var.service_name`, `location = var.gcp_region`, a `template { containers { image = var.container_image } service_account = google_service_account.handler.email }` block.
+**google_cloud_run_v2_service** (hashicorp/google v6.x):
+- Add `resource "google_cloud_run_v2_service" "handler"` with `name = var.service_name`, `location = var.gcp_region`. Top-level resource attributes: `name`, `location`, `project`, `ingress`, `launch_stage`, `deletion_protection`, plus the `template { }` block and optional `traffic { }` blocks. Almost everything else lives INSIDE `template { }`.
+- Inside `template { }`, valid arguments are: `service_account` (string), `revision` (string), `timeout` (Duration STRING like "300s"; NOT `timeout_seconds` as an int — emitting `timeout_seconds = 300` fails with "Unsupported argument"), `max_instance_request_concurrency` (int), `execution_environment`, plus nested blocks `containers { }` (one per container), `scaling { }` (for `min_instance_count`/`max_instance_count`; this block lives INSIDE `template`, NOT at the resource root), `vpc_access { }`, `volumes { }`. Emitting `scaling { }` at the resource root fails with "Unsupported argument: max_instance_count".
+- The `containers { }` block takes `image = var.container_image`, optional `name`, optional `ports { container_port = ... }` block, optional `env { name, value }` blocks, and a `resources { limits = { cpu = "1", memory = "512Mi" } }` block. CPU/memory MUST go inside the `limits` map of strings; emitting `resources { cpu = "1", memory = "512Mi" }` directly fails with "Unsupported argument".
+- Canonical shape:
+  ```hcl
+  resource "google_cloud_run_v2_service" "handler" {
+    name     = var.service_name
+    location = var.gcp_region
+
+    template {
+      service_account = google_service_account.handler.email
+      timeout         = "300s"
+
+      scaling {
+        min_instance_count = 0
+        max_instance_count = var.max_instances
+      }
+
+      containers {
+        image = var.container_image
+        ports {
+          container_port = var.container_port
+        }
+        resources {
+          limits = {
+            cpu    = var.cpu
+            memory = var.memory
+          }
+        }
+      }
+    }
+  }
+  ```
+- The `service_account` attribute lives INSIDE `template { }`, never at the resource root. Same for `scaling`, `timeout`, `containers`, `vpc_access`.
 
 **google_storage_bucket (data bucket, distinct from source bucket)**:
 - Use a SEPARATE logical name like `data` (not `handler`) so it does not collide with the source bundle bucket. Naming exception: data buckets are the only google_* resource exempt from the "handler" naming rule.
@@ -812,7 +845,7 @@ Common cases that warrant optional_tf:
 - Scheduled access reviews or cleanup → aws_cloudwatch_event_rule + aws_cloudwatch_event_target
 - App assignment automation → okta_group_rule assigning users to the app based on a profile attribute
 - Deprovisioning notification → additional Lambda + SNS/Slack call triggered by user lifecycle events
-- Profile sync → okta_user_profile_mapping between the app and Okta Universal Directory
+- Profile sync → emit `okta_profile_mapping` (NOT `okta_user_profile_mapping`; the latter is not a v4.20.0 resource type) between the app's user-type id and Okta Universal Directory; see SECTION G's `okta_user_profile_mapping` entry for the canonical shape and required source_id/target_id semantics
 
 Example — "create a terminated group where members can't be added to other groups or apps":
 
@@ -830,7 +863,7 @@ The following are configured via the Okta Admin Console UI or via Okta Workflows
 | Okta Workflows / Flow Designer flows | No `okta_workflow*` resources exist. Workflows are designed in the Workflows console. | An inline hook (if applicable) plus a comment pointing to the Workflows console. |
 | Behavior detection rules logic | The Okta provider has no resource for behavior detection rule expressions. | A comment explaining the rule must be authored in Security → Behavior Detection. |
 | Authenticator enrollment / sign-on policies (full) | `okta_authenticator` exists but enrollment policy is split between Terraform and UI. | What the provider supports plus a comment for the UI portion. |
-| User profile attribute master config (which source masters which attribute) | Configured per-attribute in the Universal Directory UI. | `okta_user_profile_mapping` for the mapping rules; comment for masters. |
+| User profile attribute master config (which source masters which attribute) | Configured per-attribute in the Universal Directory UI. | `okta_profile_mapping` for the mapping rules (NOT `okta_user_profile_mapping`; that resource type does not exist in v4.20.0); comment for masters. |
 
 Use this format for the comment:
 ```hcl
@@ -980,18 +1013,53 @@ Required: name, description, audiences (list of strings), issuer_mode ("ORG_URL"
 Optional: status ("ACTIVE"|"INACTIVE"), credentials_rotation_mode ("AUTO"|"MANUAL")
 FORBIDDEN: issuer, org_url, audiences_type
 
-**okta_auth_server_scope**
-Required: auth_server_id, name, consent ("REQUIRED"|"IMPLICIT"|"FLEXIBLE"),
-  metadata_publish ("ALL_CLIENTS"|"NO_CLIENTS")
-Optional: description, default_scope (bool), display_name
-FORBIDDEN: scope_id, scope_type
+**okta_auth_server_scope** (okta/okta v4.20.0)
+Required: auth_server_id, name
+Optional: consent ("REQUIRED"|"IMPLICIT", default "IMPLICIT"),
+  metadata_publish ("ALL_CLIENTS"|"NO_CLIENTS", default "ALL_CLIENTS"),
+  description, display_name,
+  `default` (Boolean, NOT `default_scope`; emitting `default_scope = true` fails terraform validate with "Unsupported argument"),
+  `optional` (Boolean)
+FORBIDDEN: scope_id, scope_type, default_scope (the v4 schema attribute is named `default`, not `default_scope`)
 
-**okta_auth_server_claim**
-Required: auth_server_id, name, status ("ACTIVE"), claim_type ("RESOURCE"|"IDENTITY"),
-  value_type ("EXPRESSION"|"GROUPS"|"SYSTEM"), value (Okta expression string),
-  always_include_in_token (bool)
-Optional: group_filter_type ("STARTS_WITH"|"EQUALS"|"REGEX"|"CONTAINS"), scopes (list)
-FORBIDDEN: claim_id, token_type
+**okta_auth_server_claim** (okta/okta v4.20.0)
+Required (per v4 schema): auth_server_id, claim_type ("RESOURCE"|"IDENTITY"), name, value (String; ALWAYS required, even for GROUPS-type claims; this attribute is NOT optional and the provider rejects the resource with "Missing required argument: value" if omitted)
+Optional: status ("ACTIVE"|"INACTIVE", default "ACTIVE"),
+  value_type ("EXPRESSION"|"GROUPS", default "EXPRESSION"),
+  always_include_in_token (Boolean, default true),
+  group_filter_type ("STARTS_WITH"|"EQUALS"|"REGEX"|"CONTAINS"; only relevant when value_type = "GROUPS"),
+  scopes (Set of String)
+
+GROUPS-type claim semantics (CRITICAL):
+When `value_type = "GROUPS"`, the `value` attribute holds the GROUP-NAME-MATCH STRING (the prefix, suffix, regex, or exact name to match), and `group_filter_type` selects how to interpret it. There is NO `group_filter_value` attribute; emitting `group_filter_value = ...` fails with "Unsupported argument". Use `value` for the match string instead.
+- To include ALL of the user's Okta groups in the claim: `value = ".*"` with `group_filter_type = "REGEX"`.
+- To include only groups starting with a prefix (e.g. "okta-"): `value = "okta-"` with `group_filter_type = "STARTS_WITH"`.
+
+FORBIDDEN: claim_id, token_type, group_filter_value (no such attribute; put the match string in `value`)
+
+Canonical example (GROUPS claim that includes ALL of the user's Okta groups):
+```hcl
+resource "okta_auth_server_claim" "groups" {
+  auth_server_id    = var.auth_server_id
+  name              = "groups"
+  claim_type        = "RESOURCE"
+  value_type        = "GROUPS"
+  group_filter_type = "REGEX"
+  value             = ".*"
+  scopes            = ["openid"]
+}
+```
+
+Canonical example (EXPRESSION claim from a user profile attribute):
+```hcl
+resource "okta_auth_server_claim" "department" {
+  auth_server_id = var.auth_server_id
+  name           = "department"
+  claim_type     = "IDENTITY"
+  value_type     = "EXPRESSION"
+  value          = "user.department"
+}
+```
 
 **okta_auth_server_policy**
 Required: auth_server_id, name, status ("ACTIVE"), description, priority (int),
@@ -1017,12 +1085,58 @@ FORBIDDEN: status (does NOT exist in v4.x; the v3-era "status" attribute was
   "Unsupported argument"); factor_type (not a top-level attribute);
   okta_policy, policy_id (okta_factor is a standalone org-level resource)
 
-**okta_network_zone**
-Required: name, type ("IP"|"DYNAMIC")
-If type = "IP": gateways (list of objects: { type = "CIDR"|"RANGE", value = "x.x.x.x/n" })
-If type = "DYNAMIC": dynamic_locations (list of ISO-3166 country codes) OR asns (list of strings)
-Optional: status ("ACTIVE"|"INACTIVE"), proxies (list of gateway objects)
-FORBIDDEN: ip_list, allowed_ips, blocked_ips, cidr_ranges
+**okta_network_zone** (okta/okta v4.20.0)
+Required: name, type ("IP"|"DYNAMIC"|"DYNAMIC_V2")
+SCHEMA SHAPE (CRITICAL; terraform validate enforces this):
+  All of `gateways`, `proxies`, `asns`, `dynamic_locations` are top-level **Set of String** attributes. They are NOT nested blocks and they do NOT take objects. Each element is just a plain string.
+If type = "IP":
+  - `gateways = ["203.0.113.0/24", "198.51.100.0/24"]` (Set of String; CIDR or range form like "1.2.3.4-1.2.3.10"). Do NOT wrap entries in `{ type = "CIDR", value = "..." }` objects; that fails with "Unsupported block type" or "Incorrect attribute value type". Do NOT use a `dynamic "gateways" { content { ... } }` block; use a plain list/set.
+  - `proxies = ["198.51.100.50/32"]` (Set of String, optional; cannot be set when usage = "BLOCKLIST")
+If type = "DYNAMIC" (or "DYNAMIC_V2"):
+  - `asns = ["12345", "67890"]` (Set of String of ASN numbers as strings) OR
+  - `dynamic_locations = ["US", "CA", "GB-ENG"]` (Set of String of ISO-3166-1 alpha-2 codes, optionally with -region suffix)
+  - Optional `dynamic_proxy_type = "TorAnonymizer"|"NotTorAnonymizer"|"Any"`
+MUTEX RULE: Never combine `gateways` with `asns` or `dynamic_locations` on the same zone. IP zones use `gateways` (and optionally `proxies`); DYNAMIC zones use `asns` and/or `dynamic_locations`. Mixing the two shapes fails terraform validate.
+Optional: status ("ACTIVE"|"INACTIVE"), usage ("POLICY"|"BLOCKLIST", default "POLICY")
+FORBIDDEN: ip_list, allowed_ips, blocked_ips, cidr_ranges, ranges; gateways-as-block (`gateways { type=... value=... }`); gateways-as-list-of-objects.
+
+Canonical example (IP allowlist):
+```hcl
+variable "office_cidrs" {
+  type        = list(string)
+  description = "Office IP CIDR ranges to allowlist"
+  default     = ["203.0.113.0/24", "198.51.100.0/24"]
+}
+
+resource "okta_network_zone" "office_allowlist" {
+  name     = "Office IP Allowlist"
+  type     = "IP"
+  status   = "ACTIVE"
+  usage    = "POLICY"
+  gateways = var.office_cidrs
+}
+```
+
+Canonical example (DYNAMIC geo):
+```hcl
+resource "okta_network_zone" "us_ca_only" {
+  name              = "US and Canada"
+  type              = "DYNAMIC"
+  status            = "ACTIVE"
+  dynamic_locations = ["US", "CA"]
+}
+```
+
+Canonical example (DYNAMIC ASN blocklist):
+```hcl
+resource "okta_network_zone" "vpn_block" {
+  name   = "Known VPN ASNs"
+  type   = "DYNAMIC"
+  usage  = "BLOCKLIST"
+  status = "ACTIVE"
+  asns   = ["12345", "67890"]
+}
+```
 
 **okta_brand**
 Required: name, agree_to_custom_privacy_policy (bool)
@@ -1031,12 +1145,29 @@ Optional: custom_privacy_policy_url (string), remove_powered_by_okta (bool),
 FORBIDDEN: logo (logo upload is not supported in HCL — direct user to Admin Console),
   primary_color, secondary_color
 
-**okta_email_customization**
-Required: brand_id, template_name (e.g. "UserActivation","ForgotPassword","PasswordChanged",
-  "EmailChallenge","ADForgotPassword"), language (e.g. "en"), is_default (bool),
-  subject (string), body (valid Okta HTML email template string)
-Note: in the body value, use $${variable} (double dollar sign) to escape Terraform interpolation
-FORBIDDEN: email_template_id, locale (use language instead), customization_id
+**okta_email_customization** (okta/okta v4.20.0)
+Required (per v4 schema): brand_id, template_name
+Optional (per v4 schema): language (e.g. "en"), is_default (bool), subject (string), body (Okta HTML email template string)
+Valid template_name values include: `AccountLockout`, `ADForgotPassword`, `ADForgotPasswordDenied`, `ADSelfServiceUnlock`, `ADUserActivation`, `AuthenticatorEnrolled`, `AuthenticatorReset`, `ChangeEmailConfirmation`, `EmailChallenge`, `EmailChangeConfirmation`, `EmailFactorVerification`, `ForgotPassword`, `ForgotPasswordDenied`, `LDAPForgotPassword`, `LDAPSelfServiceUnlock`, `LDAPUserActivation`, `MyAccountChangeConfirmation`, `NewSignOnNotification`, `OktaVerifyActivation`, `PasswordChanged`, `PasswordResetByAdmin`, `PendingEmailChange`, `RegistrationActivation`, `RegistrationEmailVerification`, `SelfServiceUnlock`. For an "account locked" or "user lockout" email, use `AccountLockout`. For a "welcome" email, the closest match is `UserActivation`.
+
+BODY STRING SYNTAX (CRITICAL; HCL has no Python triple-quoted strings):
+HCL does NOT support Python-style triple-double-quoted strings (three consecutive double-quote characters opening and closing the literal). Emitting a default value wrapped in three double-quotes produces a parser error and `terraform init` fails before validate even runs. To embed a multi-line HTML body, use ONE of these HCL forms:
+1) Heredoc with `<<-EOT ... EOT` (preferred for variable defaults and resource attributes):
+   ```hcl
+   variable "account_locked_body" {
+     type = string
+     default = <<-EOT
+   <html><body>
+   <p>Hello $${user.firstName},</p>
+   <p>Your account has been locked. Contact support@example.com.</p>
+   </body></html>
+   EOT
+   }
+   ```
+2) Single-line double-quoted string with `\n` escape sequences for newlines.
+Note: in the body value, use `$${variable}` (double dollar sign) to escape Terraform interpolation so Okta receives the literal `${variable}` placeholder.
+
+FORBIDDEN: email_template_id, locale (use language instead), customization_id, Python-style triple-double-quoted strings (HCL parser rejects them; use heredocs `<<-EOT ... EOT` instead).
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:
