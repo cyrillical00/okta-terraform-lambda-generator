@@ -1432,7 +1432,13 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
 def main():
     argv = sys.argv[1:]
     replay_mode = "--replay" in argv
-    validate_mode = "--terraform-validate" in argv
+    # As of 2026-05-04 Both score is 123/133 with the validate guardrail
+    # ON; running it by default makes every QA invocation catch real
+    # provider-schema drift, not just must_contain string mismatches.
+    # `--no-terraform-validate` opts out for the rare case where you want
+    # the faster string-only path (e.g. iterating on a single prompt
+    # before a full validate sweep).
+    validate_mode = "--no-terraform-validate" not in argv
     passes, skip_indices = _parse_passes(argv)
     filter_ids = set(
         a.upper() for i, a in enumerate(argv)
@@ -1440,10 +1446,11 @@ def main():
     )
     cases = [tc for tc in TEST_CASES if not filter_ids or tc.id.upper() in filter_ids]
 
+    validate_label = " + terraform-validate" if validate_mode else " (validate disabled)"
     if replay_mode:
         client = None
         model = None
-        print(f"QA runner — REPLAY MODE — {len(cases)} tests — reading from qa_outputs_cache.json")
+        print(f"QA runner — REPLAY MODE — {len(cases)} tests{validate_label} — reading from qa_outputs_cache.json")
     else:
         api_key = _read_api_key()
         if not api_key:
@@ -1452,7 +1459,7 @@ def main():
         client = _wrap_client_for_usage_tracking(anthropic.Anthropic(api_key=api_key))
         model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         passes_label = f" — passes: {passes}" if passes > 1 else ""
-        print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}")
+        print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}{validate_label}")
     print("=" * 72)
 
     results = []
