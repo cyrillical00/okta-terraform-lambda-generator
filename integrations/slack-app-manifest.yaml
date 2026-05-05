@@ -1,0 +1,60 @@
+# Slack app manifest for the TF Tool /tfgen slash command.
+#
+# Replace `request_url` below with the deployed Vercel URL before
+# submitting in Slack's "Create from manifest" flow at
+# https://api.slack.com/apps?new_app=1
+#
+# After install, copy the Signing Secret from the app's Basic
+# Information page into the SLACK_SIGNING_SECRET env var on the
+# Vercel project (and any local .env used for `vercel dev`).
+#
+# Required env vars on the server:
+#   SLACK_SIGNING_SECRET  (from Basic Information, after install)
+#   SLACK_DEFAULT_REPO    (owner/repo where /tfgen pushes commits)
+#   GITHUB_TOKEN          (PAT with push access to SLACK_DEFAULT_REPO)
+#   ANTHROPIC_API_KEY     (Claude API key)
+#   ANTHROPIC_MODEL       (optional; defaults to claude-haiku-4-5)
+#
+# Scope rationale:
+#   commands    required for slash commands.
+#   chat:write  not strictly required since response_url posts work
+#               without it, but keeps room for future surfaces (e.g.
+#               proactive notifications) without re-authorizing.
+
+display_information:
+  name: TF Tool
+  description: Plain-English to Terraform via Claude.
+  background_color: "#1A1A2E"
+  long_description: >
+    TF Tool turns a one-line description like "create an Engineering
+    Okta group" into a working Terraform pull request. The /tfgen
+    slash command runs the full generation and validation pipeline
+    against your Anthropic API key, then pushes the resulting files
+    to a shared branch on your target repo.
+
+features:
+  bot_user:
+    display_name: TF Tool
+    always_online: false
+
+  slash_commands:
+    - command: /tfgen
+      url: https://example.vercel.app/api/slack/tfgen
+      description: Generate Terraform from plain English
+      usage_hint: "describe what you want, e.g. 'create an Engineering Okta group'"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+  event_subscriptions:
+    bot_events: []
+  interactivity:
+    is_enabled: false
