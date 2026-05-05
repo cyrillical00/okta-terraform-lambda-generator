@@ -403,10 +403,48 @@ output "lambda_function_url" {
 - Add aws_cloudwatch_event_target with rule = aws_cloudwatch_event_rule.handler.name, target_id = "lambda", arn = aws_lambda_function.handler.arn
 - Add aws_lambda_permission with statement_id = "AllowEventBridge", action = "lambda:InvokeFunction", principal = "events.amazonaws.com", source_arn = aws_cloudwatch_event_rule.handler.arn
 
-**aws_api_gateway_rest_api (REST API HTTP trigger)**:
+**aws_api_gateway_rest_api (REST API HTTP trigger)** (hashicorp/aws v5.x):
 - Add aws_api_gateway_rest_api, aws_api_gateway_resource (path_part = "{proxy+}"), aws_api_gateway_method (POST, authorization = "NONE"), aws_api_gateway_integration (Lambda proxy, uri = aws_lambda_function.handler.invoke_arn), aws_api_gateway_deployment, aws_api_gateway_stage
 - Add aws_lambda_permission with principal = "apigateway.amazonaws.com", source_arn = "${aws_api_gateway_rest_api.handler.execution_arn}/*/*"
 - Add output block: invoke_url = "${aws_api_gateway_stage.handler.invoke_url}/"
+
+CRITICAL SCHEMA RULES (v5.x AWS provider; terraform validate enforces these):
+- `aws_api_gateway_deployment` does NOT take a `stage_name` argument anymore (it was deprecated and removed; the stage is created by `aws_api_gateway_stage`). Emit `aws_api_gateway_deployment` with ONLY `rest_api_id` and a `triggers = { redeployment = sha1(jsonencode(...)) }` block plus `lifecycle { create_before_destroy = true }`. Do NOT set `stage_name` on the deployment resource. The stage name belongs on `aws_api_gateway_stage.stage_name`.
+- `aws_api_gateway_stage` has NO `logs_config` block. To enable access logging, use `access_log_settings { destination_arn = aws_cloudwatch_log_group.handler.arn, format = "..." }`. Emitting `logs_config { ... }` fails terraform validate with `Blocks of type "logs_config" are not expected here`.
+- For a minimal demo, OMIT access logging entirely; just emit `aws_api_gateway_stage` with `deployment_id`, `rest_api_id`, and `stage_name = "prod"`. Do NOT add `logs_config`, `access_log_settings`, or a CloudWatch Log Group resource unless the user explicitly asked for API Gateway access logs.
+
+Canonical minimal shape:
+```hcl
+resource "aws_api_gateway_deployment" "handler" {
+  rest_api_id = aws_api_gateway_rest_api.handler.id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.handler.id,
+      aws_api_gateway_method.handler.id,
+      aws_api_gateway_integration.handler.id,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.handler,
+    aws_api_gateway_method.handler,
+  ]
+}
+
+resource "aws_api_gateway_stage" "handler" {
+  deployment_id = aws_api_gateway_deployment.handler.id
+  rest_api_id   = aws_api_gateway_rest_api.handler.id
+  stage_name    = "prod"
+}
+```
+
+FORBIDDEN on aws_api_gateway_deployment: `stage_name` (deprecated and removed; use aws_api_gateway_stage instead), `stage_description`.
+FORBIDDEN on aws_api_gateway_stage: `logs_config` (block does not exist; use `access_log_settings` IF logging is actually requested).
 
 **aws_lambda_function_url (simple HTTPS endpoint — no auth)**:
 - Add resource "aws_lambda_function_url" "handler" with function_name = aws_lambda_function.handler.function_name, authorization_type = "NONE"
@@ -559,8 +597,19 @@ For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "goog
 **google_storage_bucket (data bucket, distinct from source bucket)**:
 - Use a SEPARATE logical name like `data` (not `handler`) so it does not collide with the source bundle bucket. Naming exception: data buckets are the only google_* resource exempt from the "handler" naming rule.
 
-**google_secret_manager_secret**:
-- Add `resource "google_secret_manager_secret" "handler"` with `secret_id = var.secret_id`, `replication { auto {} }`. Add a `google_secret_manager_secret_iam_member` granting the function's service account `roles/secretmanager.secretAccessor`.
+**google_secret_manager_secret** (hashicorp/google v6.x):
+- Add `resource "google_secret_manager_secret" "handler"` with `secret_id = var.secret_id`, and a `replication { auto {} }` block. Add a `google_secret_manager_secret_iam_member` granting the function's service account `roles/secretmanager.secretAccessor`.
+- CRITICAL: the v6 schema for the `replication` block uses an EMPTY NESTED `auto {}` block (no arguments inside), NOT `automatic = true`. Emitting `replication { automatic = true }` fails terraform validate with `An argument named "automatic" is not expected here` (that was the pre-v4 syntax and was removed in 2022). Always use the empty block form.
+- FORBIDDEN inside `replication { }`: `automatic = true`, `automatic = false`, `replication_policy = ...`. The only valid forms are `auto {}` (Google-managed encryption) or `user_managed { replicas { location = "..." } }` (user-managed locations).
+- Canonical shape:
+  ```hcl
+  resource "google_secret_manager_secret" "handler" {
+    secret_id = var.secret_id
+    replication {
+      auto {}
+    }
+  }
+  ```
 
 **google_project (project provisioning, only when the user explicitly asks to create a new project)**:
 - Add `resource "google_project" "handler"` with `name`, `project_id` (snake_case derived from intent.resource_name; this is the literal project ID the user typed), `org_id = var.gcp_org_id` (or `folder_id = var.gcp_folder_id` if the user mentions a folder), `billing_account = var.gcp_billing_account`, and an optional `labels` map.
@@ -927,9 +976,11 @@ Optional: token_endpoint_auth_method ("client_secret_basic"|"client_secret_post"
   consent_method ("REQUIRED"|"TRUSTED"|"IMPLICIT"), login_uri, post_logout_redirect_uris,
   wildcard_redirect, pkce_required (bool), status ("ACTIVE"|"INACTIVE"),
   groups_claim { type, filter_type, name, value }
+Exported attributes (valid for use in `output` blocks): `id`, `client_id`, `client_secret`, `name`, `label`, `sign_on_mode`, `logo_url`. NOT exported (do NOT reference in outputs): `auth_server_id` (an okta_app_oauth instance is not bound to a specific authorization server; auth servers are independent resources, so emitting `output "x" { value = okta_app_oauth.foo.auth_server_id }` fails terraform validate with `This object has no argument, nested block, or exported attribute named "auth_server_id"`). If the user wants to surface an auth server id as an output, reference the `okta_auth_server.<name>.id` resource directly.
 FORBIDDEN: client_id_scheme, app_type, client_credentials { }, authentication_policy,
   `provisioning { }` block (does NOT exist; SCIM provisioning on OAuth/OIDC apps is configured via the Okta Admin Console UI, NOT Terraform),
-  `scim_enabled`, `scim_url`, `scim_settings` (none exist)
+  `scim_enabled`, `scim_url`, `scim_settings` (none exist),
+  `auth_server_id` as an exported attribute reference (see Exported attributes above)
 
 **okta_group**
 Required: name (string, the group's display name)
@@ -1034,6 +1085,8 @@ GROUPS-type claim semantics (CRITICAL):
 When `value_type = "GROUPS"`, the `value` attribute holds the GROUP-NAME-MATCH STRING (the prefix, suffix, regex, or exact name to match), and `group_filter_type` selects how to interpret it. There is NO `group_filter_value` attribute; emitting `group_filter_value = ...` fails with "Unsupported argument". Use `value` for the match string instead.
 - To include ALL of the user's Okta groups in the claim: `value = ".*"` with `group_filter_type = "REGEX"`.
 - To include only groups starting with a prefix (e.g. "okta-"): `value = "okta-"` with `group_filter_type = "STARTS_WITH"`.
+
+CONSTANT VALUES, NOT CONDITIONALS (CRITICAL; applies to every Okta resource, not just claims): Pick the correct `group_filter_type` and `value` constants once based on the user's intent and emit them as STATIC LITERAL strings. Do NOT emit a Terraform conditional like `group_filter_type = var.group_filter_type != "" ? "STARTS_WITH" : "REGEX"` that references undeclared variables; the v4 schema requires concrete strings, and any `var.X` referenced from a conditional MUST also have a corresponding `variable "X" { ... }` declaration in the same file. Undeclared variable references fail terraform validate with `Reference to undeclared input variable`. Two safe patterns: (1) hardcode the literal (e.g. `group_filter_type = "REGEX"` for an "include all groups" intent); (2) declare a parameterised variable (e.g. `variable "group_filter_type" { type = string; default = "REGEX" }`) BEFORE referencing it. Pattern (1) is preferred for the canonical claim shapes below.
 
 FORBIDDEN: claim_id, token_type, group_filter_value (no such attribute; put the match string in `value`)
 
@@ -1166,6 +1219,15 @@ HCL does NOT support Python-style triple-double-quoted strings (three consecutiv
    ```
 2) Single-line double-quoted string with `\n` escape sequences for newlines.
 Note: in the body value, use `$${variable}` (double dollar sign) to escape Terraform interpolation so Okta receives the literal `${variable}` placeholder.
+
+DESCRIPTION FIELD ESCAPING (CRITICAL; the `description` argument on `variable` blocks is a quoted HCL string, same parsing rules as any other HCL string):
+The `description` field on a `variable` block is a regular quoted HCL string. Terraform parses `${...}` inside it as an interpolation, so any literal placeholder reference must be escaped as `$${...}` (double dollar sign), exactly the same as in body values. The backslash-dollar form `\\${...}` is NOT a valid HCL escape; the parser rejects it with `The symbol "$" is not a valid escape sequence selector` and `Invalid expression`. Two safe patterns for description text:
+1) Use `$${user.firstName}` (double dollar) when you must show the placeholder in the description. Terraform renders the description literally as `${user.firstName}` for human readers.
+2) BETTER: keep the description plain English with no placeholders at all (e.g. `description = "Custom HTML body for the account-locked email. Reference user attributes inside the body using Okta placeholder syntax."`). This sidesteps the escape question entirely. Prefer pattern 2 for variable descriptions; reserve `$${...}` escapes for the body/default value where the placeholders actually need to ship to Okta.
+
+FORBIDDEN in any HCL quoted string (descriptions, resource arguments, heredocs):
+- `\\${...}`: backslash-dollar is NOT a valid HCL escape sequence; only `$${...}` works
+- `\\$` standalone: same reason; the only valid backslash escapes in HCL strings are `\\n`, `\\t`, `\\r`, `\\"`, `\\\\`, and Unicode forms (`\\u` plus four hex digits, or `\\U` plus eight hex digits)
 
 FORBIDDEN: email_template_id, locale (use language instead), customization_id, Python-style triple-double-quoted strings (HCL parser rejects them; use heredocs `<<-EOT ... EOT` instead).
 """
