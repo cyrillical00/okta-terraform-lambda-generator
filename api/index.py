@@ -69,6 +69,8 @@ OutputMode = Literal[
     "Lambda only",
     "GCP only",
     "Okta + GCP",
+    "JAMF only",
+    "Okta + JAMF",
 ]
 
 
@@ -268,7 +270,7 @@ def _build_files(outputs: dict[str, str], mode: str) -> dict[str, str]:
     from core too; neither should import the other).
     """
     files: dict[str, str] = {}
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF"):
         v = (outputs.get("terraform_okta_hcl") or "").strip()
         if v:
             files["terraform/okta.tf"] = v
@@ -293,6 +295,10 @@ def _build_files(outputs: dict[str, str], mode: str) -> dict[str, str]:
         v = (outputs.get("cloud_function_requirements") or "").strip()
         if v:
             files["cloud_function/requirements.txt"] = v
+    if mode in ("JAMF only", "Okta + JAMF"):
+        v = (outputs.get("terraform_jamf_hcl") or "").strip()
+        if v:
+            files["terraform/jamf.tf"] = v
     v = (outputs.get("optional_tf") or "").strip()
     if v:
         files["terraform/optional_extensions.tf"] = v

@@ -32,7 +32,7 @@ import anthropic
 from core import service as core_service
 
 
-VALID_MODES = ("Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP")
+VALID_MODES = ("Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP", "JAMF only", "Okta + JAMF")
 
 
 def _read_prompt(args: argparse.Namespace) -> str:
@@ -59,7 +59,7 @@ def _build_file_map(outputs: dict, mode: str, basename: str = "") -> dict[str, s
         return ns_template.format(base=base) if base else default
 
     files: dict[str, str] = {}
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF"):
         v = (outputs.get("terraform_okta_hcl") or "").strip()
         if v:
             files[n("terraform/okta.tf", "terraform/{base}.tf")] = v
@@ -84,6 +84,10 @@ def _build_file_map(outputs: dict, mode: str, basename: str = "") -> dict[str, s
         v = (outputs.get("cloud_function_requirements") or "").strip()
         if v:
             files[n("cloud_function/requirements.txt", "cloud_function/{base}_requirements.txt")] = v
+    if mode in ("JAMF only", "Okta + JAMF"):
+        v = (outputs.get("terraform_jamf_hcl") or "").strip()
+        if v:
+            files[n("terraform/jamf.tf", "terraform/{base}_jamf.tf")] = v
     v = (outputs.get("optional_tf") or "").strip()
     if v:
         files[n("terraform/optional_extensions.tf", "terraform/{base}_optional_extensions.tf")] = v

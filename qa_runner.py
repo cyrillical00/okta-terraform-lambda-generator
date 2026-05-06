@@ -98,6 +98,7 @@ class TestCase:
     okta_types: list = field(default_factory=list)
     aws_types: list = field(default_factory=list)
     gcp_types: list = field(default_factory=list)
+    jamf_types: list = field(default_factory=list)
     expected_resource_type: Optional[str] = None
     # strings that MUST appear in terraform_okta_hcl
     must_contain: list = field(default_factory=list)
@@ -107,6 +108,10 @@ class TestCase:
     must_contain_gcp: list = field(default_factory=list)
     # strings that must NOT appear in terraform_gcp_hcl
     must_not_contain_gcp: list = field(default_factory=list)
+    # strings that MUST appear in terraform_jamf_hcl (JAMF/Okta+JAMF modes)
+    must_contain_jamf: list = field(default_factory=list)
+    # strings that must NOT appear in terraform_jamf_hcl
+    must_not_contain_jamf: list = field(default_factory=list)
     notes: str = ""
 
 
@@ -799,6 +804,123 @@ TEST_CASES = [
                                    "google_service_account_iam_policy"],
              notes="Project provisioning + Vertex AI + API key + SA impersonation grant. "
                    "Apply requires org-admin perms (org_id, billing_account)."),
+
+    # ── JAMF Pro (deploymenttheory/jamfpro ~> 0.37) ────────────────────────────
+    TestCase("JF01",
+             "Create a JAMF policy that installs the Slack package on enrollment.",
+             jamf_types=["jamfpro_policy", "jamfpro_package"],
+             must_contain_jamf=[
+                 'resource "jamfpro_policy"',
+                 "deploymenttheory/jamfpro",
+                 "JAMF APPLY RUNBOOK",
+                 "parallelism=1",
+             ],
+             must_not_contain_jamf=["yohan460/jamf"],
+             notes="Core policy + package metadata. Binary uploads out-of-band."),
+
+    TestCase("JF02",
+             "Create a JAMF smart computer group for Macs running macOS Sonoma or later.",
+             jamf_types=["jamfpro_smart_computer_group_v2"],
+             must_contain_jamf=[
+                 'resource "jamfpro_smart_computer_group_v2"',
+                 "criteria",
+             ],
+             must_not_contain_jamf=[
+                 'resource "jamfpro_smart_computer_group"',  # v1 legacy
+             ],
+             notes="Default to v2; flag v1 as legacy."),
+
+    TestCase("JF03",
+             "Create a JAMF script that clears caches, scoped to a recurring weekly trigger via a policy.",
+             jamf_types=["jamfpro_script", "jamfpro_policy"],
+             must_contain_jamf=[
+                 'resource "jamfpro_script"',
+                 'resource "jamfpro_policy"',
+                 'file(',  # script_contents = file("...") not inline
+             ],
+             notes="Script + policy with weekly trigger; script_contents must be file-loaded."),
+
+    TestCase("JF04",
+             "Create a JAMF macOS configuration profile for our corporate Wi-Fi settings.",
+             jamf_types=["jamfpro_macos_configuration_profile_plist_generator"],
+             must_contain_jamf=[
+                 'resource "jamfpro_macos_configuration_profile_plist_generator"',
+             ],
+             notes="Use _plist_generator for value-based config (not _plist for raw plist files)."),
+
+    TestCase("JF05",
+             "Restrict Spotify from running on managed Macs in JAMF.",
+             jamf_types=["jamfpro_restricted_software"],
+             must_contain_jamf=[
+                 'resource "jamfpro_restricted_software"',
+                 "Spotify",
+                 "process_name",
+             ],
+             notes="Restricted software with kill_process behavior."),
+
+    TestCase("JF06",
+             "Create a JAMF static computer group called Test Devices.",
+             jamf_types=["jamfpro_static_computer_group"],
+             must_contain_jamf=[
+                 'resource "jamfpro_static_computer_group"',
+             ],
+             notes="Static group with manual computer ID list."),
+
+    TestCase("JF07",
+             "Create a JAMF computer extension attribute that reports the last user login via a script.",
+             jamf_types=["jamfpro_computer_extension_attribute"],
+             must_contain_jamf=[
+                 'resource "jamfpro_computer_extension_attribute"',
+                 "input_type",
+             ],
+             notes="EA with input_type=Script for dynamic reporting."),
+
+    TestCase("JF08",
+             "Set up a JAMF DEP prestage enrollment for sales devices.",
+             jamf_types=["jamfpro_computer_prestage_enrollment"],
+             must_contain_jamf=[
+                 'resource "jamfpro_computer_prestage_enrollment"',
+             ],
+             notes="DEP prestage with default skip_setup_items + auto_advance."),
+
+    TestCase("JF09",
+             "Upload a JAMF package metadata entry for Chrome.pkg.",
+             jamf_types=["jamfpro_package"],
+             must_contain_jamf=[
+                 'resource "jamfpro_package"',
+                 "Chrome",
+             ],
+             notes="Package metadata only; binary uploads out-of-band."),
+
+    TestCase("JF10",
+             "Create three JAMF smart computer groups: Engineering Macs, Sales Macs, and Marketing Macs.",
+             jamf_types=["jamfpro_smart_computer_group_v2"],
+             must_contain_jamf=[
+                 'resource "jamfpro_smart_computer_group_v2"',
+                 "Engineering Macs",
+                 "Sales Macs",
+                 "Marketing Macs",
+             ],
+             notes="Multi-object emission: 3 separate blocks (no for_each yet without multi-object phase)."),
+
+    TestCase("JF11",
+             "Create an Okta group called Engineering and a JAMF smart computer group with the same name filtering on the engineering department attribute.",
+             okta_types=["okta_group"],
+             jamf_types=["jamfpro_smart_computer_group_v2"],
+             must_contain=["okta_group"],
+             must_contain_jamf=[
+                 'resource "jamfpro_smart_computer_group_v2"',
+                 "Engineering",
+             ],
+             notes="Composite Okta + JAMF; cross-reference via var.* not direct resource ref."),
+
+    TestCase("JF12",
+             "Run an MDM lock command on all managed devices via Terraform.",
+             jamf_types=["jamfpro_policy"],
+             must_contain_jamf=[
+                 "# NOTE",
+             ],
+             notes="Forbidden: live MDM commands not in any provider; emit NOTE pointing to JAMF console."),
 ]
 
 
@@ -1218,6 +1340,56 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if output_mode in ("GCP only", "Okta + GCP") and not gcp_hcl.strip():
         issues.append(f"terraform_gcp_hcl empty in {output_mode} mode")
 
+    # ── 16. JAMF Pro checks (terraform_jamf_hcl) ──────────────────────────
+    jamf_hcl = outputs.get("terraform_jamf_hcl", "") or ""
+
+    # 16a. Mode boundaries
+    if output_mode == "JAMF only":
+        if outputs.get("terraform_okta_hcl", "").strip():
+            issues.append("terraform_okta_hcl not empty in JAMF only mode")
+        if outputs.get("terraform_lambda_hcl", "").strip():
+            issues.append("terraform_lambda_hcl not empty in JAMF only mode")
+        if outputs.get("terraform_gcp_hcl", "").strip():
+            issues.append("terraform_gcp_hcl not empty in JAMF only mode")
+    if output_mode == "Okta + JAMF":
+        if outputs.get("terraform_lambda_hcl", "").strip():
+            issues.append("terraform_lambda_hcl not empty in Okta + JAMF mode")
+        if outputs.get("terraform_gcp_hcl", "").strip():
+            issues.append("terraform_gcp_hcl not empty in Okta + JAMF mode")
+
+    # 16b. JAMF HCL non-empty: provider, runbook, _v2 smart groups, no yohan460
+    if jamf_hcl.strip():
+        if 'provider "jamfpro"' not in jamf_hcl:
+            issues.append('terraform_jamf_hcl missing `provider "jamfpro"` block')
+        if "deploymenttheory/jamfpro" not in jamf_hcl:
+            issues.append("terraform_jamf_hcl missing required source `deploymenttheory/jamfpro`")
+        if "yohan460" in jamf_hcl.lower():
+            issues.append("terraform_jamf_hcl references rejected provider yohan460/jamf")
+        if "JAMF APPLY RUNBOOK" not in jamf_hcl and "parallelism=1" not in jamf_hcl:
+            issues.append("terraform_jamf_hcl missing apply runbook comment block (parallelism=1, load_balancer_lock)")
+        # Detect v1 smart group resource (legacy)
+        if re.search(r'resource\s+"jamfpro_smart_computer_group"\s', jamf_hcl):
+            issues.append("terraform_jamf_hcl uses legacy jamfpro_smart_computer_group (v1); use jamfpro_smart_computer_group_v2")
+        # No okta_* / aws_* / google_* in jamf hcl
+        cross_okta = re.findall(r'resource\s+"(okta_[^"]+)"', jamf_hcl)
+        if cross_okta:
+            issues.append(f"okta_* resource(s) found in terraform_jamf_hcl: {cross_okta}")
+        cross_gcp = re.findall(r'resource\s+"(google_[^"]+)"', jamf_hcl)
+        if cross_gcp:
+            issues.append(f"google_* resource(s) found in terraform_jamf_hcl: {cross_gcp}")
+
+        # 16c. must_contain_jamf / must_not_contain_jamf
+        for needle in tc.must_contain_jamf:
+            if needle not in jamf_hcl:
+                issues.append(f"Expected '{needle}' in terraform_jamf_hcl")
+        for needle in tc.must_not_contain_jamf:
+            if needle in jamf_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_jamf_hcl")
+
+    # 16d. JAMF modes must produce non-empty terraform_jamf_hcl
+    if output_mode in ("JAMF only", "Okta + JAMF") and not jamf_hcl.strip():
+        issues.append(f"terraform_jamf_hcl empty in {output_mode} mode")
+
     return issues
 
 
@@ -1232,7 +1404,7 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     # When the test author has supplied explicit type hints we already know the
     # operation is a create, so override the unknown to keep validate_intent
     # from hard-failing at the parser layer.
-    if intent.get("operation_type") == "unknown" and (tc.gcp_types or tc.aws_types or tc.okta_types):
+    if intent.get("operation_type") == "unknown" and (tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types):
         intent["operation_type"] = "create"
     if tc.okta_types:
         intent["resource_types"] = tc.okta_types
@@ -1240,10 +1412,17 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["aws_resource_types"] = tc.aws_types
     if tc.gcp_types:
         intent["gcp_resource_types"] = tc.gcp_types
+    if tc.jamf_types:
+        intent["jamf_resource_types"] = tc.jamf_types
     # Mode mapping mirrors app.py:Stage 1 (after-parse):
-    # both okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
+    # okta+jamf → "Okta + JAMF", jamf alone → "JAMF only",
+    # okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
     # okta alone → "Okta Terraform only", aws alone (rare) → "Lambda only".
-    if tc.gcp_types and tc.okta_types:
+    if tc.jamf_types and tc.okta_types:
+        intent["output_mode"] = "Okta + JAMF"
+    elif tc.jamf_types:
+        intent["output_mode"] = "JAMF only"
+    elif tc.gcp_types and tc.okta_types:
         intent["output_mode"] = "Okta + GCP"
     elif tc.gcp_types:
         intent["output_mode"] = "GCP only"

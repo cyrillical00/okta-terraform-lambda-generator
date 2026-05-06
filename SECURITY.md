@@ -103,6 +103,7 @@ Admins see a sidebar warning when any tracked secret is older than its target ro
 | `SLACK_SIGNING_SECRET` | 180 days | Slack slash command verification |
 | `JIRA_WEBHOOK_SECRET` | 180 days | JIRA webhook HMAC verification |
 | `JIRA_API_TOKEN` | 90 days | JIRA REST callback (paired with `JIRA_USER_EMAIL`) |
+| `JAMF_CLIENT_ID` / `JAMF_CLIENT_SECRET` | 90 days | JAMF Pro live env-context oauth2 |
 
 Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app sidebar widget, or directly in GitHub).
 
@@ -112,6 +113,7 @@ Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via 
 - **`SLACK_SIGNING_SECRET`**: rotate from the Slack app's Basic Information page in the Slack admin console. Slack supports a 24-hour overlap where both secrets verify; copy the new secret to Vercel before the overlap ends.
 - **`JIRA_WEBHOOK_SECRET`**: shared secret you control end-to-end. Update the JIRA Automation rule (or front proxy) and the Vercel env var in the same window. Old signatures fail validation immediately, so set both sides simultaneously.
 - **`JIRA_API_TOKEN`**: regenerate at id.atlassian.com → Security → API tokens. Old tokens are revoked instantly; expect a brief callback failure if the JIRA bot account's old token was in use mid-flight.
+- **`JAMF_CLIENT_ID` / `JAMF_CLIENT_SECRET`**: rotate from JAMF Pro Settings → System → API Roles and Clients. Generate a new client secret on the existing client (preserves the role binding); update Streamlit Cloud secrets, then revoke the old secret. Roles needed for live env-context: read on Policies, Computer Groups, Scripts, Packages, and Computer Extension Attributes.
 
 ## Headless surfaces (CLI, HTTP, Slack, JIRA)
 
@@ -124,6 +126,16 @@ Phase 10 Track 2 added four entry points that share the same `core.service.gener
 - **GitHub push uses the server's `GITHUB_TOKEN`, not the caller's**: callers pushing through `/api/push` or via the Slack/JIRA flow share the bot's identity. If a customer needs caller-supplied tokens, that's a `PushRequest.github_token` field gated behind a separate role; not in this build.
 - **No callback secrets in transit to Anthropic**: the JIRA REST credentials and Slack `response_url` strings are never included in the prompt sent to Claude. They live in env vars / the inbound payload only.
 - **Slack and JIRA push branches are predictable**: Slack pushes to `tfgen-slack`, JIRA pushes to `jira/<issue_key>`. A reviewer can carve a branch-protection rule that requires PR review on either prefix before merge.
+
+## JAMF Pro apply runbook
+
+Generated `terraform_jamf_hcl` outputs ship with a top-of-file `# JAMF APPLY RUNBOOK` comment listing operational constraints that Terraform itself does not enforce:
+
+1. **`terraform apply -parallelism=1`** is required. JAMF Pro produces inconsistent behaviour at the default parallelism of 10 (resources race against each other on the same JSS API endpoints; results are non-deterministic).
+2. **`jamfpro_load_balancer_lock = true`** must be set in the provider block when targeting JAMF Cloud (`*.jamfcloud.com`). The 60-second LB cookie propagation delay otherwise causes drift between parallel API calls landing on different web app members.
+3. **Eventual consistency**: an immediate `terraform plan` after `apply` may show drift. Re-run plan a few minutes later before assuming a real diff exists.
+
+Reviewers should reject any PR that contains JAMF HCL without the runbook header. The validator pass flags missing runbook headers as an issue, but the reviewer-side gate is the more reliable check.
 
 ## Additions since Thread A
 

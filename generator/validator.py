@@ -43,6 +43,41 @@ Check for these specific problems in Terraform:
 - For okta_brand: NEVER include `logo`, `primary_color`, or `secondary_color` — none of these exist on the v4.x okta_brand resource. Logo upload is an Okta Admin Console operation; flag any logo-related attribute or block as a hallucination. Allowed attributes are name, agree_to_custom_privacy_policy, custom_privacy_policy_url, remove_powered_by_okta, default_app_app_instance_id, default_app_classic_application_uri.
 - For okta_email_customization: the `body` value must escape Terraform interpolation by writing `$${variable}` (double dollar) wherever an Okta email template variable appears — e.g. `$${user.firstName}`. A body containing bare `${...}` fails terraform validate with "Reference to undeclared resource". Also confirm `template_name` is one of the documented Okta lifecycle templates ("UserActivation", "ForgotPassword", "PasswordChanged", "EmailChallenge", "ADForgotPassword", etc.) and that `language` (not `locale`) is set.
 
+### JAMF Pro specific checks
+
+When terraform_jamf_hcl is non-empty, flag these JAMF-specific issues:
+
+- Provider source set to `yohan460/jamf` (deprecated, stale, narrow). Must be
+  `deploymenttheory/jamfpro` pinned at `~> 0.37`. Flag as a fail-class issue.
+- Provider block missing `jamfpro_load_balancer_lock = true` when the FQDN
+  variable name, default, or surrounding comment suggests a Cloud target
+  (the value contains "jamfcloud.com" or comments mention JAMF Cloud).
+  This causes apply drift between parallel API calls; flag as a fail.
+- Use of `jamfpro_smart_computer_group` (legacy, v1) instead of
+  `jamfpro_smart_computer_group_v2`. Recommend renaming to the _v2 form.
+- Use of `is_smart = true` on `jamfpro_smart_computer_group_v2`. The _v2
+  resource type implies smart-group semantics; the attribute does not exist.
+- Inline script content as a long string literal in `jamfpro_script.script_contents`.
+  Anything longer than ~5 lines should be loaded via
+  `script_contents = file("../scripts/X.sh")` to keep plan diffs readable.
+- `jamfpro_policy` missing `category_id`. Apply succeeds but the JAMF UI
+  shows the policy as "Uncategorized", which is usually unintentional. Warn.
+- `jamfpro_policy` referencing scripts or packages by hardcoded id (e.g.
+  `script_id = "1"` rather than `script_id = jamfpro_script.X.id`).
+  Hardcoded ids break when the underlying resource is recreated; recommend
+  the resource-reference form.
+- Apply-runbook comment block missing from the top of `terraform_jamf_hcl`.
+  The block beginning with "# JAMF APPLY RUNBOOK" must appear verbatim.
+  Flag as a warn; the file works without it but loses the operator guidance.
+- `jamfpro_package` missing the upload-out-of-band NOTE comment. The
+  binary uploads via the JAMF Pro UI or API, NOT via Terraform; the user
+  must know that.
+- Imperative MDM commands emitted as resources (e.g. a fictional
+  `jamfpro_lock_command` or `jamfpro_wipe_command`). No such resources
+  exist in any JAMF Terraform provider; flag and recommend a NOTE comment.
+- `auth_method` set to anything other than "oauth2" without an explicit user
+  request for basic auth. OAuth2 is the canonical path.
+
 Check for these specific problems in Lambda:
 - Event hook verification logic (x-okta-verification-challenge) present when resource_type is NOT okta_event_hook
 - Lambda does not match the resource type in any meaningful way
@@ -102,9 +137,11 @@ Return only the JSON review object."""
 _OUTPUT_MODE_INSTRUCTIONS = {
     "Okta Terraform only": "The user requested Okta Terraform only. Do NOT evaluate or report any Lambda or Cloud Function issues — set lambda_issues to []. Only review terraform_okta_hcl and optional_tf.",
     "Lambda only": "The user requested Lambda only. Do NOT evaluate or report any Terraform issues — set terraform_issues to []. Only review lambda_python.",
-    "Both": "Review all outputs — Terraform HCL, Lambda Python, and optional_tf. terraform_gcp_hcl is intentionally empty in this mode; do NOT flag its absence.",
-    "GCP only": "The user requested GCP only. Review terraform_gcp_hcl and cloud_function_python. terraform_okta_hcl, terraform_lambda_hcl, and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
-    "Okta + GCP": "The user requested Okta + GCP. Review terraform_okta_hcl, terraform_gcp_hcl, and cloud_function_python. terraform_lambda_hcl and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
+    "Both": "Review all outputs (Terraform HCL, Lambda Python, and optional_tf). terraform_gcp_hcl and terraform_jamf_hcl are intentionally empty in this mode; do NOT flag their absence.",
+    "GCP only": "The user requested GCP only. Review terraform_gcp_hcl and cloud_function_python. terraform_okta_hcl, terraform_lambda_hcl, terraform_jamf_hcl, and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
+    "Okta + GCP": "The user requested Okta + GCP. Review terraform_okta_hcl, terraform_gcp_hcl, and cloud_function_python. terraform_lambda_hcl, terraform_jamf_hcl, and lambda_python are intentionally empty in this mode; do NOT flag their absence. Report Cloud Function issues under lambda_issues.",
+    "JAMF only": "The user requested JAMF only. Review terraform_jamf_hcl. terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, and cloud_function_python are intentionally empty in this mode; do NOT flag their absence. Report JAMF-side issues under terraform_issues; lambda_issues stays []. Apply the JAMF-specific checks (load balancer lock for Cloud, _v2 smart groups, file-loaded scripts, runbook comment).",
+    "Okta + JAMF": "The user requested Okta + JAMF. Review terraform_okta_hcl and terraform_jamf_hcl. terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, and cloud_function_python are intentionally empty in this mode; do NOT flag their absence. Cross-references between the two providers should go through var.* strings, not direct cross-file references; flag direct references as a portability issue.",
 }
 
 

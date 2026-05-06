@@ -174,6 +174,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     okta_hcl = outputs.get("terraform_okta_hcl", "")
     lambda_hcl = outputs.get("terraform_lambda_hcl", "")
     gcp_hcl = outputs.get("terraform_gcp_hcl", "")
+    jamf_hcl = outputs.get("terraform_jamf_hcl", "")
     lambda_py = outputs.get("lambda_python", "")
     lambda_reqs = outputs.get("lambda_requirements", "")
     cloud_function_py = outputs.get("cloud_function_python", "")
@@ -185,6 +186,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         okta_path = f"terraform/{base}.tf"
         lambda_tf_path = f"terraform/{base}_lambda.tf"
         gcp_tf_path = f"terraform/{base}_gcp.tf"
+        jamf_tf_path = f"terraform/{base}_jamf.tf"
         lambda_py_path = f"lambda/{base}.py"
         lambda_reqs_path = f"lambda/{base}_requirements.txt"
         cloud_function_py_path = f"cloud_function/{base}.py"
@@ -195,6 +197,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         okta_path = "terraform/okta.tf"
         lambda_tf_path = "terraform/lambda.tf"
         gcp_tf_path = "terraform/gcp.tf"
+        jamf_tf_path = "terraform/jamf.tf"
         lambda_py_path = "lambda/lambda_function.py"
         lambda_reqs_path = "lambda/requirements.txt"
         cloud_function_py_path = "cloud_function/main.py"
@@ -213,8 +216,10 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             lambda_hcl = strip_provider_boilerplate(lambda_hcl)
         if gcp_hcl:
             gcp_hcl = strip_provider_boilerplate(gcp_hcl)
+        if jamf_hcl:
+            jamf_hcl = strip_provider_boilerplate(jamf_hcl)
 
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF"):
         if okta_hcl and okta_hcl.strip():
             files[okta_path] = okta_hcl
     if mode in ("Both",):
@@ -232,6 +237,9 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             files[cloud_function_py_path] = cloud_function_py
         if cloud_function_reqs and cloud_function_reqs.strip():
             files[cloud_function_reqs_path] = cloud_function_reqs
+    if mode in ("JAMF only", "Okta + JAMF"):
+        if jamf_hcl and jamf_hcl.strip():
+            files[jamf_tf_path] = jamf_hcl
     if optional_tf and optional_tf.strip():
         files[optional_path] = optional_tf
     if tfvars and tfvars.strip():

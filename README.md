@@ -1,12 +1,12 @@
 # Okta Terraform + Lambda + GCP Generator
 
-A Streamlit app that turns plain-English infrastructure descriptions into deployable Terraform HCL across three providers. Output covers Okta resources, AWS Lambda glue (Okta event hooks calling Lambdas, scheduled sweeps), and GCP Cloud Functions / Cloud Run / Pub/Sub. One click pushes the generated files to GitHub; another saves a ZIP locally.
+A Streamlit app that turns plain-English infrastructure descriptions into deployable Terraform HCL across four providers. Output covers Okta resources, AWS Lambda glue (Okta event hooks calling Lambdas, scheduled sweeps), GCP Cloud Functions / Cloud Run / Pub/Sub, and JAMF Pro device-management resources (policies, smart groups, scripts, configuration profiles). One click pushes the generated files to GitHub; another saves a ZIP locally.
 
 Live at https://okta-terraform-lambda-generator.streamlit.app.
 
 ## What it generates
 
-Five output modes selectable from the sidebar:
+Seven output modes selectable from the sidebar:
 
 | Mode | Files |
 |---|---|
@@ -15,8 +15,20 @@ Five output modes selectable from the sidebar:
 | Lambda only | `terraform/lambda.tf`, `lambda/lambda_function.py`, `lambda/requirements.txt` |
 | GCP only | `terraform/gcp.tf`, `cloud_function/main.py`, `cloud_function/requirements.txt` |
 | Okta + GCP | `terraform/okta.tf`, `terraform/gcp.tf`, `cloud_function/main.py`, `cloud_function/requirements.txt` |
+| JAMF only | `terraform/jamf.tf` |
+| Okta + JAMF | `terraform/okta.tf`, `terraform/jamf.tf` |
 
-Composite modes (Okta+AWS, Okta+GCP) automatically merge `terraform { required_providers {} }` blocks and dedupe `variable "X" {}` declarations so the generated files coexist in a single Terraform module without duplicate-block errors.
+Composite modes (Okta+AWS, Okta+GCP, Okta+JAMF) automatically merge `terraform { required_providers {} }` blocks and dedupe `variable "X" {}` declarations so the generated files coexist in a single Terraform module without duplicate-block errors.
+
+### JAMF Pro
+
+JAMF support targets `deploymenttheory/jamfpro` v0.37.x (community, public preview). Covers 12 of the provider's 74 resources: policies, scripts, macOS / mobile configuration profiles, smart computer groups (v2), static groups, packages, extension attributes, restricted software, and DEP prestage enrollment. Anything outside that list (live MDM commands, certificate signing, custom branding, the long tail) emits a `# NOTE` comment pointing to the JAMF Pro web console rather than fabricating non-existent HCL.
+
+Two non-negotiable apply-time constraints baked into every JAMF output:
+- `terraform apply -parallelism=1` is required (Jamf Pro produces inconsistent behaviour at the default parallelism of 10).
+- `jamfpro_load_balancer_lock = true` must be set in the provider block for any Jamf Cloud target (`*.jamfcloud.com`) due to the 60-second LB cookie propagation delay.
+
+Each generated `terraform_jamf_hcl` file ships with a top-of-file `# JAMF APPLY RUNBOOK` comment listing both constraints and the eventual-consistency warning so the apply runbook is self-documenting.
 
 ## Feature surface
 
@@ -50,6 +62,7 @@ Edit `.streamlit/secrets.toml`:
 | `OKTA_API_TOKEN` / `OKTA_ORG_NAME` | optional | Live Okta context for the parser; resolves real group / app IDs instead of placeholders |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | optional | Live AWS context for Lambda function lookups |
 | `GCP_SA_JSON` | optional | Single-line JSON service account key for live GCP context (Cloud Functions / Run / Pub/Sub listings); ADC works locally without this |
+| `JAMF_INSTANCE_FQDN` / `JAMF_CLIENT_ID` / `JAMF_CLIENT_SECRET` | optional | Live JAMF Pro context (oauth2). Resolves real policy / smart group / script IDs |
 | `[auth]`, `[roles]`, `[quotas]` | required for prod | See `SECURITY.md` for the OAuth + RBAC + per-user cost cap configuration |
 
 The GitHub repo must have at least one commit before the first push.

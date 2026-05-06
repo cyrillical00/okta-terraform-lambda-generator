@@ -11,6 +11,7 @@ OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
     "terraform_gcp_hcl": "",
     "cloud_function_python": "",
     "cloud_function_requirements": "",
+    "terraform_jamf_hcl": "",
 }
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -86,6 +87,14 @@ def generate_all(
         )
     else:
         gcp_resource_section = ""
+    jamf_types = intent.get("jamf_resource_types", [])
+    if jamf_types:
+        jamf_resource_section = (
+            "JAMF resources to include in terraform_jamf_hcl (in addition to the provider block + "
+            f"apply runbook header): {', '.join(jamf_types)}. Follow the rules for each in SECTION D."
+        )
+    else:
+        jamf_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         output_mode=output_mode,
@@ -97,6 +106,7 @@ def generate_all(
         multi_resource_section=multi_resource_section,
         aws_resource_section=aws_resource_section,
         gcp_resource_section=gcp_resource_section,
+        jamf_resource_section=jamf_resource_section,
     )
     messages = [{"role": "user", "content": user_content}]
 
@@ -127,7 +137,7 @@ def generate_all(
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
-                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
+                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
             },
         ]
         retry_response = client.messages.create(
@@ -156,6 +166,7 @@ def generate_all(
     if output_mode == "Okta Terraform only":
         result["terraform_lambda_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -164,22 +175,42 @@ def generate_all(
     elif output_mode == "Lambda only":
         result["terraform_okta_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
     elif output_mode == "GCP only":
         result["terraform_okta_hcl"] = ""
         result["terraform_lambda_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["optional_tf"] = ""
     elif output_mode == "Okta + GCP":
         result["terraform_lambda_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
     elif output_mode == "Both":
-        # "Both" means Okta + AWS Lambda — explicitly NOT GCP
+        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF
         result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+    elif output_mode == "JAMF only":
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + JAMF":
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
 
@@ -215,5 +246,13 @@ def generate_all(
         merged_okta, merged_lambda = dedupe_variable_blocks(merged_okta, merged_lambda)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_lambda_hcl"] = merged_lambda
+    elif output_mode == "Okta + JAMF":
+        merged_okta, merged_jamf = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_jamf_hcl", ""),
+        )
+        merged_okta, merged_jamf = dedupe_variable_blocks(merged_okta, merged_jamf)
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_jamf_hcl"] = merged_jamf
 
     return result

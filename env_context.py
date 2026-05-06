@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 from okta_client import OktaClient, OktaError
 from aws_client import AWSClient, AWSError
 from gcp_client import GcpClient, GcpError
+from jamf_client import JamfClient, JamfError
 
 
 def _parse_org_url(url: str) -> tuple[str, str]:
@@ -97,6 +98,41 @@ def fetch_gcp_context(project_id: str, sa_json: str = "", region: str = "us-cent
     return result
 
 
+def fetch_jamf_context(fqdn: str, client_id: str, client_secret: str) -> dict:
+    if not fqdn or not client_id or not client_secret:
+        return {"connected": False, "error": "Not configured, add JAMF_FQDN, JAMF_CLIENT_ID and JAMF_CLIENT_SECRET to secrets."}
+    try:
+        client = JamfClient(fqdn, client_id, client_secret)
+    except JamfError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    # Per-call partial success: the provider docs note that some endpoints can
+    # be 403'd by tight role scopes (e.g. read-only API role missing scripts
+    # permission). Don't fail the whole context just because one list call did.
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except JamfError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    canonical_fqdn = fqdn.replace("https://", "").replace("http://", "").rstrip("/")
+    return {
+        "connected": True,
+        "fqdn": canonical_fqdn,
+        "is_cloud": canonical_fqdn.endswith(".jamfcloud.com"),
+        "policies": _safe("policies", client.list_policies),
+        "smart_groups": _safe("smart_groups", client.list_smart_groups),
+        "scripts": _safe("scripts", client.list_scripts),
+        "error": None,
+        "partial_errors": partial_errors,
+    }
+
+
 def build_env_context(
     okta_org_url: str,
     okta_api_token: str,
@@ -106,11 +142,15 @@ def build_env_context(
     gcp_project_id: str = "",
     gcp_sa_json: str = "",
     gcp_region: str = "us-central1",
+    jamf_fqdn: str = "",
+    jamf_client_id: str = "",
+    jamf_client_secret: str = "",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
         "aws": fetch_aws_context(aws_region, aws_access_key, aws_secret_key),
         "gcp": fetch_gcp_context(gcp_project_id, gcp_sa_json, gcp_region or "us-central1"),
+        "jamf": fetch_jamf_context(jamf_fqdn, jamf_client_id, jamf_client_secret),
     }
 
 
@@ -119,6 +159,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     okta = env_context.get("okta", {})
     aws = env_context.get("aws", {})
     gcp = env_context.get("gcp", {})
+    jamf = env_context.get("jamf", {})
     sections = []
 
     if okta.get("connected"):
@@ -188,6 +229,31 @@ def format_context_for_prompt(env_context: dict) -> str:
             lines.append("**Cloud Run services** (reference via data \"google_cloud_run_v2_service\"):")
             for s in run_svcs[:40]:
                 lines.append(f'  - name: "{s["name"]}"  uri: {s.get("uri", "")}')
+        sections.append("\n".join(lines))
+
+    if jamf.get("connected"):
+        lines = ["### JAMF Pro live resources"]
+        fqdn = jamf.get("fqdn", "")
+        if fqdn:
+            lines.append("**JAMF Pro instance metadata** (use these literal values in the provider block):")
+            lines.append(f'  - jamfpro_instance_fqdn: "{fqdn}"')
+            if jamf.get("is_cloud"):
+                lines.append('  - jamfpro_load_balancer_lock: true   # JAMF Cloud requires this')
+        policies = jamf.get("policies", [])
+        if policies:
+            lines.append('**Policies** (reference via data "jamfpro_policy"):')
+            for p in policies[:40]:
+                lines.append(f'  - name: "{p["name"]}"  id: {p["id"]}')
+        smart_groups = jamf.get("smart_groups", [])
+        if smart_groups:
+            lines.append('**Smart groups** (reference via data "jamfpro_smart_computer_group_v2"):')
+            for g in smart_groups[:40]:
+                lines.append(f'  - name: "{g["name"]}"  id: {g["id"]}')
+        scripts = jamf.get("scripts", [])
+        if scripts:
+            lines.append('**Scripts** (reference via data "jamfpro_script"):')
+            for s in scripts[:40]:
+                lines.append(f'  - name: "{s["name"]}"  id: {s["id"]}')
         sections.append("\n".join(lines))
 
     if not sections:

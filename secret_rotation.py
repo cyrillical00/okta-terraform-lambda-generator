@@ -38,6 +38,12 @@ TARGET_CADENCE_DAYS = {
     "SLACK_SIGNING_SECRET": 180,
     "JIRA_WEBHOOK_SECRET": 180,
     "JIRA_API_TOKEN": 90,
+    # Phase 11, JAMF Pro provider live-context credentials.
+    # JAMF Pro API roles + integrations expose oauth2 client_id +
+    # client_secret. Treat them as 90-day rotators like other API
+    # credentials we own end to end.
+    "JAMF_CLIENT_ID": 90,
+    "JAMF_CLIENT_SECRET": 90,
 }
 
 _github_token: str = ""

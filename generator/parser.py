@@ -21,6 +21,18 @@ ALLOWED_RESOURCE_TYPES = {
     "okta_network_zone",
     "okta_brand",
     "okta_email_customization",
+    "jamfpro_policy",
+    "jamfpro_script",
+    "jamfpro_macos_configuration_profile_plist",
+    "jamfpro_macos_configuration_profile_plist_generator",
+    "jamfpro_mobile_device_configuration_profile_plist",
+    "jamfpro_smart_computer_group_v2",
+    "jamfpro_static_computer_group",
+    "jamfpro_smart_mobile_device_group",
+    "jamfpro_package",
+    "jamfpro_computer_extension_attribute",
+    "jamfpro_restricted_software",
+    "jamfpro_computer_prestage_enrollment",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}

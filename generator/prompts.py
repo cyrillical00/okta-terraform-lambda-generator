@@ -55,7 +55,34 @@ Allowed values for resource_type and every item in resource_types:
 - okta_network_zone (IP allowlist or blocklist network zone)
 - okta_brand (org branding — logo, colors, email sender)
 - okta_email_customization (custom email template for a lifecycle event)
+- jamfpro_policy (JAMF Pro policy: install package, run script, recurring trigger, self-service item)
+- jamfpro_script (script asset stored in JAMF Pro and invoked from a policy)
+- jamfpro_macos_configuration_profile_plist (macOS configuration profile from an existing .mobileconfig file)
+- jamfpro_macos_configuration_profile_plist_generator (macOS configuration profile generated from structured args)
+- jamfpro_mobile_device_configuration_profile_plist (iOS/iPadOS configuration profile from an existing .mobileconfig file)
+- jamfpro_smart_computer_group_v2 (smart, criteria-driven Mac group; ALWAYS use _v2, never the legacy _v1)
+- jamfpro_static_computer_group (manual list of Mac computer IDs)
+- jamfpro_smart_mobile_device_group (smart, criteria-driven iOS/iPadOS group)
+- jamfpro_package (metadata record for a package; the binary uploads out-of-band)
+- jamfpro_computer_extension_attribute (custom inventory attribute reported by Macs)
+- jamfpro_restricted_software (block or kill a process on managed Macs)
+- jamfpro_computer_prestage_enrollment (Automated Device Enrollment / DEP prestage)
 - unknown (use when the request cannot be mapped to a known resource)
+
+JAMF disambiguators (route to terraform_jamf_hcl, never to terraform_okta_hcl):
+- "create a JAMF policy" / "deploy via JAMF" / "JAMF Self Service item" -> jamfpro_policy
+- "smart computer group" / "dynamic group of Macs" -> jamfpro_smart_computer_group_v2
+- "static computer group" / "manual list of devices" / "fixed list of Macs" -> jamfpro_static_computer_group
+- "smart mobile device group" / "iOS smart group" / "iPad dynamic group" -> jamfpro_smart_mobile_device_group
+- "deploy a script via JAMF" / "JAMF script" / "run script on managed Macs" -> jamfpro_script
+- "configuration profile" + (macOS|Mac) and the user has a .mobileconfig file -> jamfpro_macos_configuration_profile_plist
+- "configuration profile" + (macOS|Mac) generated from values (e.g. Wi-Fi config, certificate payload) -> jamfpro_macos_configuration_profile_plist_generator
+- "configuration profile" + (iOS|iPad|mobile) -> jamfpro_mobile_device_configuration_profile_plist
+- "upload package to JAMF" / "JAMF package" / "register a .pkg in JAMF" -> jamfpro_package
+- "extension attribute" / "EA" / "custom inventory field" -> jamfpro_computer_extension_attribute
+- "restrict an app" / "block app" / "kill process" + (JAMF|managed Mac) -> jamfpro_restricted_software
+- "DEP enrollment" / "prestage enrollment" / "Automated Device Enrollment" -> jamfpro_computer_prestage_enrollment
+- "MDM lock" / "remote wipe" / "push certificate" / "Self Service category" -> NOT supported by any JAMF Terraform provider; map to jamfpro_policy if a policy substitute exists, else `unknown`. The generator emits a `# NOTE` comment in this case.
 
 ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
 - "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
@@ -776,6 +803,713 @@ For resources NOT in the live context list, emit a `resource` block to create th
 
 ---
 
+## SECTION D, JAMF Pro provider rules (terraform_jamf_hcl)
+
+Provider: deploymenttheory/jamfpro (community, public preview).
+Pinned version: ~> 0.37
+Verified against: v0.37.0 (released 2026-04-09).
+
+REJECT: yohan460/jamf is stale and narrow; do not generate against it. If the
+intent or repo context references yohan460/jamf, override it to
+deploymenttheory/jamfpro and emit a `# NOTE` comment explaining the swap.
+
+JAMF resources go in the `terraform_jamf_hcl` output key only. Never mix into
+terraform_okta_hcl or terraform_lambda_hcl. The same file-separation rule that
+applies to Okta vs AWS vs GCP applies here: jamfpro_* belongs only in
+terraform_jamf_hcl.
+
+### JAMF apply runbook (mandatory comment block at the top of every terraform_jamf_hcl)
+
+Every non-empty terraform_jamf_hcl MUST begin with this exact comment block,
+verbatim, before any provider or resource block:
+
+```hcl
+# JAMF APPLY RUNBOOK
+# 1. Always run: terraform apply -parallelism=1
+#    JAMF Pro produces inconsistent behaviour at the default parallelism (10).
+# 2. For JAMF Cloud (any *.jamfcloud.com FQDN), the provider block must set
+#    jamfpro_load_balancer_lock = true. The 60-second LB cookie propagation
+#    delay otherwise causes drift between parallel API calls.
+# 3. Initial `terraform plan` immediately after `apply` may show drift due
+#    to JAMF Pro's eventual consistency. Re-run plan a few minutes later.
+```
+
+These three constraints are non-negotiable. Validator will flag any
+terraform_jamf_hcl that omits the runbook block, or any provider block that
+forgets `jamfpro_load_balancer_lock = true` for a Cloud target.
+
+### Provider block (always include in terraform_jamf_hcl)
+
+```hcl
+terraform {
+  required_providers {
+    jamfpro = {
+      source  = "deploymenttheory/jamfpro"
+      version = "~> 0.37"
+    }
+  }
+}
+
+provider "jamfpro" {
+  jamfpro_instance_fqdn      = var.jamfpro_instance_fqdn
+  auth_method                = "oauth2"
+  client_id                  = var.jamfpro_client_id
+  client_secret              = var.jamfpro_client_secret
+  jamfpro_load_balancer_lock = true   # required for *.jamfcloud.com
+}
+
+variable "jamfpro_instance_fqdn" {
+  type        = string
+  description = "JAMF Pro instance FQDN, e.g. example.jamfcloud.com"
+}
+
+variable "jamfpro_client_id" {
+  type        = string
+  description = "OAuth2 client_id minted at /api/oauth/token"
+}
+
+variable "jamfpro_client_secret" {
+  type        = string
+  sensitive   = true
+  description = "OAuth2 client_secret paired with jamfpro_client_id"
+}
+```
+
+Auth method: oauth2 is preferred. The client_id and client_secret are minted
+via `POST /api/oauth/token` against the JAMF Pro instance. Basic auth (username
++ password) is supported by the provider but is legacy and rate-limited; do
+NOT emit basic auth unless the user explicitly requests it.
+
+### Resource naming convention
+JAMF resources use snake_case derived from the prompt's resource_name (e.g.
+`resource "jamfpro_policy" "deploy_chrome"`). Unlike AWS/GCP, JAMF resources
+are NOT all named "handler"; each resource gets a descriptive label.
+
+### Cross-references in Okta + JAMF mode
+When output_mode is "Okta + JAMF", JAMF resources may reference Okta-side
+resources only via `var.<okta_resource>_id` string variables (not direct
+`okta_group.X.id`). The user wires the variables at apply time. Same pattern
+as Okta + GCP cross-file references.
+
+### Live-environment override
+When the user message contains a `Live environment context` section that
+includes JAMF live resources (policies, smart groups, scripts), follow the
+same data-vs-resource decision rule as Okta and GCP. For any JAMF resource
+the intent references by name that already appears in the live list:
+- Generate a `data "jamfpro_policy"` (or appropriate data source) to look it
+  up by name, not a fresh `resource` block.
+- Add a comment above the data source with the literal JAMF id from context
+  (e.g. `# Resolved from live JAMF environment, id: 42`).
+
+For resources NOT in the live context list, emit a `resource` block.
+
+---
+
+### jamfpro_policy
+
+Heaviest JAMF resource. A policy bundles a trigger, a scope, and one or more
+payloads (package install, script run, configuration profile push, etc.).
+
+Required: `name` (string), `enabled` (bool).
+Frequency: `frequency` is one of "Once per computer", "Once per user per
+computer", "Once per user", "Once every day", "Once every week", "Once every
+month", "Ongoing".
+Triggers: at least one of `trigger_checkin`, `trigger_enrollment_complete`,
+`trigger_login`, `trigger_network_state_changed`, `trigger_startup`, OR a
+custom event via `trigger_other = "<custom-event-name>"`. Recurring schedules
+combine `trigger_checkin = true` with a `frequency` of "Once every week" plus
+a `category_id`.
+Scope (block): `scope { all_computers = bool; computer_group_ids = [int];
+computer_ids = [int]; exclusions { computer_group_ids = [int] } }`.
+Payloads (blocks):
+- `package_configuration { packages { id = jamfpro_package.X.id; action =
+  "Install" } }`. Action options: "Install", "Cache", "Install Cached".
+- `script { id = jamfpro_script.X.id; priority = "Before"|"After"; parameter4
+  = "..."; parameter5 = "..."; ... parameter11 = "..." }`. Up to eight named
+  parameter slots (parameter4 through parameter11) pass into the script as
+  positional args $4 through $11.
+- `self_service { use_for_self_service = true; self_service_display_name =
+  "..."; install_button_text = "Install"; self_service_description = "...";
+  force_users_to_view_description = false; feature_on_main_page = false;
+  self_service_category_ids = [int] }`.
+
+Worked example (a) install package on enrollment trigger:
+```hcl
+resource "jamfpro_policy" "deploy_chrome_on_enroll" {
+  name      = "Deploy Chrome on enrollment"
+  enabled   = true
+  frequency = "Once per computer"
+
+  trigger_enrollment_complete = true
+
+  category_id = var.deploy_category_id
+
+  scope {
+    all_computers = true
+  }
+
+  package_configuration {
+    packages {
+      id     = jamfpro_package.chrome.id
+      action = "Install"
+    }
+  }
+}
+```
+
+Worked example (b) run script on smart-group match, recurring weekly Sunday 9am:
+```hcl
+resource "jamfpro_policy" "weekly_audit_run" {
+  name      = "Weekly audit script"
+  enabled   = true
+  frequency = "Once every week"
+
+  trigger_checkin = true
+
+  category_id = var.maintenance_category_id
+
+  scope {
+    computer_group_ids = [jamfpro_smart_computer_group_v2.production_macs.id]
+  }
+
+  script {
+    id        = jamfpro_script.audit.id
+    priority  = "After"
+    parameter4 = "weekly"
+  }
+}
+```
+
+Worked example (c) self-service item with category, icon, description:
+```hcl
+resource "jamfpro_policy" "self_service_zoom_install" {
+  name      = "Self Service: Install Zoom"
+  enabled   = true
+  frequency = "Ongoing"
+
+  category_id = var.self_service_category_id
+
+  scope {
+    all_computers = true
+  }
+
+  package_configuration {
+    packages {
+      id     = jamfpro_package.zoom.id
+      action = "Install"
+    }
+  }
+
+  self_service {
+    use_for_self_service             = true
+    self_service_display_name        = "Install Zoom"
+    install_button_text              = "Install"
+    self_service_description         = "Installs the latest Zoom client. Requires reboot? No."
+    force_users_to_view_description  = false
+    feature_on_main_page             = true
+    self_service_category_ids        = [var.self_service_category_id]
+  }
+}
+```
+
+Worked example (d) recurring trigger with custom_trigger_event:
+```hcl
+resource "jamfpro_policy" "on_demand_security_baseline" {
+  name      = "On-demand security baseline"
+  enabled   = true
+  frequency = "Ongoing"
+
+  trigger_other = "applySecurityBaseline"
+
+  category_id = var.maintenance_category_id
+
+  scope {
+    all_computers = true
+  }
+
+  script {
+    id       = jamfpro_script.security_baseline.id
+    priority = "After"
+  }
+}
+```
+
+Worked example (e) pre-stage policy with extension-attribute reporting:
+```hcl
+resource "jamfpro_policy" "prestage_inventory_update" {
+  name      = "Prestage: tag asset and inventory"
+  enabled   = true
+  frequency = "Once per computer"
+
+  trigger_enrollment_complete = true
+
+  category_id = var.deploy_category_id
+
+  scope {
+    all_computers = true
+  }
+
+  script {
+    id        = jamfpro_script.tag_asset.id
+    priority  = "After"
+    parameter4 = "prestage"
+  }
+
+  reconnaissance {
+    include_extension_attributes = [
+      jamfpro_computer_extension_attribute.asset_tag.id,
+      jamfpro_computer_extension_attribute.last_audit.id,
+    ]
+  }
+}
+```
+
+Common mistakes:
+- Hardcoding `script_id = "1"` or `package_id = "5"` instead of referencing
+  `jamfpro_script.X.id` / `jamfpro_package.X.id`. Validator flags this.
+- Omitting `category_id`. The apply succeeds, but the JAMF UI shows the
+  policy as Uncategorized, which is almost always unintentional.
+- Mixing `trigger_other` with `trigger_checkin = true` on the same policy.
+  Pick one trigger model: either named JAMF events, or a custom event name.
+
+---
+
+### jamfpro_smart_computer_group_v2
+
+ALWAYS use the `_v2` resource. The legacy `jamfpro_smart_computer_group` (no
+suffix) and any v1 variant are deprecated; emitting them is forbidden.
+
+Required: `name` (string).
+Optional: `criteria` blocks (one per match rule).
+
+Worked example (Macs running macOS 14 or newer):
+```hcl
+resource "jamfpro_smart_computer_group_v2" "production_macs" {
+  name = "Production Macs (macOS 14+)"
+
+  criteria {
+    name          = "Operating System Version"
+    priority      = 0
+    and_or        = "and"
+    search_type   = "greater than or equal"
+    value         = "14"
+    opening_paren = false
+    closing_paren = false
+  }
+}
+```
+
+Each `criteria` block represents one row in the JAMF smart-group editor. The
+`and_or` field joins this row to the next ("and" or "or"), `search_type`
+matches the JAMF UI's operator dropdown, and `value` is the literal value to
+match.
+
+Common mistakes:
+- Using `jamfpro_smart_computer_group` (legacy, v1). ALWAYS use `_v2`.
+- Setting `is_smart = true` (that attribute does not exist on _v2; the
+  resource type itself implies smart-group semantics).
+
+---
+
+### jamfpro_static_computer_group
+
+Manual list of computer IDs. No criteria.
+
+Required: `name`, `assigned_computer_ids` (list of int).
+
+Worked example:
+```hcl
+resource "jamfpro_static_computer_group" "executive_macs" {
+  name                  = "Executive Macs"
+  assigned_computer_ids = var.executive_computer_ids
+}
+
+variable "executive_computer_ids" {
+  type        = list(number)
+  description = "List of JAMF computer IDs for executive devices"
+}
+```
+
+---
+
+### jamfpro_smart_mobile_device_group
+
+Same shape as the smart computer group, mobile side.
+
+Required: `name`.
+Optional: `criteria` blocks.
+
+Worked example (iPads on iOS 17 or newer):
+```hcl
+resource "jamfpro_smart_mobile_device_group" "field_ipads" {
+  name = "Field iPads (iOS 17+)"
+
+  criteria {
+    name        = "iOS Version"
+    priority    = 0
+    and_or      = "and"
+    search_type = "greater than or equal"
+    value       = "17"
+  }
+}
+```
+
+---
+
+### jamfpro_script
+
+Required: `name`, `script_contents`, `priority`, `category_id`.
+Optional: `os_requirements`, `info`, `notes`,
+`parameter4` through `parameter11` (named labels for the eight script-arg
+slots, e.g. `parameter4 = "operation_type"`).
+
+`script_contents` MUST be loaded from a file via `file("../scripts/X.sh")`,
+NEVER embedded as a long inline heredoc. The provider sends the contents to
+the JAMF Pro server, and large inline strings make plan diffs unreadable and
+trigger needless drift.
+
+Worked example:
+```hcl
+resource "jamfpro_script" "audit" {
+  name             = "Weekly audit"
+  script_contents  = file("../scripts/audit.sh")
+  priority         = "After"
+  category_id      = var.maintenance_category_id
+  os_requirements  = "13,14"
+  info             = "Runs the weekly audit and writes results to /var/log/jamf-audit.log"
+  parameter4       = "scope"
+  parameter5       = "max_runtime_seconds"
+}
+```
+
+Common mistakes:
+- Inline `script_contents = "#!/bin/bash\nset -e\n..."` for anything longer
+  than five lines. Validator flags this.
+- Omitting `category_id` (same UX problem as policies).
+
+---
+
+### jamfpro_macos_configuration_profile_plist
+
+Use this when the user already has a .mobileconfig file authored elsewhere
+(e.g. exported from Apple Configurator or a third-party tool).
+
+Required: `name`, `payloads` (loaded via `file("...")`), `level`,
+`distribution_method`, `redeploy_on_update`.
+Scope (block): `scope { all_computers = bool; computer_group_ids = [int] }`.
+
+Levels: "User", "System".
+Distribution methods: "Install Automatically", "Make Available in Self
+Service".
+
+Worked example (push a Wi-Fi profile from a .mobileconfig file):
+```hcl
+resource "jamfpro_macos_configuration_profile_plist" "corporate_wifi" {
+  name                = "Corporate Wi-Fi"
+  payloads            = file("../profiles/corporate_wifi.mobileconfig")
+  level               = "System"
+  distribution_method = "Install Automatically"
+  redeploy_on_update  = "Newly Assigned"
+
+  scope {
+    all_computers = true
+  }
+}
+```
+
+---
+
+### jamfpro_macos_configuration_profile_plist_generator
+
+Use this when the user describes the configuration in plain English (e.g.
+"set up a Wi-Fi profile for SSID Corp with WPA2 Enterprise"), and the
+provider should generate the plist from structured args. The provider
+handles plist serialization on the user's behalf.
+
+Required: `name`, `level`, `distribution_method`, plus a `payloads` block
+that holds one or more typed payload sub-blocks (`payload_wifi`,
+`payload_dns`, `payload_certificate`, etc.).
+
+Worked example (Wi-Fi for SSID "Corp" with WPA2 Enterprise):
+```hcl
+resource "jamfpro_macos_configuration_profile_plist_generator" "corp_wifi" {
+  name                = "Corp Wi-Fi (generated)"
+  level               = "System"
+  distribution_method = "Install Automatically"
+  redeploy_on_update  = "Newly Assigned"
+
+  payloads {
+    payload_wifi {
+      ssid                 = "Corp"
+      hidden_network       = false
+      auto_join            = true
+      encryption_type      = "WPA2 Enterprise"
+      eap_client_config_id = var.corp_eap_config_id
+    }
+  }
+
+  scope {
+    all_computers = true
+  }
+}
+```
+
+Pick the generator variant when the user describes settings; pick the plain
+plist variant when the user has a .mobileconfig file already.
+
+---
+
+### jamfpro_mobile_device_configuration_profile_plist
+
+iOS / iPadOS counterpart to the macOS plist resource.
+
+Required: `name`, `payloads` (loaded via `file(...)`), `level`,
+`distribution_method`, `deployment_method`.
+
+Worked example:
+```hcl
+resource "jamfpro_mobile_device_configuration_profile_plist" "ipad_kiosk" {
+  name                = "iPad Kiosk Mode"
+  payloads            = file("../profiles/ipad_kiosk.mobileconfig")
+  level               = "Device Level"
+  distribution_method = "Install Automatically"
+  deployment_method   = "Install Automatically"
+
+  scope {
+    all_mobile_devices = true
+  }
+}
+```
+
+---
+
+### jamfpro_package
+
+Metadata-only resource. The actual package binary uploads OUT-OF-BAND via
+the JAMF Pro web console (Computers, then Management Settings, then
+Packages, then Upload), or via the JAMF Pro API. Terraform manages only
+the metadata record (filename, category, priority, OS requirements).
+
+Required: `package_name`, `filename`.
+Optional: `category_id`, `priority` (int, lower = higher priority),
+`os_requirements`, `info`, `notes`, `reboot_required` (bool), `fill_user_template`
+(bool), `fill_existing_users` (bool).
+
+Worked example:
+```hcl
+resource "jamfpro_package" "chrome" {
+  package_name    = "Google Chrome"
+  filename        = "GoogleChrome-122.0.6261.94.pkg"
+  category_id     = var.deploy_category_id
+  priority        = 10
+  os_requirements = "13,14"
+  info            = "Google Chrome stable channel"
+  reboot_required = false
+}
+
+# NOTE: Upload the GoogleChrome-122.0.6261.94.pkg binary via the JAMF Pro
+# web console (Computers, Management Settings, Packages) or via the
+# /JSSResource/packages API. Terraform manages only the metadata record.
+```
+
+Always emit the upload-out-of-band NOTE comment near a `jamfpro_package`
+resource so the user knows the binary handling is manual.
+
+---
+
+### jamfpro_computer_extension_attribute
+
+Custom inventory attribute reported back from each managed Mac.
+
+Required: `name`, `data_type`, `input_type`.
+data_type options: "String", "Integer", "Date".
+input_type options: "Script", "Text Field", "Pop-up Menu", "LDAP Mapping".
+Optional: `enabled` (bool), `inventory_display`, `script_contents` (only
+when input_type = "Script"; load via `file(...)`), `pop_up_choices` (list
+of string, only when input_type = "Pop-up Menu").
+
+Worked example (script-driven asset tag attribute):
+```hcl
+resource "jamfpro_computer_extension_attribute" "asset_tag" {
+  name              = "Asset Tag"
+  data_type         = "String"
+  input_type        = "Script"
+  enabled           = true
+  inventory_display = "General"
+  script_contents   = file("../scripts/get_asset_tag.sh")
+}
+```
+
+---
+
+### jamfpro_restricted_software
+
+Block or kill a process on managed Macs. Useful for "no Spotify on work
+Macs" style policies.
+
+Required: `name`, `process_name`.
+Optional: `match_exact_process_name` (bool), `kill_process` (bool),
+`delete_executable` (bool), `display_message` (string),
+`send_notification` (bool), `scope { all_computers, computer_group_ids,
+exclusions { ... } }`.
+
+Worked example (block Spotify, notify the user):
+```hcl
+resource "jamfpro_restricted_software" "no_spotify" {
+  name                     = "No Spotify on work Macs"
+  process_name             = "Spotify"
+  match_exact_process_name = true
+  kill_process             = true
+  delete_executable        = false
+  send_notification        = true
+  display_message          = "Spotify is not permitted on company-managed Macs. Please uninstall it."
+
+  scope {
+    all_computers = true
+    exclusions {
+      computer_group_ids = [jamfpro_smart_computer_group_v2.exec_exempt.id]
+    }
+  }
+}
+```
+
+---
+
+### jamfpro_computer_prestage_enrollment
+
+Automated Device Enrollment (DEP) prestage. Complex schema; only emit when
+the user explicitly asks for prestage / DEP / "auto-enroll new devices".
+
+Required: `display_name`, `mandatory` (bool), `mdm_removable` (bool),
+`support_phone_number`, `support_email_address`, `department`,
+`default_prestage` (bool), `enrollment_site_id` (int),
+`keep_existing_site_membership` (bool), `keep_existing_location_information`
+(bool), `require_authentication` (bool), `authentication_prompt`,
+`prevent_activation_lock` (bool), `enable_device_based_activation_lock`
+(bool), `device_enrollment_program_instance_id` (int),
+`auto_advance_setup` (bool), `install_profiles_during_setup` (bool),
+`prestage_installed_profile_ids` (list int), `custom_package_ids` (list int),
+`enrollment_customization_id` (int), `language`, `region`,
+`anchor_certificates` (list string).
+
+Skip-setup-items (block): `skip_setup_items { apple_id, screen_time, siri,
+diagnostics, ... }` flags one Setup Assistant pane each.
+
+Location information (block) and purchasing information (block) carry the
+device-record metadata applied at enrollment.
+
+Worked example (auto-enroll sales devices, US English, skip the optional
+setup items):
+```hcl
+resource "jamfpro_computer_prestage_enrollment" "sales_prestage" {
+  display_name                          = "Sales Auto-Enrollment"
+  mandatory                             = true
+  mdm_removable                         = false
+  support_phone_number                  = "+1-555-555-1234"
+  support_email_address                 = "it-support@example.com"
+  department                            = "Sales"
+  default_prestage                      = false
+  enrollment_site_id                    = var.sales_site_id
+  keep_existing_site_membership         = false
+  keep_existing_location_information    = false
+  require_authentication                = false
+  authentication_prompt                 = ""
+  prevent_activation_lock               = true
+  enable_device_based_activation_lock   = false
+  device_enrollment_program_instance_id = var.dep_instance_id
+  auto_advance_setup                    = false
+  install_profiles_during_setup         = true
+  prestage_installed_profile_ids        = [jamfpro_macos_configuration_profile_plist.corporate_wifi.id]
+  custom_package_ids                    = [jamfpro_package.chrome.id]
+  enrollment_customization_id           = 0
+  language                              = "en"
+  region                                = "US"
+  anchor_certificates                   = []
+
+  skip_setup_items {
+    apple_id        = true
+    screen_time     = true
+    siri            = false
+    diagnostics     = true
+    icloud_storage  = true
+    privacy         = false
+    biometric       = false
+    payment         = true
+    registration    = true
+    tos             = false
+    android_migration = true
+  }
+
+  location_information {
+    username      = ""
+    realname      = ""
+    email_address = ""
+    phone_number  = ""
+    department    = "Sales"
+    building      = ""
+    room          = ""
+    position      = ""
+  }
+
+  purchasing_information {
+    leased            = false
+    purchased         = true
+    apple_care_id     = ""
+    po_number         = ""
+    vendor            = "Apple"
+    purchase_price    = ""
+    life_expectancy   = 36
+    purchasing_account = ""
+    purchasing_contact = ""
+    lease_date        = "1970-01-01"
+    po_date           = "1970-01-01"
+    warranty_date     = "1970-01-01"
+  }
+}
+```
+
+Common mistakes:
+- Omitting `device_enrollment_program_instance_id`. The apply fails because
+  JAMF cannot bind a prestage to a DEP instance that does not exist; surface
+  this id from the JAMF Pro web console, do not invent it.
+- Hardcoding `enrollment_site_id = 1`. Use `var.sales_site_id` (or similar)
+  and look the id up from the JAMF Pro UI or live context.
+
+---
+
+### Capabilities NOT supported by any JAMF Terraform provider
+
+These cannot be expressed in jamfpro_* resources. Configure via the JAMF
+Pro web console at `<fqdn>/...`. Match the SCIM punt at SECTION F.5 for
+tone: emit the closest supported resource (often nothing), plus a `# NOTE`
+comment pointing at the console path.
+
+| Capability | Why Terraform can't do it | Action |
+|---|---|---|
+| Live MDM commands (lock, wipe, restart, shutdown) | These are imperative, per-device API calls; not declarative resources | NOTE comment pointing to Computers, then Management, in the JAMF UI |
+| Push certificate / APNs certificate management | Cert lifecycle is handled by the JAMF Pro / Apple Push portal | NOTE comment pointing to Settings, then Global, then Push Certificates |
+| Custom branding / Self Service logos | UI-only knobs in the Self Service settings panel | NOTE comment pointing to Settings, then Self Service, then Branding |
+| Self Service categories (creating new categories themselves) | Categories created via UI; only references by id are Terraformable | NOTE comment; reference `var.<name>_category_id` |
+| Many other jamfpro_* resources beyond this section's 12 | Out of scope for the canonical surface (departments, buildings, sites, network_segments, ldap_server, sso_settings, app_installer, mac_application, dock_item, printer, disk_encryption_configuration, webhook, api_role, api_integration, account, account_group, jamf_connect, jamf_protect, volume_purchasing_locations, plus others) | Only emit on explicit user request; default is to NOTE-punt |
+
+NOTE comment template for unsupported capabilities (mirror the SCIM template):
+```hcl
+# NOTE: <capability> for this resource cannot be configured via any JAMF
+# Terraform provider. Configure it in the JAMF Pro web console:
+# https://<jamfpro_instance_fqdn>/<exact navigation path>.
+```
+
+Examples of canonical NOTE placements:
+- For "lock my CEO's MacBook": emit ONLY a NOTE comment, no resource. The
+  message body explains that lock is an imperative API call.
+- For "upload our APNs cert": emit ONLY a NOTE comment.
+- For "create a Self Service category called Productivity": emit ONLY a
+  NOTE comment, plus declare a `var.productivity_category_id` placeholder
+  so downstream policies can reference the id once the user creates the
+  category in the UI.
+
+---
+
 ## SECTION C — Lambda Rules
 
 ### Handler signature (always use exactly this):
@@ -832,7 +1566,7 @@ For API Gateway triggers: parse event.get("body") and return proper statusCode +
 
 ---
 
-## SECTION D — Completeness Rules
+## SECTION H — Completeness Rules
 
 - NEVER generate placeholder comments like "# add your logic here" or "# implement this"
 - Generate functional, complete code for every resource and function
@@ -1257,8 +1991,9 @@ OUTPUT MODE: {output_mode}
 {multi_resource_section}
 {aws_resource_section}
 {gcp_resource_section}
+{jamf_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}
 {repo_context_section}
-Return only the JSON object. Always include the seven required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements) and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
+Return only the JSON object. Always include the eight required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements) and the "terraform_tfvars_example" key. Include the optional "optional_tf" key only when the required outputs cannot fully satisfy the intent."""
