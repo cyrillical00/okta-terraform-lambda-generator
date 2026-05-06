@@ -12,6 +12,107 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Maintenance mode short-circuit ────────────────────────────────────────
+# Renders a friendly branded page and stops the app before any heavy module
+# imports run. Triggered by MAINTENANCE_MODE=1 (or "true"/"yes"/"on") in
+# Streamlit secrets or environment. Optional override copy via
+# MAINTENANCE_MESSAGE; optional ETA line via MAINTENANCE_ETA.
+def _maint_lookup(key: str) -> str:
+    try:
+        v = st.secrets.get(key, "")
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return os.getenv(key, "") or ""
+
+_maint_flag = _maint_lookup("MAINTENANCE_MODE").strip().lower()
+if _maint_flag in ("1", "true", "yes", "on"):
+    _maint_msg = _maint_lookup("MAINTENANCE_MESSAGE").strip() or \
+        "We're making the Okta TF Tool better. Back online shortly."
+    _maint_eta = _maint_lookup("MAINTENANCE_ETA").strip()
+    _eta_block = (
+        f'<div class="tftool-maint-eta">Back online: {_maint_eta}</div>'
+        if _maint_eta else ""
+    )
+    st.markdown(
+        f"""
+<!-- MAINTENANCE MODE ON -->
+<style>
+  .tftool-maint {{
+    font-family: 'IBM Plex Mono', 'JetBrains Mono', Consolas, monospace;
+    background: #0A0E14;
+    color: #E6EDF3;
+    border: 1px solid #232A36;
+    border-radius: 6px;
+    padding: 2.5rem 2rem;
+    margin: 4rem auto;
+    max-width: 640px;
+  }}
+  .tftool-maint h1 {{
+    color: #4FC3F7;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0 0 1.5rem 0;
+  }}
+  .tftool-maint h2 {{
+    color: #E6EDF3;
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 0.75rem 0;
+  }}
+  .tftool-maint p {{
+    color: #7A8694;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 0 0 1rem 0;
+  }}
+  .tftool-maint-eta {{
+    display: inline-block;
+    background: #11161D;
+    border: 1px solid #232A36;
+    color: #4FC3F7;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    margin-top: 0.5rem;
+  }}
+  .tftool-maint a {{
+    color: #4FC3F7;
+    text-decoration: none;
+    border-bottom: 1px solid #232A36;
+  }}
+  .tftool-maint a:hover {{
+    color: #7FD7FF;
+    border-bottom-color: #4FC3F7;
+  }}
+  .tftool-maint-foot {{
+    color: #7A8694;
+    font-size: 12px;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #232A36;
+  }}
+</style>
+<div class="tftool-maint">
+  <h1>Okta TF + Lambda Generator</h1>
+  <h2>Down for maintenance</h2>
+  <p>{_maint_msg}</p>
+  {_eta_block}
+  <div class="tftool-maint-foot">
+    Live status: <a href="https://status.olegstrutsovski.com">status.olegstrutsovski.com</a><br>
+    Need it now? Use the CLI or HTTP API. See the
+    <a href="https://github.com/cyrillical00/okta-terraform-lambda-generator">README</a>.
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+# ──────────────────────────────────────────────────────────────────────────
+
 from generator.parser import parse_intent, validate_intent
 from generator.terraform_gen import generate_all, GenerationError
 from generator.lambda_gen import validate_lambda_python

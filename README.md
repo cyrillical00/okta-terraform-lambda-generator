@@ -2,7 +2,7 @@
 
 A Streamlit app that turns plain-English infrastructure descriptions into deployable Terraform HCL across four providers. Output covers Okta resources, AWS Lambda glue (Okta event hooks calling Lambdas, scheduled sweeps), GCP Cloud Functions / Cloud Run / Pub/Sub, and JAMF Pro device-management resources (policies, smart groups, scripts, configuration profiles). One click pushes the generated files to GitHub; another saves a ZIP locally.
 
-Live at https://okta-terraform-lambda-generator.streamlit.app.
+Live at https://okta-terraform-lambda-generator.streamlit.app. Status: https://status.olegstrutsovski.com.
 
 ## What it generates
 

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Live status for the Okta TF + Lambda Generator." />
+  <title>TF Tool Status</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:        #0A0E14;
+      --surface:   #11161D;
+      --surface-2: #161C25;
+      --border:    #232A36;
+      --text:      #E6EDF3;
+      --muted:     #7A8694;
+      --accent:    #4FC3F7;
+      --accent-2:  #7FD7FF;
+      --green:     #3FB950;
+      --amber:     #D29922;
+      --red:       #F85149;
+      --font:      'IBM Plex Mono', 'JetBrains Mono', Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 4rem 1.25rem 6rem;
+    }
+    header.brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 2rem;
+    }
+    header.brand .name {
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    header.brand .tag {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .hero {
+      padding: 2rem 1.5rem;
+    }
+    .hero .row {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: var(--muted);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 18%, transparent);
+      transition: background 200ms ease, box-shadow 200ms ease;
+    }
+    .dot.online      { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent); }
+    .dot.sleeping    { background: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 22%, transparent); }
+    .dot.maintenance { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+    .dot.offline     { background: var(--red); box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 22%, transparent); }
+    .label {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 0.75rem;
+    }
+    .actions {
+      margin-top: 1.5rem;
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.55rem 1rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+      font-weight: 600;
+    }
+    .btn.primary:hover {
+      background: var(--accent-2);
+      border-color: var(--accent-2);
+      color: var(--bg);
+    }
+    .btn.disabled {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    h2 {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin: 2rem 0 0.75rem 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 0.75rem;
+    }
+    .channel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.85rem 1rem;
+    }
+    .channel .k {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 0.35rem;
+    }
+    .channel code {
+      color: var(--text);
+      font-size: 12.5px;
+      word-break: break-all;
+    }
+    .channel a {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .channel a:hover { color: var(--accent-2); border-bottom-color: var(--accent); }
+    footer {
+      margin-top: 3rem;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+    }
+    @media (max-width: 640px) {
+      .wrap { padding: 2rem 1rem 4rem; }
+      .hero { padding: 1.5rem 1.25rem; }
+      .label { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="brand">
+      <span class="name">Okta TF + Lambda Generator</span>
+      <span class="tag">live status</span>
+    </header>
+
+    <section class="card hero" aria-live="polite">
+      <div class="row">
+        <span id="dot" class="dot" aria-hidden="true"></span>
+        <span id="label" class="label">Checking, one moment.</span>
+      </div>
+      <div id="detail" class="meta">Last checked: never</div>
+      <div class="actions">
+        <a id="primary" class="btn primary disabled" href="https://okta-terraform-lambda-generator.streamlit.app">Open the app</a>
+        <a class="btn" href="https://github.com/cyrillical00/okta-terraform-lambda-generator">README</a>
+      </div>
+    </section>
+
+    <h2>Fallback channels</h2>
+    <div class="grid">
+      <div class="channel">
+        <div class="k">CLI</div>
+        <code>python cli.py "&lt;your prompt&gt;"</code>
+      </div>
+      <div class="channel">
+        <div class="k">HTTP API</div>
+        <code><a href="/api/health">/api/health</a></code>
+      </div>
+      <div class="channel">
+        <div class="k">Repo</div>
+        <code><a href="https://github.com/cyrillical00/okta-terraform-lambda-generator">github.com/cyrillical00/okta-terraform-lambda-generator</a></code>
+      </div>
+      <div class="channel">
+        <div class="k">Owner</div>
+        <code>cyrillical@gmail.com</code>
+      </div>
+    </div>
+
+    <footer>
+      This page polls the app every 15 seconds. Hosted on Vercel; the app itself runs on Streamlit Community Cloud.
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      var APP_URL  = 'https://okta-terraform-lambda-generator.streamlit.app';
+      var HEALTH   = APP_URL + '/_stcore/health';
+      var POLL_MS  = 15000;
+      var SLEEP_MS = 60000;
+      var TIMEOUT  = 5000;
+
+      var dotEl    = document.getElementById('dot');
+      var labelEl  = document.getElementById('label');
+      var detailEl = document.getElementById('detail');
+      var primaryEl = document.getElementById('primary');
+
+      var firstFailureAt = null;
+      var pollHandle = null;
+
+      function setStatus(state) {
+        dotEl.className = 'dot ' + state;
+        var labels = {
+          online:      'Online',
+          sleeping:    'Sleeping (warming up)',
+          maintenance: 'Down for maintenance',
+          offline:     'Offline'
+        };
+        labelEl.textContent = labels[state] || 'Unknown';
+        detailEl.textContent = 'Last checked: ' + new Date().toLocaleTimeString();
+        primaryEl.classList.remove('disabled');
+        if (state === 'online') {
+          primaryEl.textContent = 'Open the app';
+        } else if (state === 'sleeping') {
+          primaryEl.textContent = 'Wake the app (loads in 30 to 60 seconds)';
+        } else if (state === 'maintenance') {
+          primaryEl.textContent = 'Maintenance in progress';
+          primaryEl.classList.add('disabled');
+        } else {
+          primaryEl.textContent = 'App offline';
+          primaryEl.classList.add('disabled');
+        }
+      }
+
+      function fetchWithTimeout(url, init, ms) {
+        if (typeof AbortController === 'undefined') {
+          return fetch(url, init);
+        }
+        var ctrl = new AbortController();
+        var t = setTimeout(function () { ctrl.abort(); }, ms);
+        var opts = Object.assign({}, init || {}, { signal: ctrl.signal });
+        return fetch(url, opts).finally(function () { clearTimeout(t); });
+      }
+
+      async function checkOnce() {
+        try {
+          var resp;
+          try {
+            resp = await fetchWithTimeout(HEALTH, { mode: 'cors', cache: 'no-store' }, TIMEOUT);
+          } catch (e) {
+            resp = await fetchWithTimeout(HEALTH, { mode: 'no-cors', cache: 'no-store' }, TIMEOUT);
+          }
+          var reachable = (resp && (resp.type === 'opaque' || resp.ok));
+          if (!reachable) throw new Error('not-reachable');
+
+          // Optional maintenance probe via cors fetch of /. If CORS blocks
+          // it we silently skip and stay on Online; the in-app banner is
+          // the canonical source of truth for maintenance state.
+          var maintenance = false;
+          try {
+            var rootResp = await fetchWithTimeout(APP_URL + '/', { mode: 'cors', cache: 'no-store' }, TIMEOUT);
+            if (rootResp && rootResp.ok) {
+              var txt = await rootResp.text();
+              if (txt.indexOf('MAINTENANCE MODE ON') !== -1) maintenance = true;
+            }
+          } catch (e) { /* CORS blocked or network blip; ignore */ }
+
+          firstFailureAt = null;
+          setStatus(maintenance ? 'maintenance' : 'online');
+        } catch (e) {
+          if (firstFailureAt === null) firstFailureAt = Date.now();
+          var elapsed = Date.now() - firstFailureAt;
+          setStatus(elapsed < SLEEP_MS ? 'sleeping' : 'offline');
+        }
+      }
+
+      function startPolling() {
+        if (pollHandle) return;
+        checkOnce();
+        pollHandle = setInterval(checkOnce, POLL_MS);
+      }
+      function stopPolling() {
+        if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+      }
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) stopPolling(); else startPolling();
+      });
+      startPolling();
+    })();
+  </script>
+</body>
+</html>
