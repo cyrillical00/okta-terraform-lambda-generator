@@ -92,15 +92,38 @@ Secrets live in Streamlit Cloud's secret manager (encrypted by their underlying 
 
 Admins see a sidebar warning when any tracked secret is older than its target rotation cadence:
 
-| Secret | Target cadence |
-|---|---|
-| `ANTHROPIC_API_KEY` | 90 days |
-| `GITHUB_TOKEN` | 90 days |
-| `OKTA_API_TOKEN` | 180 days |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 90 days |
-| `GCP_SA_JSON` | 180 days |
+| Secret | Target cadence | Surface |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | 90 days | Streamlit, CLI, HTTP, Slack, JIRA |
+| `GITHUB_TOKEN` | 90 days | Streamlit, CLI, HTTP, Slack, JIRA |
+| `OKTA_API_TOKEN` | 180 days | Streamlit, CLI |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 90 days | Streamlit, CLI |
+| `GCP_SA_JSON` | 180 days | Streamlit, CLI |
+| `TFGEN_API_KEY` | 90 days | HTTP API shared secret |
+| `SLACK_SIGNING_SECRET` | 180 days | Slack slash command verification |
+| `JIRA_WEBHOOK_SECRET` | 180 days | JIRA webhook HMAC verification |
+| `JIRA_API_TOKEN` | 90 days | JIRA REST callback (paired with `JIRA_USER_EMAIL`) |
 
 Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app sidebar widget, or directly in GitHub).
+
+### Rolling the headless-surface secrets
+
+- **`TFGEN_API_KEY`**: generate a new random string (`openssl rand -hex 32`), update the Vercel env var, redeploy. Notify every script / Slack/JIRA bot that holds the old value. Old key stops working the moment the new value is bound; rotate during a low-traffic window.
+- **`SLACK_SIGNING_SECRET`**: rotate from the Slack app's Basic Information page in the Slack admin console. Slack supports a 24-hour overlap where both secrets verify; copy the new secret to Vercel before the overlap ends.
+- **`JIRA_WEBHOOK_SECRET`**: shared secret you control end-to-end. Update the JIRA Automation rule (or front proxy) and the Vercel env var in the same window. Old signatures fail validation immediately, so set both sides simultaneously.
+- **`JIRA_API_TOKEN`**: regenerate at id.atlassian.com → Security → API tokens. Old tokens are revoked instantly; expect a brief callback failure if the JIRA bot account's old token was in use mid-flight.
+
+## Headless surfaces (CLI, HTTP, Slack, JIRA)
+
+Phase 10 Track 2 added four entry points that share the same `core.service.generate()` pipeline and the same `audit.py` + `cost.py` storage as the Streamlit app. Differences worth flagging for an IT review:
+
+- **No Google OAuth gate**: the Streamlit `[auth]` block does not apply to CLI / HTTP / Slack / JIRA. Each surface has its own auth (env var, shared header secret, signing secret, HMAC) summarized in the README. Treat each surface as a separate authorization plane that needs its own access review.
+- **PII redaction is preserved**: every surface calls `redact.redact()` before the prompt reaches Anthropic. Same patterns as the Streamlit app; same audit-log entries with per-category counts.
+- **Quota model is a single shared cap, not per-actor**: HTTP / Slack / JIRA all share `TFGEN_HTTP_DAILY_QUOTA_USD` (default $5/day, summed across all keys / Slack users / JIRA actors). Per-key or per-Slack-user quotas require a `[api_keys]` extension to `roles.toml` and are explicitly deferred until traffic justifies it.
+- **Audit identifier shape**: HTTP uses `sha256(api_key)[:16]`, Slack uses `sha256(slack_user_id)[:16]`, JIRA uses `sha256(creator_email)[:16]`. Different hash inputs, same on-disk JSONL files, so per-actor history is queryable by hash. The hash itself never round-trips back to the underlying identifier from the log alone.
+- **GitHub push uses the server's `GITHUB_TOKEN`, not the caller's**: callers pushing through `/api/push` or via the Slack/JIRA flow share the bot's identity. If a customer needs caller-supplied tokens, that's a `PushRequest.github_token` field gated behind a separate role; not in this build.
+- **No callback secrets in transit to Anthropic**: the JIRA REST credentials and Slack `response_url` strings are never included in the prompt sent to Claude. They live in env vars / the inbound payload only.
+- **Slack and JIRA push branches are predictable**: Slack pushes to `tfgen-slack`, JIRA pushes to `jira/<issue_key>`. A reviewer can carve a branch-protection rule that requires PR review on either prefix before merge.
 
 ## Additions since Thread A
 

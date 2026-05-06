@@ -20,12 +20,24 @@ _LOCAL_PATH = ".streamlit/secret_rotation.json"
 # Target rotation cadence per secret name (days). Treat anything older than
 # this as stale and warn admins.
 TARGET_CADENCE_DAYS = {
+    # Streamlit + CLI + every headless surface
     "ANTHROPIC_API_KEY": 90,
     "GITHUB_TOKEN": 90,
+    # Streamlit + CLI live-context provider creds
     "OKTA_API_TOKEN": 180,
     "AWS_ACCESS_KEY_ID": 90,
     "AWS_SECRET_ACCESS_KEY": 90,
     "GCP_SA_JSON": 180,
+    # Phase 10 Track 2 headless surfaces (HTTP, Slack, JIRA).
+    # Slack signing secrets and JIRA webhook secrets are typically
+    # longer-lived because rotation requires touching the third party
+    # (Slack admin console, JIRA Automation rule). API tokens that the
+    # tool fully owns rotate on the same 90-day cadence as the
+    # Anthropic key.
+    "TFGEN_API_KEY": 90,
+    "SLACK_SIGNING_SECRET": 180,
+    "JIRA_WEBHOOK_SECRET": 180,
+    "JIRA_API_TOKEN": 90,
 }
 
 _github_token: str = ""

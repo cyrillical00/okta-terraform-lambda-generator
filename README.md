@@ -80,6 +80,76 @@ streamlit run app.py
 
 The Examples library in the sidebar ships pre-seeded prompts across every supported resource for one-click loading.
 
+## Other ways to use this
+
+The Streamlit UI is the primary surface but the same generator runs behind four other entry points. All of them call `core.service.generate()` directly, so a fix to `generator/prompts.py` propagates to every interface without a fork.
+
+### CLI
+
+`cli.py` wraps the generator for shell pipelines and CI jobs. No Streamlit, no Google OAuth, just `ANTHROPIC_API_KEY` and an optional `GITHUB_TOKEN` for `--push`.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python cli.py "Create a SAML app for Salesforce"
+python cli.py --stdin --output-dir ./out < prompt.txt
+python cli.py "..." --output-mode "Both" --no-refine
+python cli.py "..." --push owner/repo --branch feature/auto-tfgen
+python cli.py "..." --json   # emit JSON to stdout, no files written
+```
+
+Exit codes: `0` success, `1` config error, `2` generation error, `3` push failed.
+
+### HTTP API
+
+A FastAPI app at `api/index.py` exposes three endpoints under `/api/*`. Designed to deploy to Vercel Python serverless with Fluid Compute (lifts the 10-second wall clock so the 3-pass refine completes synchronously). `vercel.json` ships with the right runtime, memory, and 800-second `maxDuration`.
+
+```
+GET  /api/health      no auth
+POST /api/generate    X-API-Key required
+POST /api/push        X-API-Key required
+```
+
+Required env vars on the deploy: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GITHUB_REPO`, `TFGEN_API_KEY` (the shared secret callers send in `X-API-Key`). Optional: `ANTHROPIC_MODEL`, `TFGEN_HTTP_DAILY_QUOTA_USD` (default $5/day across all callers; per-key quotas are deferred until traffic justifies a `[api_keys]` table).
+
+Example:
+
+```bash
+curl -H "X-API-Key: $TFGEN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"prompt": "Create an Engineering group", "output_mode": "Both"}' \
+     https://your-deploy.vercel.app/api/generate
+```
+
+Response: `{"intent": {...}, "files": {"terraform/okta.tf": "...", ...}, "validation_result": {...}, "cost_usd": 0.07, "cost_remaining_usd": 4.93}`.
+
+### Slack `/tfgen`
+
+`api/slack.py` registers a slash-command endpoint on the same FastAPI app. Slack signs every request with `X-Slack-Signature` over body + timestamp; the handler verifies and rejects replays older than 5 minutes.
+
+Flow: user types `/tfgen create an Engineering group` in any Slack channel; handler returns an immediate ephemeral "Working on it" within Slack's 3-second deadline; a FastAPI BackgroundTasks worker runs the generation, pushes to `SLACK_DEFAULT_REPO` on branch `tfgen-slack`, and posts the result (commit URL + a fenced `okta.tf` preview) back to the channel via the slash-command's `response_url`.
+
+Required env vars: `SLACK_SIGNING_SECRET`, `SLACK_DEFAULT_REPO`. The Slack-app install spec lives in `integrations/slack-app-manifest.yaml` so any future workspace install reuses the same scopes (`commands`, `chat:write`) and slash-command shape.
+
+### JIRA webhook
+
+`api/jira.py` accepts JIRA Cloud webhook payloads at `POST /api/jira/webhook`. Verifies an HMAC-SHA256 signature in `X-Hub-Signature` against `JIRA_WEBHOOK_SECRET` (set via JIRA Automation rules or a front proxy), filters to issues that carry the `tfgen` label, and treats `summary + description` as the prompt. Description can be plaintext or Atlassian Document Format JSON; an ADF walker extracts the text.
+
+After generation, pushes to `JIRA_DEFAULT_REPO` on branch `jira/<issue_key>` and posts a JIRA comment via REST v3 with the commit URL and a fenced `okta.tf` preview. HTTP Basic auth on the callback uses `JIRA_USER_EMAIL:JIRA_API_TOKEN` per JIRA Cloud's auth model. Optional auto-transition (e.g. to "In Review") gated behind `JIRA_AUTO_TRANSITION=1` and `JIRA_TRANSITION_ID`; off by default since transition IDs are project-specific.
+
+JIRA's webhook delivery is fire-and-forget with a 30-second window for a 2xx response; the handler completes the full generate within that window thanks to Vercel Fluid Compute, no background-task gymnastics.
+
+### Auth model summary
+
+| Surface | Auth |
+|---|---|
+| Streamlit app | Google OAuth + RBAC via `roles.toml` |
+| CLI | `ANTHROPIC_API_KEY` env var (no service auth) |
+| HTTP API | `X-API-Key` header (single shared `TFGEN_API_KEY`) |
+| Slack | Slack signing secret + workspace verification |
+| JIRA | HMAC-SHA256 webhook signature + Basic-auth callback |
+
+`audit.py` and `cost.py` accept any actor identifier; CLI uses the email if set, HTTP uses `sha256(api_key)[:16]`, Slack uses `sha256(slack_user_id)[:16]`, JIRA uses `sha256(creator_email)[:16]`. Same on-disk JSONL/JSON files, different hash inputs, one audit trail.
+
 ## Provider versions
 
 The generated HCL pins:
