@@ -179,24 +179,36 @@ body, [data-testid="stAppViewContainer"], .main {
   max-width: 1280px;
 }
 
-/* Hide Streamlit's default header chrome (the "Manage app" / hamburger
-   bar) but PRESERVE the collapsed-sidebar expand button. That button
-   lives inside stHeader and is the only way to re-open the sidebar
-   after collapsing it; the previous `> *` rule killed it and left
-   users stuck with no nav. testids cover Streamlit 1.40+ (stSidebar
-   CollapsedControl) and the legacy 1.30-era name (collapsedControl). */
+/* Hide Streamlit's default header chrome (deploy button, status widget,
+   hamburger menu) without breaking the collapsed-sidebar expand button.
+
+   In Streamlit 1.55+, the reopen control is `stExpandSidebarButton`
+   sitting two levels inside `stToolbar` (the only direct child of
+   `stHeader`). The previous `> *` rule nuked the toolbar wrapper and
+   took the expand button down with it, leaving collapsed sidebars
+   permanently hidden. The earlier patch matched legacy testids
+   (stSidebarCollapsedControl / collapsedControl) that no longer exist.
+
+   This block instead hides the specific right-side chrome we don't
+   want, and pins the expand button to a fixed top-left position so it
+   has a real clickable area despite the `height: 0` clip on stHeader. */
 [data-testid="stHeader"] {
   background: transparent !important;
   height: 0 !important;
 }
-[data-testid="stHeader"] > *:not([data-testid="stSidebarCollapsedControl"]):not([data-testid="collapsedControl"]) {
+[data-testid="stHeader"] [data-testid="stHeaderActionElements"],
+[data-testid="stHeader"] [data-testid="stStatusWidget"],
+[data-testid="stHeader"] [data-testid="stMainMenu"] {
   display: none !important;
 }
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"] {
-  display: block !important;
-  visibility: visible !important;
+[data-testid="stExpandSidebarButton"] {
+  position: fixed !important;
+  top: 0.5rem !important;
+  left: 0.75rem !important;
   z-index: 999 !important;
+  display: inline-flex !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
 }
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
