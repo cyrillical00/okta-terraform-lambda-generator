@@ -1365,8 +1365,12 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             issues.append("terraform_jamf_hcl missing required source `deploymenttheory/jamfpro`")
         if "yohan460" in jamf_hcl.lower():
             issues.append("terraform_jamf_hcl references rejected provider yohan460/jamf")
-        if "JAMF APPLY RUNBOOK" not in jamf_hcl and "parallelism=1" not in jamf_hcl:
-            issues.append("terraform_jamf_hcl missing apply runbook comment block (parallelism=1, load_balancer_lock)")
+        if "JAMF APPLY RUNBOOK" not in jamf_hcl:
+            issues.append("terraform_jamf_hcl missing `JAMF APPLY RUNBOOK` comment block")
+        if "parallelism=1" not in jamf_hcl:
+            issues.append("terraform_jamf_hcl missing required runbook hint `parallelism=1`")
+        if "jamfpro_load_balancer_lock = true" not in jamf_hcl:
+            issues.append("terraform_jamf_hcl missing required `jamfpro_load_balancer_lock = true` for Cloud safety")
         # Detect v1 smart group resource (legacy)
         if re.search(r'resource\s+"jamfpro_smart_computer_group"\s', jamf_hcl):
             issues.append("terraform_jamf_hcl uses legacy jamfpro_smart_computer_group (v1); use jamfpro_smart_computer_group_v2")
@@ -1583,7 +1587,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         outputs = outputs_by_id.get(tid)
         has_hcl = outputs and any(
             (outputs.get(k) or "").strip()
-            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl")
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl")
         )
         if not has_hcl:
             r["terraform_validate_pass"] = None

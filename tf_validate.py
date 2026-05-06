@@ -44,6 +44,14 @@ VAR_DEFAULTS: dict[str, str] = {
     "webhook_endpoint":         '"https://example.com/hook"',
     "aws_region":               '"us-west-2"',
     "lambda_function_name":     '"handler"',
+    # JAMF Pro (Cloud) placeholders. Validate sweep does not auth, so any
+    # syntactically valid value works. The FQDN must look like a Cloud
+    # tenant (jamfcloud.com) so the load_balancer_lock contract reads as
+    # semantically correct in generated HCL.
+    "jamfpro_instance_fqdn":    '"validate.jamfcloud.com"',
+    "jamfpro_client_id":        '"placeholder-client-id-for-validate-only"',
+    "jamfpro_client_secret":    '"placeholder-client-secret-for-validate-only"',
+    "jamfpro_auth_method":      '"oauth2"',
 }
 
 
@@ -94,23 +102,28 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     okta = outputs.get("terraform_okta_hcl", "") or ""
     lam = outputs.get("terraform_lambda_hcl", "") or ""
     gcp = outputs.get("terraform_gcp_hcl", "") or ""
+    jamf = outputs.get("terraform_jamf_hcl", "") or ""
     if okta.strip() and lam.strip():
         okta, lam = dedupe_variable_blocks(okta, lam)
     if okta.strip() and gcp.strip():
         okta, gcp = dedupe_variable_blocks(okta, gcp)
+    if okta.strip() and jamf.strip():
+        okta, jamf = dedupe_variable_blocks(okta, jamf)
     if okta.strip():
         (workdir / "okta.tf").write_text(okta, encoding="utf-8", newline="\n")
     if lam.strip():
         (workdir / "lambda.tf").write_text(lam, encoding="utf-8", newline="\n")
     if gcp.strip():
         (workdir / "gcp.tf").write_text(gcp, encoding="utf-8", newline="\n")
-    types = parse_var_types(okta + "\n" + lam + "\n" + gcp)
+    if jamf.strip():
+        (workdir / "jamf.tf").write_text(jamf, encoding="utf-8", newline="\n")
+    types = parse_var_types(okta + "\n" + lam + "\n" + gcp + "\n" + jamf)
     if types:
         lines = [f"{name} = {default_for(name, t)}" for name, t in sorted(types.items())]
         (workdir / "terraform.tfvars").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     # filebase64sha256("path") is evaluated at validate time. Touch any
     # referenced relative paths so validate does not fail on missing files.
-    full_hcl = okta + "\n" + lam + "\n" + gcp
+    full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf
     for m in re.finditer(r'filebase64sha256\("([^"]+)"\)', full_hcl):
         rel_path = m.group(1)
         target = (workdir / rel_path).resolve()
