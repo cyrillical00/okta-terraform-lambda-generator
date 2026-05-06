@@ -179,12 +179,25 @@ body, [data-testid="stAppViewContainer"], .main {
   max-width: 1280px;
 }
 
-/* Hide Streamlit's default header (the "Manage app" / hamburger bar). */
+/* Hide Streamlit's default header chrome (the "Manage app" / hamburger
+   bar) but PRESERVE the collapsed-sidebar expand button. That button
+   lives inside stHeader and is the only way to re-open the sidebar
+   after collapsing it; the previous `> *` rule killed it and left
+   users stuck with no nav. testids cover Streamlit 1.40+ (stSidebar
+   CollapsedControl) and the legacy 1.30-era name (collapsedControl). */
 [data-testid="stHeader"] {
   background: transparent !important;
   height: 0 !important;
 }
-[data-testid="stHeader"] > * { display: none !important; }
+[data-testid="stHeader"] > *:not([data-testid="stSidebarCollapsedControl"]):not([data-testid="collapsedControl"]) {
+  display: none !important;
+}
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {
+  display: block !important;
+  visibility: visible !important;
+  z-index: 999 !important;
+}
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 
