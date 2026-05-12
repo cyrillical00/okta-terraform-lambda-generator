@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -99,6 +101,16 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     workdir.mkdir(parents=True, exist_ok=True)
     for stale in workdir.glob("*.tf"):
         stale.unlink()
+    # Wipe .terraform/ and .terraform.lock.hcl from prior runs. A stale lockfile
+    # pinning an older provider version is the most common cause of the
+    # "Terraform encountered problems during initialisation" flake when the
+    # provider pin changes between runs (e.g. okta v3 -> v4 transition).
+    stale_dir = workdir / ".terraform"
+    if stale_dir.exists():
+        shutil.rmtree(stale_dir, ignore_errors=True)
+    stale_lock = workdir / ".terraform.lock.hcl"
+    if stale_lock.exists():
+        stale_lock.unlink()
     okta = outputs.get("terraform_okta_hcl", "") or ""
     lam = outputs.get("terraform_lambda_hcl", "") or ""
     gcp = outputs.get("terraform_gcp_hcl", "") or ""
@@ -146,11 +158,22 @@ def write_workspace(tid: str, outputs: dict) -> Path:
 def run_terraform(workdir: Path, env: dict) -> tuple[bool, str]:
     """Run `terraform init -backend=false` then `terraform validate`. Return
     (ok, message). On failure, message is the first error line trimmed to 200
-    chars. On success, message is the canonical 'configuration is valid' line."""
-    init = subprocess.run(
-        ["terraform", "init", "-backend=false", "-no-color", "-input=false"],
-        cwd=workdir, env=env, capture_output=True, text=True, timeout=180,
-    )
+    chars. On success, message is the canonical 'configuration is valid' line.
+
+    Init runs with one automatic retry after a 2s pause to absorb transient
+    network blips and provider-registry timeouts. The retry was observed to
+    close COMP08 / EM01 init flakes that surface ~10% of the time on a fresh
+    plugin cache."""
+    def _run_init():
+        return subprocess.run(
+            ["terraform", "init", "-backend=false", "-no-color", "-input=false"],
+            cwd=workdir, env=env, capture_output=True, text=True, timeout=180,
+        )
+
+    init = _run_init()
+    if init.returncode != 0:
+        time.sleep(2)
+        init = _run_init()
     if init.returncode != 0:
         excerpt = (init.stderr or init.stdout).strip().split("\n")
         first_err = next((l for l in excerpt if "Error" in l or "error" in l), excerpt[0] if excerpt else "init failed")

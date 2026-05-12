@@ -76,10 +76,54 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
         intent = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"Intent parsing failed: Claude returned non-JSON. Raw response: {raw[:500]}") from e
+    # Normalise the primary resource_type for compound requests. The LLM
+    # classifier occasionally routes "Create an app AND an auth server with a
+    # scope" to okta_auth_server_scope (the child) rather than okta_app_oauth
+    # (the app), even though resource_types lists both. Deterministic
+    # post-process to promote the app to primary when both an app type and
+    # an auth-server child appear in resource_types.
+    intent = _normalize_compound_primary(intent)
     # Attach the raw user input so downstream sanitizers (event-hook event-type
     # mapping, etc.) can derive prompt-language signals without re-plumbing
     # signatures through generate_all.
     intent["user_input"] = user_input
+    return intent
+
+
+# Compound-prompt primary normalisation. When the user requests an app PLUS an
+# auth-server child (scope, claim, policy, policy rule), the LLM sometimes
+# returns the child as resource_type even though resource_types correctly
+# lists the app. This pure post-process restores the app as primary so
+# downstream generators dispatch correctly.
+_COMPOUND_APP_TYPES = frozenset({"okta_app_oauth", "okta_app_saml"})
+_COMPOUND_AUTH_CHILD_TYPES = frozenset({
+    "okta_auth_server_scope",
+    "okta_auth_server_claim",
+    "okta_auth_server_policy",
+    "okta_auth_server_policy_rule",
+})
+
+
+def _normalize_compound_primary(intent: dict) -> dict:
+    """Promote the app type to primary when an app + auth-server child both
+    appear in resource_types but the LLM picked the child as primary.
+
+    Pure, idempotent. Mutates and returns the intent dict in place to keep
+    parity with the existing parse_intent flow."""
+    primary = intent.get("resource_type")
+    if primary not in _COMPOUND_AUTH_CHILD_TYPES:
+        return intent
+    types = set(intent.get("resource_types") or [])
+    app_types = types & _COMPOUND_APP_TYPES
+    if not app_types:
+        return intent
+    # Deterministic order: oauth wins over saml if both are present (the
+    # observed compound test case is oauth + scope; saml + scope is not in
+    # the test corpus).
+    if "okta_app_oauth" in app_types:
+        intent["resource_type"] = "okta_app_oauth"
+    else:
+        intent["resource_type"] = "okta_app_saml"
     return intent
 
 

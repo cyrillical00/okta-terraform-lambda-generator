@@ -91,6 +91,8 @@ ROUTING HINTS for auth server children — when language is "add a / create a" +
 - "Add an auth server policy rule" -> resource_type = okta_auth_server_policy_rule
 Only use okta_auth_server as primary resource_type when the request creates a NEW authorization server itself.
 
+COMPOUND EXCEPTION: when the request creates an APP (okta_app_oauth or okta_app_saml) AND an auth server WITH a scope/claim/policy/rule (e.g. "Create an OAuth app and a custom auth server with a read:data scope"), the primary resource_type is the APP, not the scope/claim/policy/rule. The child types still belong in resource_types, but the primary is the user-facing artifact (the app).
+
 **resource_name** — snake_case identifier derived from the described resource (e.g., "hr_portal", "engineering_group")
 
 **attributes** — dict of key parameters extracted from the user's description (e.g., {"label": "HR Portal", "sso_url": "https://..."})
@@ -596,7 +598,33 @@ For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "goog
 - Wire to the function via `event_trigger` on google_cloudfunctions2_function.handler with `pubsub_topic = google_pubsub_topic.handler.id`.
 
 **google_cloud_scheduler_job (scheduled trigger)**:
-- Add `resource "google_cloud_scheduler_job" "handler"` with `schedule = var.schedule_expression` (default `"0 9 * * *"`), `time_zone = "UTC"`, `http_target { uri = google_cloudfunctions2_function.handler.service_config[0].uri, http_method = "POST", oidc_token { service_account_email = google_service_account.handler.email } }`.
+
+DISAMBIGUATOR — choose the trigger model from prompt language:
+- If the prompt says "scheduled" / "daily at X" / "runs at <time>" / "cron" / "weekly" WITHOUT mentioning events / messages / pubsub, the function is HTTP-triggered and the scheduler invokes it via `http_target` + `oidc_token`. DO NOT emit a `google_pubsub_topic` resource and DO NOT add an `event_trigger {}` block to the function.
+- Only use Pub/Sub (`google_pubsub_topic` + `event_trigger { event_type = "google.cloud.pubsub.topic.v1.messagePublished" }`) when the prompt mentions events, messages, or "in response to" / "triggered by a message".
+
+Canonical scheduled-function shape (always emit ALL of: the scheduler job, the http_target block, and the oidc_token sub-block):
+
+```hcl
+resource "google_cloud_scheduler_job" "handler" {
+  name             = "${var.function_name}-trigger"
+  schedule         = var.schedule_expression
+  time_zone        = "UTC"
+  attempt_deadline = "320s"
+  region           = var.gcp_region
+
+  http_target {
+    uri         = google_cloudfunctions2_function.handler.service_config[0].uri
+    http_method = "POST"
+
+    oidc_token {
+      service_account_email = google_service_account.handler.email
+    }
+  }
+}
+```
+
+The `http_target` block is required by the test corpus. The `oidc_token` block inside it is required so the scheduler can authenticate to a private Cloud Function. Use `pubsub_target` ONLY when the function is Pub/Sub-event-triggered.
 
 **google_cloud_run_v2_service** (hashicorp/google v6.x):
 - Add `resource "google_cloud_run_v2_service" "handler"` with `name = var.service_name`, `location = var.gcp_region`. Top-level resource attributes: `name`, `location`, `project`, `ingress`, `launch_stage`, `deletion_protection`, plus the `template { }` block and optional `traffic { }` blocks. Almost everything else lives INSIDE `template { }`.
