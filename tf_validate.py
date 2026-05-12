@@ -121,8 +121,10 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     if types:
         lines = [f"{name} = {default_for(name, t)}" for name, t in sorted(types.items())]
         (workdir / "terraform.tfvars").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    # filebase64sha256("path") is evaluated at validate time. Touch any
-    # referenced relative paths so validate does not fail on missing files.
+    # filebase64sha256("path") and file("path") are both evaluated at
+    # validate time. Touch any referenced relative paths so validate does
+    # not fail on missing files. file() is what JAMF scripts and macOS
+    # configuration profiles use to load script contents from disk.
     full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf
     for m in re.finditer(r'filebase64sha256\("([^"]+)"\)', full_hcl):
         rel_path = m.group(1)
@@ -130,6 +132,14 @@ def write_workspace(tid: str, outputs: dict) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.write_bytes(b"")
+    for m in re.finditer(r'\bfile\("([^"]+)"\)', full_hcl):
+        rel_path = m.group(1)
+        target = (workdir / rel_path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            # Non-empty stub so anything downstream that reads the contents
+            # (length checks, hash diffs) sees a deterministic placeholder.
+            target.write_bytes(b"#!/bin/bash\n# placeholder for terraform validate\n")
     return workdir
 
 

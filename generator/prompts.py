@@ -910,28 +910,44 @@ For resources NOT in the live context list, emit a `resource` block.
 Heaviest JAMF resource. A policy bundles a trigger, a scope, and one or more
 payloads (package install, script run, configuration profile push, etc.).
 
-Required: `name` (string), `enabled` (bool).
-Frequency: `frequency` is one of "Once per computer", "Once per user per
-computer", "Once per user", "Once every day", "Once every week", "Once every
-month", "Ongoing".
+Required (v0.37 schema): `name` (string), `enabled` (bool), plus two
+required nested blocks: `payloads` (min 1) and `scope` (min 1, max 1).
+
+Frequency: `frequency` is OPTIONAL but commonly set to one of "Once per
+computer", "Once per user per computer", "Once per user", "Once every
+day", "Once every week", "Once every month", "Ongoing".
+
 Triggers: at least one of `trigger_checkin`, `trigger_enrollment_complete`,
 `trigger_login`, `trigger_network_state_changed`, `trigger_startup`, OR a
 custom event via `trigger_other = "<custom-event-name>"`. Recurring schedules
 combine `trigger_checkin = true` with a `frequency` of "Once every week" plus
 a `category_id`.
-Scope (block): `scope { all_computers = bool; computer_group_ids = [int];
-computer_ids = [int]; exclusions { computer_group_ids = [int] } }`.
-Payloads (blocks):
-- `package_configuration { packages { id = jamfpro_package.X.id; action =
-  "Install" } }`. Action options: "Install", "Cache", "Install Cached".
-- `script { id = jamfpro_script.X.id; priority = "Before"|"After"; parameter4
-  = "..."; parameter5 = "..."; ... parameter11 = "..." }`. Up to eight named
-  parameter slots (parameter4 through parameter11) pass into the script as
-  positional args $4 through $11.
-- `self_service { use_for_self_service = true; self_service_display_name =
-  "..."; install_button_text = "Install"; self_service_description = "...";
-  force_users_to_view_description = false; feature_on_main_page = false;
-  self_service_category_ids = [int] }`.
+
+Scope block (REQUIRED, min=1, max=1): minimum content is `all_computers =
+true`. Optional: `computer_group_ids = [int]`, `computer_ids = [int]`,
+plus nested `exclusions { computer_group_ids = [int] }`.
+
+Payloads block (REQUIRED, min=1, can repeat). The v0.37 provider replaced
+the old top-level `package_configuration` and `script` blocks with sub-
+blocks INSIDE `payloads {}`:
+
+- `payloads { packages { distribution_point = "default"; package { id =
+  jamfpro_package.X.id; action = "Install" } } }`. The `package` sub-block
+  is itself a list (min=1); `id` is required (number). Action options:
+  "Install", "Cache", "Install Cached".
+- `payloads { scripts { id = jamfpro_script.X.id; priority = "BEFORE"|
+  "AFTER"|"AT_REBOOT"; parameter4 = "..."; ... parameter11 = "..." } }`. Up to eight
+  named parameter slots (parameter4 through parameter11) pass into the
+  script as positional args $4 through $11.
+- Other supported sub-blocks: `account_maintenance`, `disk_encryption`,
+  `dock_items`, `files_processes`, `maintenance`, `override_default_settings`,
+  `printers`, `reboot`, `user_interaction`. Use only on explicit user
+  request; the canonical surface is packages + scripts.
+
+Self Service (optional block, max 1): `self_service { use_for_self_service =
+true; self_service_display_name = "..."; install_button_text = "Install";
+self_service_description = "..."; force_users_to_view_description = false;
+feature_on_main_page = false }`.
 
 Worked example (a) install package on enrollment trigger:
 ```hcl
@@ -948,10 +964,13 @@ resource "jamfpro_policy" "deploy_chrome_on_enroll" {
     all_computers = true
   }
 
-  package_configuration {
+  payloads {
     packages {
-      id     = jamfpro_package.chrome.id
-      action = "Install"
+      distribution_point = "default"
+      package {
+        id     = jamfpro_package.chrome.id
+        action = "Install"
+      }
     }
   }
 }
@@ -969,13 +988,16 @@ resource "jamfpro_policy" "weekly_audit_run" {
   category_id = var.maintenance_category_id
 
   scope {
+    all_computers      = false
     computer_group_ids = [jamfpro_smart_computer_group_v2.production_macs.id]
   }
 
-  script {
-    id        = jamfpro_script.audit.id
-    priority  = "After"
-    parameter4 = "weekly"
+  payloads {
+    scripts {
+      id         = jamfpro_script.audit.id
+      priority   = "AFTER"
+      parameter4 = "weekly"
+    }
   }
 }
 ```
@@ -993,21 +1015,23 @@ resource "jamfpro_policy" "self_service_zoom_install" {
     all_computers = true
   }
 
-  package_configuration {
+  payloads {
     packages {
-      id     = jamfpro_package.zoom.id
-      action = "Install"
+      distribution_point = "default"
+      package {
+        id     = jamfpro_package.zoom.id
+        action = "Install"
+      }
     }
   }
 
   self_service {
-    use_for_self_service             = true
-    self_service_display_name        = "Install Zoom"
-    install_button_text              = "Install"
-    self_service_description         = "Installs the latest Zoom client. Requires reboot? No."
-    force_users_to_view_description  = false
-    feature_on_main_page             = true
-    self_service_category_ids        = [var.self_service_category_id]
+    use_for_self_service            = true
+    self_service_display_name       = "Install Zoom"
+    install_button_text             = "Install"
+    self_service_description        = "Installs the latest Zoom client. Reboot is not required."
+    force_users_to_view_description = false
+    feature_on_main_page            = true
   }
 }
 ```
@@ -1027,14 +1051,16 @@ resource "jamfpro_policy" "on_demand_security_baseline" {
     all_computers = true
   }
 
-  script {
-    id       = jamfpro_script.security_baseline.id
-    priority = "After"
+  payloads {
+    scripts {
+      id       = jamfpro_script.security_baseline.id
+      priority = "AFTER"
+    }
   }
 }
 ```
 
-Worked example (e) pre-stage policy with extension-attribute reporting:
+Worked example (e) pre-stage policy that runs a tagging script:
 ```hcl
 resource "jamfpro_policy" "prestage_inventory_update" {
   name      = "Prestage: tag asset and inventory"
@@ -1049,28 +1075,31 @@ resource "jamfpro_policy" "prestage_inventory_update" {
     all_computers = true
   }
 
-  script {
-    id        = jamfpro_script.tag_asset.id
-    priority  = "After"
-    parameter4 = "prestage"
-  }
-
-  reconnaissance {
-    include_extension_attributes = [
-      jamfpro_computer_extension_attribute.asset_tag.id,
-      jamfpro_computer_extension_attribute.last_audit.id,
-    ]
+  payloads {
+    scripts {
+      id         = jamfpro_script.tag_asset.id
+      priority   = "AFTER"
+      parameter4 = "prestage"
+    }
   }
 }
 ```
 
 Common mistakes:
+- Emitting the legacy top-level `package_configuration {}` or `script {}`
+  blocks. Both were removed in v0.37; their content moved INSIDE the
+  required `payloads {}` block as `packages` / `scripts` sub-blocks.
+- Omitting the `payloads {}` block entirely. v0.37 requires min 1.
+- Omitting the `scope {}` block. v0.37 requires it; minimum content is
+  `all_computers = true`.
 - Hardcoding `script_id = "1"` or `package_id = "5"` instead of referencing
   `jamfpro_script.X.id` / `jamfpro_package.X.id`. Validator flags this.
 - Omitting `category_id`. The apply succeeds, but the JAMF UI shows the
   policy as Uncategorized, which is almost always unintentional.
 - Mixing `trigger_other` with `trigger_checkin = true` on the same policy.
   Pick one trigger model: either named JAMF events, or a custom event name.
+- Emitting a top-level `reconnaissance {}` block. That block does not
+  exist in the v0.37 provider schema.
 
 ---
 
@@ -1158,8 +1187,11 @@ resource "jamfpro_smart_mobile_device_group" "field_ipads" {
 
 ### jamfpro_script
 
-Required: `name`, `script_contents`, `priority`, `category_id`.
-Optional: `os_requirements`, `info`, `notes`,
+Required (v0.37 schema): `name`, `script_contents`, `priority`. The
+`priority` enum is UPPERCASE: `"BEFORE"`, `"AFTER"`, or `"AT_REBOOT"`.
+Lowercase / mixed case (e.g. `"After"`) is rejected by the provider.
+
+Optional: `category_id`, `os_requirements`, `info`, `notes`,
 `parameter4` through `parameter11` (named labels for the eight script-arg
 slots, e.g. `parameter4 = "operation_type"`).
 
@@ -1173,7 +1205,7 @@ Worked example:
 resource "jamfpro_script" "audit" {
   name             = "Weekly audit"
   script_contents  = file("../scripts/audit.sh")
-  priority         = "After"
+  priority         = "AFTER"
   category_id      = var.maintenance_category_id
   os_requirements  = "13,14"
   info             = "Runs the weekly audit and writes results to /var/log/jamf-audit.log"
@@ -1182,10 +1214,16 @@ resource "jamfpro_script" "audit" {
 }
 ```
 
+The `priority` value used inside a policy's `payloads { scripts {
+priority = ... } }` sub-block follows the SAME uppercase enum
+("BEFORE" / "AFTER" / "AT_REBOOT").
+
 Common mistakes:
+- Lowercase or title-case `priority` ("after", "After"). v0.37 rejects
+  these; use the uppercase enum.
 - Inline `script_contents = "#!/bin/bash\nset -e\n..."` for anything longer
   than five lines. Validator flags this.
-- Omitting `category_id` (same UX problem as policies).
+- Omitting `category_id` (UX problem: appears as Uncategorized in JAMF UI).
 
 ---
 
@@ -1226,25 +1264,46 @@ Use this when the user describes the configuration in plain English (e.g.
 provider should generate the plist from structured args. The provider
 handles plist serialization on the user's behalf.
 
-Required: `name`, `level`, `distribution_method`, plus a `payloads` block
-that holds one or more typed payload sub-blocks (`payload_wifi`,
-`payload_dns`, `payload_certificate`, etc.).
+Required (v0.37 schema): `name` (string), `redeploy_on_update` (string,
+typically "Newly Assigned"). The `payloads` block (min 1, max 1) carries
+the plist header metadata. The `scope` block (min 1, max 1) is also
+required; minimum content is `all_computers = true`.
+
+The `payloads` block requires five header attributes:
+- `payload_description_header` (string)
+- `payload_enabled_header` (bool)
+- `payload_organization_header` (string)
+- `payload_type_header` (string, the plist payload type, e.g.
+  "Configuration", "com.apple.wifi.managed")
+- `payload_version_header` (number, e.g. 1)
+
+Optional top-level: `level` ("User"|"System"), `distribution_method`
+("Install Automatically"|"Make Available in Self Service"),
+`user_removable` (bool), `description`, `category_id`, `site_id`.
 
 Worked example (Wi-Fi for SSID "Corp" with WPA2 Enterprise):
 ```hcl
 resource "jamfpro_macos_configuration_profile_plist_generator" "corp_wifi" {
   name                = "Corp Wi-Fi (generated)"
+  description         = "Corporate Wi-Fi configuration for managed Macs"
+  redeploy_on_update  = "Newly Assigned"
   level               = "System"
   distribution_method = "Install Automatically"
-  redeploy_on_update  = "Newly Assigned"
+  user_removable      = false
 
   payloads {
-    payload_wifi {
-      ssid                 = "Corp"
-      hidden_network       = false
-      auto_join            = true
-      encryption_type      = "WPA2 Enterprise"
-      eap_client_config_id = var.corp_eap_config_id
+    payload_description_header  = "Corporate Wi-Fi (SSID Corp)"
+    payload_enabled_header      = true
+    payload_organization_header = "Example Corp"
+    payload_type_header         = "Configuration"
+    payload_version_header      = 1
+
+    payload_content {
+      payload_enabled      = true
+      payload_organization = "Example Corp"
+      payload_type         = "com.apple.wifi.managed"
+      payload_version      = 1
+      payload_description  = "Corporate Wi-Fi (SSID Corp) settings"
     }
   }
 
@@ -1256,6 +1315,20 @@ resource "jamfpro_macos_configuration_profile_plist_generator" "corp_wifi" {
 
 Pick the generator variant when the user describes settings; pick the plain
 plist variant when the user has a .mobileconfig file already.
+
+Common mistakes:
+- Omitting any of the five `payload_*_header` args inside `payloads {}`.
+  All five are required by the v0.37 provider schema.
+- Omitting the `payload_content {}` sub-block. The v0.37 schema requires
+  exactly one (min=1, max=1) inside `payloads {}`, with four required
+  fields: `payload_enabled` (bool), `payload_organization` (string),
+  `payload_type` (string, the macOS payload domain like
+  `com.apple.wifi.managed` / `com.apple.dnsSettings.managed`), and
+  `payload_version` (number).
+- Putting payload-type sub-blocks (`payload_wifi`, `payload_dns`) inside
+  `payloads {}`. The v0.37 schema does not accept those at that level;
+  the type-specific data goes via the `payload_type` string inside
+  `payload_content {}` and is keyed off Apple's standard payload domain.
 
 ---
 
@@ -1290,21 +1363,33 @@ the JAMF Pro web console (Computers, then Management Settings, then
 Packages, then Upload), or via the JAMF Pro API. Terraform manages only
 the metadata record (filename, category, priority, OS requirements).
 
-Required: `package_name`, `filename`.
-Optional: `category_id`, `priority` (int, lower = higher priority),
-`os_requirements`, `info`, `notes`, `reboot_required` (bool), `fill_user_template`
-(bool), `fill_existing_users` (bool).
+Required (v0.37 schema): `package_name` (string), `priority` (number,
+lower = higher priority), `fill_user_template` (bool), `os_install`
+(bool), `reboot_required` (bool), `suppress_eula` (bool),
+`suppress_from_dock` (bool), `suppress_registration` (bool),
+`suppress_updates` (bool). All four `suppress_*` plus `os_install` and
+`reboot_required` default to `false` for ordinary apps; flip individually
+when the package warrants it.
+
+Optional: `category_id`, `os_requirements`, `info`, `notes`,
+`fill_existing_users` (bool), `package_file_source` (path/URL),
+`manifest`, `manifest_file_name`.
 
 Worked example:
 ```hcl
 resource "jamfpro_package" "chrome" {
-  package_name    = "Google Chrome"
-  filename        = "GoogleChrome-122.0.6261.94.pkg"
-  category_id     = var.deploy_category_id
-  priority        = 10
-  os_requirements = "13,14"
-  info            = "Google Chrome stable channel"
-  reboot_required = false
+  package_name           = "Google Chrome"
+  priority               = 10
+  fill_user_template     = false
+  os_install             = false
+  reboot_required        = false
+  suppress_eula          = true
+  suppress_from_dock     = false
+  suppress_registration  = false
+  suppress_updates       = false
+  category_id            = var.deploy_category_id
+  os_requirements        = "13,14"
+  info                   = "Google Chrome stable channel"
 }
 
 # NOTE: Upload the GoogleChrome-122.0.6261.94.pkg binary via the JAMF Pro
@@ -1313,7 +1398,9 @@ resource "jamfpro_package" "chrome" {
 ```
 
 Always emit the upload-out-of-band NOTE comment near a `jamfpro_package`
-resource so the user knows the binary handling is manual.
+resource so the user knows the binary handling is manual. Always emit
+all nine required args even when only a few matter for the use case;
+omitting any of them fails `terraform validate`.
 
 ---
 
@@ -1321,22 +1408,23 @@ resource so the user knows the binary handling is manual.
 
 Custom inventory attribute reported back from each managed Mac.
 
-Required: `name`, `data_type`, `input_type`.
-data_type options: "String", "Integer", "Date".
-input_type options: "Script", "Text Field", "Pop-up Menu", "LDAP Mapping".
-Optional: `enabled` (bool), `inventory_display`, `script_contents` (only
-when input_type = "Script"; load via `file(...)`), `pop_up_choices` (list
-of string, only when input_type = "Pop-up Menu").
+Required: `name`, `enabled` (bool), `input_type`.
+input_type options: "SCRIPT", "TEXT_FIELD", "POPUP_MENU", "DIRECTORY_SERVICE_ATTRIBUTE_MAPPING" (yes, uppercase in v0.37).
+Optional: `data_type` ("STRING", "INTEGER", "DATE"), `description`,
+`inventory_display_type` (NOT `inventory_display`; valid values
+"COMPUTER", "USER_AND_LOCATION", "PURCHASING", "EXTENSION_ATTRIBUTES"),
+`script_contents` (only when input_type = "SCRIPT"; load via `file(...)`),
+`popup_menu_choices` (list of string, only when input_type = "POPUP_MENU").
 
 Worked example (script-driven asset tag attribute):
 ```hcl
 resource "jamfpro_computer_extension_attribute" "asset_tag" {
-  name              = "Asset Tag"
-  data_type         = "String"
-  input_type        = "Script"
-  enabled           = true
-  inventory_display = "General"
-  script_contents   = file("../scripts/get_asset_tag.sh")
+  name                   = "Asset Tag"
+  enabled                = true
+  input_type             = "SCRIPT"
+  data_type              = "STRING"
+  inventory_display_type = "EXTENSION_ATTRIBUTES"
+  script_contents        = file("../scripts/get_asset_tag.sh")
 }
 ```
 
@@ -1377,103 +1465,150 @@ resource "jamfpro_restricted_software" "no_spotify" {
 
 ### jamfpro_computer_prestage_enrollment
 
-Automated Device Enrollment (DEP) prestage. Complex schema; only emit when
-the user explicitly asks for prestage / DEP / "auto-enroll new devices".
+Automated Device Enrollment (DEP) prestage. The heaviest schema in the
+provider; only emit when the user explicitly asks for prestage / DEP /
+"auto-enroll new devices".
 
-Required: `display_name`, `mandatory` (bool), `mdm_removable` (bool),
-`support_phone_number`, `support_email_address`, `department`,
-`default_prestage` (bool), `enrollment_site_id` (int),
-`keep_existing_site_membership` (bool), `keep_existing_location_information`
-(bool), `require_authentication` (bool), `authentication_prompt`,
-`prevent_activation_lock` (bool), `enable_device_based_activation_lock`
-(bool), `device_enrollment_program_instance_id` (int),
-`auto_advance_setup` (bool), `install_profiles_during_setup` (bool),
-`prestage_installed_profile_ids` (list int), `custom_package_ids` (list int),
-`enrollment_customization_id` (int), `language`, `region`,
-`anchor_certificates` (list string).
+Required (v0.37 schema, 28 top-level args, all strings unless typed):
+`authentication_prompt`, `auto_advance_setup` (bool),
+`custom_package_distribution_point_id`, `custom_package_ids` (set of
+string), `default_prestage` (bool), `department`,
+`device_enrollment_program_instance_id`, `display_name`,
+`enable_device_based_activation_lock` (bool), `enable_recovery_lock`
+(bool), `enrollment_customization_id`, `enrollment_site_id`,
+`install_profiles_during_setup` (bool),
+`keep_existing_location_information` (bool),
+`keep_existing_site_membership` (bool), `language`, `mandatory` (bool),
+`mdm_removable` (bool), `prestage_installed_profile_ids` (set of string),
+`prestage_minimum_os_target_version_type`, `prevent_activation_lock`
+(bool), `recovery_lock_password_type`, `region`,
+`require_authentication` (bool), `rotate_recovery_lock_password` (bool),
+`site_id`, `support_email_address`, `support_phone_number`.
 
-Skip-setup-items (block): `skip_setup_items { apple_id, screen_time, siri,
-diagnostics, ... }` flags one Setup Assistant pane each.
+Required nested blocks (all min=1):
+- `account_settings` (12 required sub-fields).
+- `location_information` (7 required sub-fields).
+- `purchasing_information` (12 required sub-fields).
+- `skip_setup_items` (25 required bool sub-fields, each toggling one
+  Setup Assistant pane).
 
-Location information (block) and purchasing information (block) carry the
-device-record metadata applied at enrollment.
+Note: many id-style fields became strings in v0.37 (previously numbers).
+Use empty strings or zero-equivalent sentinels for fields the user did
+not specify; the apply will reject obviously bogus values, but `terraform
+validate` accepts any string.
 
-Worked example (auto-enroll sales devices, US English, skip the optional
-setup items):
+Worked example (auto-enroll sales devices, US English, skip every Setup
+Assistant pane):
 ```hcl
 resource "jamfpro_computer_prestage_enrollment" "sales_prestage" {
-  display_name                          = "Sales Auto-Enrollment"
-  mandatory                             = true
-  mdm_removable                         = false
-  support_phone_number                  = "+1-555-555-1234"
-  support_email_address                 = "it-support@example.com"
-  department                            = "Sales"
-  default_prestage                      = false
-  enrollment_site_id                    = var.sales_site_id
-  keep_existing_site_membership         = false
-  keep_existing_location_information    = false
-  require_authentication                = false
-  authentication_prompt                 = ""
-  prevent_activation_lock               = true
-  enable_device_based_activation_lock   = false
-  device_enrollment_program_instance_id = var.dep_instance_id
-  auto_advance_setup                    = false
-  install_profiles_during_setup         = true
-  prestage_installed_profile_ids        = [jamfpro_macos_configuration_profile_plist.corporate_wifi.id]
-  custom_package_ids                    = [jamfpro_package.chrome.id]
-  enrollment_customization_id           = 0
-  language                              = "en"
-  region                                = "US"
-  anchor_certificates                   = []
+  display_name                            = "Sales Auto-Enrollment"
+  mandatory                               = true
+  mdm_removable                           = false
+  support_phone_number                    = "+1-555-555-1234"
+  support_email_address                   = "it-support@example.com"
+  department                              = "Sales"
+  default_prestage                        = false
+  enrollment_site_id                      = var.sales_site_id
+  site_id                                 = var.sales_site_id
+  keep_existing_site_membership           = false
+  keep_existing_location_information      = false
+  require_authentication                  = false
+  authentication_prompt                   = ""
+  prevent_activation_lock                 = true
+  enable_device_based_activation_lock     = false
+  enable_recovery_lock                    = false
+  recovery_lock_password_type             = "MANUAL"
+  rotate_recovery_lock_password           = false
+  device_enrollment_program_instance_id   = var.dep_instance_id
+  auto_advance_setup                      = false
+  install_profiles_during_setup           = true
+  prestage_installed_profile_ids          = [jamfpro_macos_configuration_profile_plist_generator.corp_wifi.id]
+  custom_package_ids                      = [jamfpro_package.chrome.id]
+  custom_package_distribution_point_id    = "-1"
+  enrollment_customization_id             = "0"
+  prestage_minimum_os_target_version_type = "NO_ENFORCEMENT"
+  language                                = "en"
+  region                                  = "US"
 
-  skip_setup_items {
-    apple_id        = true
-    screen_time     = true
-    siri            = false
-    diagnostics     = true
-    icloud_storage  = true
-    privacy         = false
-    biometric       = false
-    payment         = true
-    registration    = true
-    tos             = false
-    android_migration = true
+  account_settings {
+    payload_configured                              = true
+    local_admin_account_enabled                     = true
+    admin_username                                  = "macadmin"
+    admin_password                                  = var.macadmin_password
+    hidden_admin_account                            = true
+    local_user_managed                              = false
+    user_account_type                               = "STANDARD"
+    prefill_primary_account_info_feature_enabled    = false
+    prefill_account_full_name                       = ""
+    prefill_account_user_name                       = ""
+    prefill_type                                    = "UNKNOWN"
+    prevent_prefill_info_from_modification          = false
   }
 
   location_information {
     username      = ""
     realname      = ""
-    email_address = ""
-    phone_number  = ""
-    department    = "Sales"
-    building      = ""
+    email         = ""
+    phone         = ""
+    department_id = "-1"
     room          = ""
-    position      = ""
+    position      = "Sales"
   }
 
   purchasing_information {
-    leased            = false
-    purchased         = true
-    apple_care_id     = ""
-    po_number         = ""
-    vendor            = "Apple"
-    purchase_price    = ""
-    life_expectancy   = 36
+    leased             = false
+    purchased          = true
+    apple_care_id      = ""
+    po_number          = ""
+    vendor             = "Apple"
+    purchase_price     = ""
+    life_expectancy    = 36
     purchasing_account = ""
     purchasing_contact = ""
-    lease_date        = "1970-01-01"
-    po_date           = "1970-01-01"
-    warranty_date     = "1970-01-01"
+    lease_date         = "1970-01-01"
+    po_date            = "1970-01-01"
+    warranty_date      = "1970-01-01"
+  }
+
+  skip_setup_items {
+    accessibility               = true
+    additional_privacy_settings = true
+    appearance                  = true
+    apple_id                    = true
+    biometric                   = true
+    diagnostics                 = true
+    display_tone                = true
+    enable_lockdown_mode        = true
+    file_vault                  = true
+    icloud_diagnostics          = true
+    icloud_storage              = true
+    intelligence                = true
+    location                    = true
+    os_showcase                 = true
+    payment                     = true
+    privacy                     = true
+    registration                = true
+    restore                     = true
+    screen_time                 = true
+    siri                        = true
+    software_update             = true
+    terms_of_address            = true
+    tos                         = true
+    wallpaper                   = true
+    welcome                     = true
   }
 }
 ```
 
 Common mistakes:
-- Omitting `device_enrollment_program_instance_id`. The apply fails because
-  JAMF cannot bind a prestage to a DEP instance that does not exist; surface
-  this id from the JAMF Pro web console, do not invent it.
-- Hardcoding `enrollment_site_id = 1`. Use `var.sales_site_id` (or similar)
-  and look the id up from the JAMF Pro UI or live context.
+- Omitting any of the 28 required top-level args. v0.37 demands all of
+  them; `terraform validate` enumerates every miss as a separate error.
+- Skipping any of the 25 required bool flags inside `skip_setup_items {}`.
+  Same enumeration penalty.
+- Treating `enrollment_site_id` / `site_id` / `enrollment_customization_id`
+  as numbers. They became strings in v0.37; quote them.
+- Hardcoding `enrollment_site_id = "1"`. Surface real ids via
+  `var.sales_site_id` or pull from the live JAMF environment context.
 
 ---
 

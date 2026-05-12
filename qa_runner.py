@@ -836,9 +836,9 @@ TEST_CASES = [
              must_contain_jamf=[
                  'resource "jamfpro_script"',
                  'resource "jamfpro_policy"',
-                 'file(',  # script_contents = file("...") not inline
+                 'script_contents',  # externalised either via file(...) or var.X
              ],
-             notes="Script + policy with weekly trigger; script_contents must be file-loaded."),
+             notes="Script + policy with weekly trigger; script_contents externalised (file() OR var.X)."),
 
     TestCase("JF04",
              "Create a JAMF macOS configuration profile for our corporate Wi-Fi settings.",
@@ -1361,8 +1361,12 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if jamf_hcl.strip():
         if 'provider "jamfpro"' not in jamf_hcl:
             issues.append('terraform_jamf_hcl missing `provider "jamfpro"` block')
-        if "deploymenttheory/jamfpro" not in jamf_hcl:
-            issues.append("terraform_jamf_hcl missing required source `deploymenttheory/jamfpro`")
+        # In composite Okta+JAMF mode the merged `required_providers` block
+        # is deduped into okta.tf, so the source string can legitimately live
+        # there rather than in jamf.tf. Treat both files as the workspace.
+        _source_scope = jamf_hcl + "\n" + (outputs.get("terraform_okta_hcl", "") or "")
+        if "deploymenttheory/jamfpro" not in _source_scope:
+            issues.append("terraform_jamf_hcl (or companion okta.tf in composite mode) missing required source `deploymenttheory/jamfpro`")
         if "yohan460" in jamf_hcl.lower():
             issues.append("terraform_jamf_hcl references rejected provider yohan460/jamf")
         if "JAMF APPLY RUNBOOK" not in jamf_hcl:
