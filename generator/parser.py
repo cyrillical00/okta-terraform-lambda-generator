@@ -73,9 +73,14 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
     )
     raw = _extract_json(response.content[0].text)
     try:
-        return json.loads(raw)
+        intent = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"Intent parsing failed: Claude returned non-JSON. Raw response: {raw[:500]}") from e
+    # Attach the raw user input so downstream sanitizers (event-hook event-type
+    # mapping, etc.) can derive prompt-language signals without re-plumbing
+    # signatures through generate_all.
+    intent["user_input"] = user_input
+    return intent
 
 
 def _fuzzy_correct(value: str, valid: set[str], cutoff: float = 0.7) -> str:

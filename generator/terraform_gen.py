@@ -4,6 +4,9 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, GENERATOR_USER_PROMPT_TEMPLATE
 from .parser import _extract_json
 from .okta_brand_sanitizer import sanitize_okta_brand_refs
 from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
+from .okta_event_hook_sanitizer import sanitize_okta_event_hook_events
+from .okta_data_source_sanitizer import sanitize_okta_data_source_refs
+from .okta_variable_hygiene_sanitizer import sanitize_okta_variable_hygiene
 from .hcl_utils import merge_terraform_blocks, dedupe_variable_blocks
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
@@ -223,6 +226,21 @@ def generate_all(
     # okta_app_oauth resources; provider v4.x has no SCIM support; SCIM is
     # UI-only. Inserts a NOTE comment pointing to the Admin Console.
     result = sanitize_okta_app_scim_refs(result)
+
+    # Rewrite okta_event_hook events list to the canonical event type derived
+    # from prompt language. Closes EH/EHX/AWX/ED-class sampling drift where
+    # the LLM ignores the prompt-level event-type decision tree.
+    result = sanitize_okta_event_hook_events(result, intent)
+
+    # Strip hallucinated `data "okta_*"` blocks (e.g. okta_auth_server_default_policy)
+    # and rewrite references to var.X placeholders. Closes COMP-class
+    # invalid-data-source regressions.
+    result = sanitize_okta_data_source_refs(result)
+
+    # Append stub `variable "X" {}` declarations for any undeclared var.X
+    # references, including ones introduced by sanitize_okta_data_source_refs
+    # above. Closes AUTH02-class undeclared-input-variable regressions.
+    result = sanitize_okta_variable_hygiene(result)
 
     # Composite-mode duplicate-providers fix. terraform_okta_hcl always emits
     # its own `terraform { required_providers {} }` block; the lambda and gcp
