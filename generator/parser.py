@@ -83,6 +83,14 @@ def parse_intent(user_input: str, client: anthropic.Anthropic, model: str = MODE
     # post-process to promote the app to primary when both an app type and
     # an auth-server child appear in resource_types.
     intent = _normalize_compound_primary(intent)
+    # Detect enumerated multi-object prompts ("create three groups: A, B, C")
+    # and attach the parsed instance list. Downstream the generator user-prompt
+    # template surfaces this list explicitly and the multi-object sanitizer
+    # cleans up if the LLM still emits a single block.
+    from .multi_object_detector import detect_instances
+    instances = detect_instances(user_input)
+    if instances is not None:
+        intent["instances"] = instances
     # Attach the raw user input so downstream sanitizers (event-hook event-type
     # mapping, etc.) can derive prompt-language signals without re-plumbing
     # signatures through generate_all.

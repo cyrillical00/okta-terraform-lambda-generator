@@ -2151,7 +2151,7 @@ GENERATOR_USER_PROMPT_TEMPLATE = """Generate Terraform HCL and Lambda/Cloud Func
 {intent_json}
 
 OUTPUT MODE: {output_mode}
-{multi_resource_section}
+{instances_section}{multi_resource_section}
 {aws_resource_section}
 {gcp_resource_section}
 {jamf_resource_section}

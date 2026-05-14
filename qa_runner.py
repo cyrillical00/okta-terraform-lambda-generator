@@ -112,6 +112,11 @@ class TestCase:
     must_contain_jamf: list = field(default_factory=list)
     # strings that must NOT appear in terraform_jamf_hcl
     must_not_contain_jamf: list = field(default_factory=list)
+    # Multi-object reliability check: {resource_type: required_min_count} across
+    # all HCL keys. Asserts the generator emitted N distinct `resource "X" "label"`
+    # blocks of each named type. Closes the JF10/COMP02 class of failure where
+    # the LLM emits one block representing multiple instances mashed together.
+    must_contain_count: dict = field(default_factory=dict)
     notes: str = ""
 
 
@@ -380,7 +385,8 @@ TEST_CASES = [
     TestCase("COMP02",
              "Create a SAML app for Workday and assign three groups: HR, Finance, and Executives",
              expected_resource_type="okta_app_saml",
-             must_contain=["okta_app_saml", "okta_group"]),
+             must_contain=["okta_app_saml", "okta_group"],
+             must_contain_count={"okta_app_group_assignment": 3}),
     TestCase("COMP03",
              "Create an auth server for our payments API with a payments:write scope and a role claim",
              expected_resource_type="okta_auth_server",
@@ -393,6 +399,7 @@ TEST_CASES = [
              aws_types=["aws_lambda_function"],
              must_contain=["okta_group", "okta_group_rule", "okta_app_saml", "okta_event_hook",
                            "user.lifecycle.create", "okta_app_group_assignment"],
+             must_contain_count={"okta_group": 3, "okta_group_rule": 3, "okta_app_group_assignment": 3},
              notes="Composite onboarding: 3 groups + 3 rules + SAML app + 3 assignments + event hook + Lambda"),
     TestCase("COMP10",
              "Set up a custom authorization server for our internal API. Define three scopes: read:data, write:data, and admin:data. Add two custom claims: a groups claim sourced from user.groups and a role claim sourced from user.profile.role. Create an access policy that allows read:data to all authenticated users but restricts write:data and admin:data to users in the API-Admins group. Create two OAuth apps: a public mobile app that requests only read:data and a confidential web app that requests all three scopes.",
@@ -400,6 +407,7 @@ TEST_CASES = [
                          "okta_auth_server_policy", "okta_auth_server_policy_rule", "okta_app_oauth"],
              must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_claim",
                            "okta_auth_server_policy", "okta_app_oauth", "read:data", "write:data", "admin:data"],
+             must_contain_count={"okta_auth_server_scope": 3, "okta_auth_server_claim": 2, "okta_app_oauth": 2},
              notes="Zero-trust API access: full OAuth machinery (auth server + 3 scopes + 2 claims + policy + rule + 2 apps)"),
     TestCase("COMP11",
              "Build an offboarding pipeline: create a Terminated group; a group rule that adds users with employmentStatus equal to Terminated to that group; an event hook that fires on the user being added to the Terminated group; and a Lambda that calls the Okta API to deactivate the user, sends an SNS alert to the security team, and revokes their active sessions. Also enable Okta Verify push notifications as an MFA factor for the org.",
@@ -453,6 +461,7 @@ TEST_CASES = [
              expected_resource_type="okta_app_saml",
              must_contain=["okta_app_group_assignment", "attribute_statements"],
              must_not_contain_okta=["okta_app_saml_attribute_statements"],
+             must_contain_count={"okta_app_group_assignment": 3},
              notes="Group assignments via okta_app_group_assignment; attribute statements inline in okta_app_saml"),
     TestCase("SA03",
              "Set up a SAML 2.0 app for ServiceNow. Assign HR Full Access, HR Read Only, and Payroll Admins groups. HR Full Access and Payroll Admins need a role SAML attribute.",
@@ -509,7 +518,8 @@ TEST_CASES = [
              must_contain=["okta_auth_server_scope"]),
     TestCase("SC02", "Create two scopes on the developer API auth server: read:data and write:data",
              expected_resource_type="okta_auth_server_scope",
-             must_contain=["okta_auth_server_scope"]),
+             must_contain=["okta_auth_server_scope"],
+             must_contain_count={"okta_auth_server_scope": 2}),
     TestCase("SC03", "Add a default openid scope to the mobile auth server",
              expected_resource_type="okta_auth_server_scope"),
 
@@ -653,7 +663,8 @@ TEST_CASES = [
     TestCase("COMP06",
              "Create an authorization server for the mobile API with two scopes: read:profile and write:settings, and an access policy limiting token lifetime to 30 minutes",
              expected_resource_type="okta_auth_server",
-             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_policy"]),
+             must_contain=["okta_auth_server", "okta_auth_server_scope", "okta_auth_server_policy"],
+             must_contain_count={"okta_auth_server_scope": 2}),
     TestCase("COMP07",
              "Create a SAML app for Workday and map the costCenter and department attributes from Workday to the Okta user profile",
              expected_resource_type="okta_app_saml",
@@ -765,6 +776,7 @@ TEST_CASES = [
                  "event_trigger",
              ],
              must_not_contain_gcp=["google_cloudfunctions_function"],
+             must_contain_count={"google_cloudfunctions2_function": 2},
              notes="Pub/Sub fan-out: 1 topic, 2 subscriber functions. Both functions must wire event_trigger to the same topic."),
     TestCase("GCPX02",
              "Create a Cloud Storage bucket called document-uploads. When a new object is finalized in the bucket, fire a Cloud Function called document-processor that reads the object, extracts metadata, and writes a JSON summary to a separate metadata bucket.",
@@ -901,6 +913,7 @@ TEST_CASES = [
                  "Sales Macs",
                  "Marketing Macs",
              ],
+             must_contain_count={"jamfpro_smart_computer_group_v2": 3},
              notes="Multi-object emission: 3 separate blocks (no for_each yet without multi-object phase)."),
 
     TestCase("JF11",
@@ -1188,6 +1201,24 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     for s in tc.must_not_contain_okta:
         if s in okta_hcl:
             issues.append(f"Forbidden string '{s}' found in terraform_okta_hcl")
+
+    # ── 6b. must_contain_count: distinct-resource-block counts across HCLs ─
+    # Closes the JF10/COMP02-class drift where the LLM emits one resource
+    # block representing several intended instances. Counts `resource "X" "L"`
+    # block headers across all four HCL keys.
+    if tc.must_contain_count:
+        full_hcl = (
+            okta_hcl
+            + "\n" + (outputs.get("terraform_lambda_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_gcp_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_jamf_hcl", "") or "")
+        )
+        for rtype, min_count in tc.must_contain_count.items():
+            actual = len(re.findall(rf'resource\s+"{re.escape(rtype)}"\s+"', full_hcl))
+            if actual < min_count:
+                issues.append(
+                    f"Expected at least {min_count} `resource \"{rtype}\"` block(s); found {actual}"
+                )
 
     # ── 7. Both mode with AWS types: lambda must be non-empty ─────────────
     if output_mode == "Both" and tc.aws_types:

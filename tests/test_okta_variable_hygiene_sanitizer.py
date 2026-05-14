@@ -80,6 +80,46 @@ def test_empty_input_is_noop():
     assert sanitize_okta_variable_hygiene({}) == {}
 
 
+def test_em01_strips_interpolation_from_default():
+    """EM01/ED05/COMP08 shape: variable default contains ${...} interpolation.
+    Terraform rejects this at init. Sanitizer must strip the interpolation,
+    leaving the literal surrounding text."""
+    hcl = textwrap.dedent('''\
+        variable "user_activation_subject" {
+          type        = string
+          description = "Subject line"
+          default     = "Welcome to ${org.name}"
+        }
+        ''')
+    out = sanitize_okta_variable_hygiene(_wrap(hcl))["terraform_okta_hcl"]
+    assert "${org.name}" not in out
+    assert '"Welcome to "' in out, f"literal text must survive scrub; got: {out!r}"
+
+
+def test_default_without_interpolation_unchanged():
+    """Defaults without ${...} are left exactly as-is."""
+    hcl = textwrap.dedent('''\
+        variable "foo" {
+          type    = string
+          default = "Welcome to Okta"
+        }
+        ''')
+    out = sanitize_okta_variable_hygiene(_wrap(hcl))["terraform_okta_hcl"]
+    assert out == hcl
+
+
+def test_interpolation_in_resource_block_untouched():
+    """Interpolations OUTSIDE variable blocks (e.g. inside resource bodies)
+    must not be scrubbed — they are legal HCL."""
+    hcl = textwrap.dedent('''\
+        resource "okta_app_oauth" "x" {
+          label = "App for ${var.tenant}"
+        }
+        ''')
+    out = sanitize_okta_variable_hygiene(_wrap(hcl))["terraform_okta_hcl"]
+    assert "${var.tenant}" in out
+
+
 def test_multiple_missing_vars_are_alphabetised():
     """Stub declarations should be deterministic ordering."""
     hcl = textwrap.dedent('''\
@@ -103,6 +143,9 @@ if __name__ == "__main__":
         test_no_var_references_is_noop,
         test_idempotent,
         test_empty_input_is_noop,
+        test_em01_strips_interpolation_from_default,
+        test_default_without_interpolation_unchanged,
+        test_interpolation_in_resource_block_untouched,
         test_multiple_missing_vars_are_alphabetised,
     ]
     for t in tests:

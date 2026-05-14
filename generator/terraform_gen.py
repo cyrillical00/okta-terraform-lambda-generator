@@ -7,6 +7,7 @@ from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
 from .okta_event_hook_sanitizer import sanitize_okta_event_hook_events
 from .okta_data_source_sanitizer import sanitize_okta_data_source_refs
 from .okta_variable_hygiene_sanitizer import sanitize_okta_variable_hygiene
+from .multi_object_sanitizer import sanitize_multi_object
 from .hcl_utils import merge_terraform_blocks, dedupe_variable_blocks
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
@@ -40,6 +41,36 @@ def _parse_output(raw: str) -> dict:
     if "terraform_tfvars_example" in parsed and not isinstance(parsed["terraform_tfvars_example"], str):
         parsed["terraform_tfvars_example"] = ""
     return parsed
+
+
+def _format_instances(instances: list[dict] | None) -> str:
+    """Render `intent.instances` as an explicit emit-N-blocks directive for the
+    generator. Empty string when no enumeration was detected so the prompt
+    stays clean for single-object cases.
+
+    Format mirrors the multi_resource_section convention so the LLM reads it as
+    a peer-level instruction rather than as a footnote on the intent JSON.
+    """
+    if not instances:
+        return ""
+    lines = ["MULTI-OBJECT INSTANCES (emit one resource block per entry below; do NOT combine into a single block; pick a distinct, slugified Terraform label per entry):"]
+    for i, inst in enumerate(instances, 1):
+        name = inst.get("name", f"instance_{i}")
+        slug = _slugify_label(name)
+        lines.append(f"  {i}. name=\"{name}\" -> resource label `{slug}`")
+    return "\n".join(lines) + "\n"
+
+
+def _slugify_label(name: str) -> str:
+    """Produce a Terraform-safe lowercase label from a human name. Mirrors the
+    sanitizer's slug logic so prompt instruction and sanitizer fallback agree."""
+    import re as _re
+    slug = _re.sub(r"[^a-zA-Z0-9_]+", "_", name.strip()).strip("_").lower()
+    if not slug:
+        slug = "instance"
+    if slug[0].isdigit():
+        slug = "i_" + slug
+    return slug
 
 
 def _format_clarifications(answers: dict) -> str:
@@ -101,6 +132,7 @@ def generate_all(
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         output_mode=output_mode,
+        instances_section=_format_instances(intent.get("instances")),
         clarifications_section=_format_clarifications(answers),
         extra_instructions=extra_instructions or "None",
         env_context_section=env_context_section,
@@ -241,6 +273,12 @@ def generate_all(
     # references, including ones introduced by sanitize_okta_data_source_refs
     # above. Closes AUTH02-class undeclared-input-variable regressions.
     result = sanitize_okta_variable_hygiene(result)
+
+    # Multi-object expansion: when intent.instances enumerates N resources but
+    # the LLM emitted fewer than N blocks of the matching type, clone the
+    # template block once per missing instance. Runs last so it sees the
+    # final block shape after all earlier sanitizers.
+    result = sanitize_multi_object(result, intent)
 
     # Composite-mode duplicate-providers fix. terraform_okta_hcl always emits
     # its own `terraform { required_providers {} }` block; the lambda and gcp
