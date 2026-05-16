@@ -71,6 +71,10 @@ OutputMode = Literal[
     "Okta + GCP",
     "JAMF only",
     "Okta + JAMF",
+    "Fleet GitOps only",
+    "Okta + Fleet GitOps",
+    "Fleet TF only",
+    "Okta + Fleet TF",
 ]
 
 

@@ -104,6 +104,7 @@ Admins see a sidebar warning when any tracked secret is older than its target ro
 | `JIRA_WEBHOOK_SECRET` | 180 days | JIRA webhook HMAC verification |
 | `JIRA_API_TOKEN` | 90 days | JIRA REST callback (paired with `JIRA_USER_EMAIL`) |
 | `JAMF_CLIENT_ID` / `JAMF_CLIENT_SECRET` | 90 days | JAMF Pro live env-context oauth2 |
+| `FLEET_URL` / `FLEET_API_TOKEN` | 90 days | Fleet MDM. Same env vars cover both GitOps (fleetctl apply) and Terraform (l-teles/fleetdm provider) output paths. |
 
 Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app sidebar widget, or directly in GitHub).
 
@@ -114,6 +115,7 @@ Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via 
 - **`JIRA_WEBHOOK_SECRET`**: shared secret you control end-to-end. Update the JIRA Automation rule (or front proxy) and the Vercel env var in the same window. Old signatures fail validation immediately, so set both sides simultaneously.
 - **`JIRA_API_TOKEN`**: regenerate at id.atlassian.com → Security → API tokens. Old tokens are revoked instantly; expect a brief callback failure if the JIRA bot account's old token was in use mid-flight.
 - **`JAMF_CLIENT_ID` / `JAMF_CLIENT_SECRET`**: rotate from JAMF Pro Settings → System → API Roles and Clients. Generate a new client secret on the existing client (preserves the role binding); update Streamlit Cloud secrets, then revoke the old secret. Roles needed for live env-context: read on Policies, Computer Groups, Scripts, Packages, and Computer Extension Attributes.
+- **`FLEET_URL` / `FLEET_API_TOKEN`**: rotate from Fleet UI → Account → API token. The token has the same scope as the user that owns it; for least-privilege, mint the token from a dedicated automation user with Observer or Maintainer role (not GitOps Admin) for read-mostly workflows. Both GitOps (`fleetctl apply --dry-run`) and the experimental Terraform path (`l-teles/fleetdm` provider) consume the same env vars; rotate both together. Old tokens stop working immediately; the rotation window should overlap by a few minutes via two valid tokens to bridge active apply runs.
 
 ## Headless surfaces (CLI, HTTP, Slack, JIRA)
 

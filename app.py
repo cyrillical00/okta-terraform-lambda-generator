@@ -276,6 +276,8 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     lambda_hcl = outputs.get("terraform_lambda_hcl", "")
     gcp_hcl = outputs.get("terraform_gcp_hcl", "")
     jamf_hcl = outputs.get("terraform_jamf_hcl", "")
+    fleet_yaml = outputs.get("fleet_gitops_yaml", "")
+    fleet_hcl = outputs.get("terraform_fleet_hcl", "")
     lambda_py = outputs.get("lambda_python", "")
     lambda_reqs = outputs.get("lambda_requirements", "")
     cloud_function_py = outputs.get("cloud_function_python", "")
@@ -288,6 +290,8 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         lambda_tf_path = f"terraform/{base}_lambda.tf"
         gcp_tf_path = f"terraform/{base}_gcp.tf"
         jamf_tf_path = f"terraform/{base}_jamf.tf"
+        fleet_yml_path = f"fleet/{base}.yml"
+        fleet_tf_path = f"terraform/{base}_fleet.tf"
         lambda_py_path = f"lambda/{base}.py"
         lambda_reqs_path = f"lambda/{base}_requirements.txt"
         cloud_function_py_path = f"cloud_function/{base}.py"
@@ -299,6 +303,8 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         lambda_tf_path = "terraform/lambda.tf"
         gcp_tf_path = "terraform/gcp.tf"
         jamf_tf_path = "terraform/jamf.tf"
+        fleet_yml_path = "fleet/default.yml"
+        fleet_tf_path = "terraform/fleet.tf"
         lambda_py_path = "lambda/lambda_function.py"
         lambda_reqs_path = "lambda/requirements.txt"
         cloud_function_py_path = "cloud_function/main.py"
@@ -319,8 +325,10 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             gcp_hcl = strip_provider_boilerplate(gcp_hcl)
         if jamf_hcl:
             jamf_hcl = strip_provider_boilerplate(jamf_hcl)
+        if fleet_hcl:
+            fleet_hcl = strip_provider_boilerplate(fleet_hcl)
 
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF", "Okta + Fleet GitOps", "Okta + Fleet TF"):
         if okta_hcl and okta_hcl.strip():
             files[okta_path] = okta_hcl
     if mode in ("Both",):
@@ -341,6 +349,12 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     if mode in ("JAMF only", "Okta + JAMF"):
         if jamf_hcl and jamf_hcl.strip():
             files[jamf_tf_path] = jamf_hcl
+    if mode in ("Fleet GitOps only", "Okta + Fleet GitOps"):
+        if fleet_yaml and fleet_yaml.strip():
+            files[fleet_yml_path] = fleet_yaml
+    if mode in ("Fleet TF only", "Okta + Fleet TF"):
+        if fleet_hcl and fleet_hcl.strip():
+            files[fleet_tf_path] = fleet_hcl
     if optional_tf and optional_tf.strip():
         files[optional_path] = optional_tf
     if tfvars and tfvars.strip():

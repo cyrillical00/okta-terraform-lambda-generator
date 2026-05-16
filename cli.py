@@ -32,7 +32,7 @@ import anthropic
 from core import service as core_service
 
 
-VALID_MODES = ("Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP", "JAMF only", "Okta + JAMF")
+VALID_MODES = ("Both", "Okta Terraform only", "Lambda only", "GCP only", "Okta + GCP", "JAMF only", "Okta + JAMF", "Fleet GitOps only", "Okta + Fleet GitOps", "Fleet TF only", "Okta + Fleet TF")
 
 
 def _read_prompt(args: argparse.Namespace) -> str:
@@ -59,7 +59,7 @@ def _build_file_map(outputs: dict, mode: str, basename: str = "") -> dict[str, s
         return ns_template.format(base=base) if base else default
 
     files: dict[str, str] = {}
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF", "Okta + Fleet GitOps", "Okta + Fleet TF"):
         v = (outputs.get("terraform_okta_hcl") or "").strip()
         if v:
             files[n("terraform/okta.tf", "terraform/{base}.tf")] = v
@@ -88,6 +88,14 @@ def _build_file_map(outputs: dict, mode: str, basename: str = "") -> dict[str, s
         v = (outputs.get("terraform_jamf_hcl") or "").strip()
         if v:
             files[n("terraform/jamf.tf", "terraform/{base}_jamf.tf")] = v
+    if mode in ("Fleet GitOps only", "Okta + Fleet GitOps"):
+        v = (outputs.get("fleet_gitops_yaml") or "").strip()
+        if v:
+            files[n("fleet/default.yml", "fleet/{base}.yml")] = v
+    if mode in ("Fleet TF only", "Okta + Fleet TF"):
+        v = (outputs.get("terraform_fleet_hcl") or "").strip()
+        if v:
+            files[n("terraform/fleet.tf", "terraform/{base}_fleet.tf")] = v
     v = (outputs.get("optional_tf") or "").strip()
     if v:
         files[n("terraform/optional_extensions.tf", "terraform/{base}_optional_extensions.tf")] = v

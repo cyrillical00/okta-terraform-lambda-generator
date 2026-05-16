@@ -84,6 +84,16 @@ JAMF disambiguators (route to terraform_jamf_hcl, never to terraform_okta_hcl):
 - "DEP enrollment" / "prestage enrollment" / "Automated Device Enrollment" -> jamfpro_computer_prestage_enrollment
 - "MDM lock" / "remote wipe" / "push certificate" / "Self Service category" -> NOT supported by any JAMF Terraform provider; map to jamfpro_policy if a policy substitute exists, else `unknown`. The generator emits a `# NOTE` comment in this case.
 
+Fleet GitOps disambiguators (route to fleet_gitops_yaml, never to terraform_okta_hcl or any other terraform_* key):
+- "Fleet policy" / "Fleet compliance check" / "osquery policy" / "Fleet pass/fail check" -> fleet_policy
+- "Fleet label" / "Fleet host group" / "dynamic Fleet host group" / "Fleet host filter" -> fleet_label
+- "Fleet query" / "osquery query" / "Fleet saved query" / "Fleet live query" -> fleet_query
+- "Fleet configuration profile" / "Fleet MDM profile" / "deploy a mobileconfig via Fleet" -> fleet_configuration_profile
+- "Fleet script" / "deploy script via Fleet" / "run script through Fleet" -> fleet_script
+- "Fleet software package" / "Fleet-maintained app" / "deploy app via Fleet" / "Fleet VPP app" -> fleet_software_package
+- "Fleet agent options" / "osquery agent config" / "Fleet distributed_interval" -> fleet_agent_options
+- "Fleet team settings" / "Fleet org settings" / "Fleet macOS update enforcement" / "Fleet MDM enrollment config" -> fleet_team_settings
+
 ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
 - "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
 - "Add a default openid scope" / "Create a read:data scope" -> resource_type = okta_auth_server_scope
@@ -170,6 +180,37 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 - Generate complete cloud_function_python.
 - Set terraform_lambda_hcl, lambda_python, lambda_requirements ALL to exactly "" (empty string).
 - Do NOT generate any AWS resources. The webhook target for any okta_event_hook in this mode is the GCP Cloud Function HTTP trigger URI from terraform_gcp_hcl — wire `channel.uri` to the function URI variable, NOT a Lambda function URL.
+
+**OUTPUT MODE: JAMF only**
+- Generate complete terraform_jamf_hcl with the JAMF Pro provider block, the apply runbook header, and the requested jamfpro_* resources. Follow SECTION D below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, fleet_gitops_yaml, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+
+**OUTPUT MODE: Okta + JAMF**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_jamf_hcl with JAMF resources following SECTION D below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, fleet_gitops_yaml, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+
+**OUTPUT MODE: Fleet GitOps only**
+- Generate complete fleet_gitops_yaml with the apply runbook header and the requested Fleet resources. Follow SECTION I below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, terraform_fleet_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+- Do NOT generate any Terraform HCL in this mode. Fleet's officially-recommended IaC path is YAML applied via fleetctl. Use "Fleet TF only" output mode if the user explicitly wants Terraform HCL via the experimental l-teles/fleetdm community provider.
+
+**OUTPUT MODE: Okta + Fleet GitOps**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete fleet_gitops_yaml with Fleet resources following SECTION I below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, terraform_fleet_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- The two outputs are independent. Do NOT cross-reference Okta variables in the Fleet YAML or vice versa.
+
+**OUTPUT MODE: Fleet TF only**
+- Generate complete terraform_fleet_hcl with the experimental warning block, apply runbook header, and requested Fleet resources following SECTION J below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+- Use the l-teles/fleetdm community provider pinned to exactly 0.5.4.
+
+**OUTPUT MODE: Okta + Fleet TF**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_fleet_hcl with Fleet resources following SECTION J below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe.
 
 ---
 
@@ -2140,6 +2181,509 @@ FORBIDDEN in any HCL quoted string (descriptions, resource arguments, heredocs):
 - `\\$` standalone: same reason; the only valid backslash escapes in HCL strings are `\\n`, `\\t`, `\\r`, `\\"`, `\\\\`, and Unicode forms (`\\u` plus four hex digits, or `\\U` plus eight hex digits)
 
 FORBIDDEN: email_template_id, locale (use language instead), customization_id, Python-style triple-double-quoted strings (HCL parser rejects them; use heredocs `<<-EOT ... EOT` instead).
+
+---
+
+## SECTION I — Fleet MDM GitOps YAML (fleet_gitops_yaml)
+
+This section governs the `fleet_gitops_yaml` output key. Fleet (fleetdm.com) is an open-source osquery-based device management platform. Unlike JAMF / Okta / GCP, Fleet's official infrastructure-as-code path is YAML manifests applied via `fleetctl`, not Terraform. The `fleet_gitops_yaml` output is a single YAML document representing Fleet's `default.yml` file.
+
+Apply runbook (MANDATORY, emit verbatim as the first lines of every fleet_gitops_yaml output):
+
+```yaml
+# FLEET GITOPS APPLY RUNBOOK
+# 1. Validate:  fleetctl apply -f default.yml --dry-run
+# 2. Apply:     fleetctl apply -f default.yml
+# Required env: FLEET_URL, FLEET_API_TOKEN
+# Server requirement: Fleet >= 4.82.0
+```
+
+After the runbook header, emit only the top-level keys the prompt requires. Allowed top-level keys: `labels`, `policies`, `queries`, `agent_options`, `controls`, `software`, `org_settings`. Do NOT emit `fleets:` (multi-team layout) unless the prompt explicitly asks for it. Do NOT wrap the document in `---` markers (Fleet does not need them and `fleetctl` rejects multi-doc YAML).
+
+### fleet_policy
+
+Required: `name`, `query` (osquery SQL returning at least one row when the policy PASSES), `platform`.
+Platform values: one or more of `darwin`, `windows`, `linux`, `chrome`. Multiple platforms join with commas: `platform: "darwin,linux"`.
+Optional: `description`, `resolution`, `critical` (bool, default false), `labels_include_any` (list of label names), `calendar_events_enabled` (bool), `conditional_access_enabled` (bool).
+Automations (optional, mutually exclusive with each other): `install_software.fleet_maintained_app_slug` OR `install_software.package_path` OR `run_script.path`.
+
+Worked example (FileVault check on macOS):
+```yaml
+policies:
+  - name: macOS - FileVault is enabled
+    description: Verifies that full-disk encryption is on.
+    resolution: Enable FileVault under System Settings > Privacy & Security > FileVault.
+    query: "SELECT 1 FROM filevault_status WHERE status = 'FileVault is On.';"
+    platform: darwin
+    critical: true
+```
+
+Common mistakes:
+- Inverted SQL logic (returning rows on FAIL instead of PASS). Fleet treats "at least one row" as PASS.
+- Cross-platform queries with osquery tables that only exist on one platform. Split into separate policies per platform when the SQL diverges.
+- Setting both `install_software` AND `run_script` on one policy. They are mutually exclusive.
+
+### fleet_label
+
+Required: `name`. Exactly ONE of: `query` (dynamic membership via osquery SQL), `hosts` (manual list of hardware UUIDs), or `criteria` (rare; used for advanced filters). The three are mutually exclusive.
+Optional: `description`, `platform`, `label_membership_type` (`dynamic` for query-based, `manual` for hosts-based).
+
+Worked example (dynamic, Arm64 architecture):
+```yaml
+labels:
+  - name: Arm64
+    description: Hosts running on ARM64 (Apple Silicon, Windows on ARM).
+    platform: darwin,windows
+    query: "SELECT 1 FROM system_info WHERE cpu_type LIKE 'arm64%';"
+    label_membership_type: dynamic
+```
+
+Worked example (manual, explicit hosts):
+```yaml
+labels:
+  - name: C-Suite
+    description: Manual roster of C-Suite hosts.
+    label_membership_type: manual
+    hosts:
+      - "IR7M6ZGQJM"
+      - "JMFWY8VZ09"
+```
+
+Common mistakes:
+- Including both `query` and `hosts` on the same label. Pick one based on whether membership is rule-driven (dynamic) or roster-driven (manual).
+- Using `label_membership_type: dynamic` without a `query` field, or `manual` without a `hosts` list. The two fields are paired.
+
+### fleet_query
+
+Required: `name`, `query` (osquery SQL), `interval` (seconds; 0 means manual-only).
+Optional: `description`, `platform`, `observer_can_run` (bool), `automations_enabled` (bool), `logging` (`snapshot`|`differential`|`differential_ignore_removals`).
+
+Worked example (daily Chrome extensions inventory):
+```yaml
+queries:
+  - name: chrome-extensions
+    description: List all installed Chrome browser extensions per host.
+    query: "SELECT * FROM chrome_extensions;"
+    interval: 86400
+    platform: darwin,windows,linux
+    observer_can_run: true
+    logging: snapshot
+```
+
+Common mistakes:
+- `interval` as a string. It must be an integer (seconds).
+- Setting `observer_can_run: true` on queries that mutate state. Read-only queries only.
+
+### fleet_configuration_profile
+
+Configuration profiles are NOT inline YAML; they are external `.mobileconfig` (macOS) or `.xml` / `.bplist` (Windows) files referenced by path. The YAML carries the path reference; the actual profile content is uploaded out-of-band.
+
+Required: under `controls.apple_settings.configuration_profiles` (macOS) or `controls.windows_settings.configuration_profiles` (Windows), one entry per profile.
+- Use singular `path:` for a SINGLE file.
+- Use plural `paths:` for a GLOB pattern matching multiple files.
+- Optional: `labels_include_any` (list of label names; profile applies only to hosts matching any of these labels).
+
+Worked example (macOS Wi-Fi profile scoped to a label):
+```yaml
+controls:
+  apple_settings:
+    configuration_profiles:
+      - path: ../lib/macos/profiles/corp-wifi.mobileconfig
+        labels_include_any:
+          - Engineering
+```
+
+Worked example (glob-matched Windows profiles):
+```yaml
+controls:
+  windows_settings:
+    configuration_profiles:
+      - paths: ../lib/windows/profiles/*.xml
+```
+
+Always emit a `# NOTE: Upload the referenced .mobileconfig / .xml files to the lib/ directory before running fleetctl apply.` comment near a configuration_profiles block so the user knows the binary handling is manual.
+
+Common mistakes:
+- Singular `path:` with a glob (e.g. `path: *.mobileconfig`). Filenames with `*`, `?`, `[`, or `{` require `paths:`.
+- Inline-base64-encoded `.mobileconfig` content. Fleet expects a file reference, not inline content.
+
+### fleet_script
+
+Scripts are external `.sh` (macOS/Linux) or `.ps1` (Windows) files referenced by path under `controls.scripts`.
+
+Worked example:
+```yaml
+controls:
+  scripts:
+    - path: ../lib/scripts/clear-dns-cache.sh
+```
+
+Always emit a `# NOTE: Upload the referenced script files to the lib/scripts/ directory before running fleetctl apply.` comment so the user knows scripts are external.
+
+### fleet_software_package
+
+Three flavours, all under `software:` top-level:
+
+1. `packages` — custom installer (`.pkg`, `.msi`, `.deb`, `.rpm`) uploaded out-of-band.
+2. `fleet_maintained_apps` — Fleet's curated catalog of pre-packaged apps (Slack, Chrome, etc.). Reference by `slug`.
+3. `app_store_apps` — iOS / iPadOS apps via Apple App Store ID + VPP licensing.
+
+Worked example (Fleet-maintained Slack on macOS):
+```yaml
+software:
+  fleet_maintained_apps:
+    - slug: slack/darwin
+      version: "4.47.65"
+      self_service: true
+      categories:
+        - Productivity
+```
+
+Worked example (custom package upload):
+```yaml
+software:
+  packages:
+    - path: ../lib/software/internal-tool-1.2.0.pkg
+      categories:
+        - Developer Tools
+      self_service: false
+```
+
+Common mistakes:
+- Using `fleet_maintained_apps` for apps not in Fleet's catalog. When in doubt, use `packages` and reference a path.
+- Omitting `version` on `fleet_maintained_apps`. The slug alone is not enough; Fleet pins to a specific version per the manifest.
+
+### fleet_agent_options
+
+Configures the osquery agent. Lives under `agent_options.config` at the top level (default.yml or per-fleet override).
+
+Required (when emitting): `config.options` dict with osquery option keys.
+Optional: `config.decorators.load` (list of SQL queries to attach as decorators on every result).
+
+Worked example:
+```yaml
+agent_options:
+  config:
+    options:
+      distributed_interval: 30
+      pack_delimiter: "/"
+      logger_tls_period: 10
+      disable_distributed: false
+    decorators:
+      load:
+        - "SELECT uuid AS host_uuid FROM system_info;"
+```
+
+Common mistakes:
+- Emitting `agent_options` without the nested `config:` key. Fleet's parser requires the two-level nesting.
+- Setting `distributed_interval` below 10. Fleet recommends >= 10 for hosts not under stress.
+
+### fleet_team_settings
+
+Org-level controls and MDM enrollment policies. Lives under `controls` and `org_settings` at the top level. Heaviest schema; only emit the keys the prompt actually requires.
+
+Worked example (macOS update enforcement to 14.5 by a specific date):
+```yaml
+controls:
+  macos_updates:
+    minimum_version: "14.5"
+    deadline: "2026-05-24"
+```
+
+Worked example (Fleet org branding minimum):
+```yaml
+org_settings:
+  org_info:
+    org_name: "Acme Corp"
+    contact_url: "https://acme.example/it-support"
+  smtp_settings:
+    enable_smtp: false
+```
+
+Common mistakes:
+- Putting `macos_updates` at the top level. It lives inside `controls`.
+- Setting `deadline` in any format other than `YYYY-MM-DD`. Fleet rejects other shapes.
+
+### PARSER OVERRIDE — Fleet edition
+
+`intent.attributes.query`, `intent.attributes.platform`, and similar parser-supplied Fleet fields are UNRELIABLE. The parser is an Okta-infrastructure analyst that adds Fleet support as best-effort routing; it does not understand osquery SQL. ALWAYS derive the actual osquery SQL, platform, interval, etc. from `intent.resource_name`, `intent.notes`, and the original natural-language description.
+
+### Composite mode "Okta + Fleet GitOps"
+
+When `output_mode` is "Okta + Fleet GitOps", emit BOTH `terraform_okta_hcl` (with the standard Okta provider block + requested okta_* resources) AND `fleet_gitops_yaml` (with the apply runbook header + requested fleet_* resources). The two outputs are independent — Fleet's YAML does not reference any Okta Terraform state, and vice versa. Do NOT cross-wire variables, labels, or group memberships between the two files.
+
+For the parallel composite when the user wants Terraform output instead of YAML, use `Okta + Fleet TF` output mode and follow SECTION J (Fleet Terraform via the l-teles/fleetdm community provider).
+
+### Common mistakes (cross-cutting)
+
+- Wrapping the YAML in triple-backtick fences. Fleet's parser ignores them but the file is then not valid YAML for any other consumer; the JSON output dict must contain the raw YAML text, not a fenced code block.
+- Forgetting the apply runbook header. Every fleet_gitops_yaml output MUST start with the four-line `# FLEET GITOPS APPLY RUNBOOK` block.
+- Emitting an empty top-level key (e.g. `policies: []`). When a section has no items, omit the key entirely.
+- Mixing tabs and spaces. YAML requires consistent indentation; use two-space indent throughout.
+- Emitting `scripts:` at the TOP LEVEL. Scripts ALWAYS live under `controls.scripts`. Top-level `scripts:` is not a valid Fleet GitOps key and `fleetctl apply` rejects it.
+- Emitting `macos_updates:` or `windows_updates:` under `org_settings:`. Both update-enforcement blocks live under `controls.macos_updates` / `controls.windows_updates`. `org_settings:` is for org branding only (org_name, contact_url, smtp_settings) and contains NO update or device-management keys.
+- Top-level key allowlist (everything else is wrong):
+  `labels`, `policies`, `queries`, `agent_options`, `controls`, `software`, `org_settings`, `fleets`.
+
+### Cross-reference: Fleet Terraform (terraform_fleet_hcl)
+
+The same 8 `fleet_*` parser resource types route to either format depending on output_mode. When output_mode is `Fleet TF only` or `Okta + Fleet TF`, emit Terraform HCL into `terraform_fleet_hcl` following SECTION J below, NOT YAML into `fleet_gitops_yaml`. Fleet's officially-recommended path is the GitOps YAML in this section; the Terraform path uses an experimental community provider and is documented in SECTION J with loud warnings.
+
+---
+
+## SECTION J — Fleet MDM Terraform (terraform_fleet_hcl)
+
+This section governs the `terraform_fleet_hcl` output key. Unlike SECTION I (Fleet GitOps YAML), this section emits Terraform HCL using the community-maintained `l-teles/fleetdm` provider, currently in preview at v0.5.4. The provider's README explicitly says "USE AT YOUR OWN RISK" and notes it was "developed primarily through AI assistance" and "has not been extensively tested in production environments". For most users, SECTION I (GitOps YAML) is the safer path; SECTION J is for shops that want Fleet declarations to live alongside Okta / AWS Terraform in a single IaC stack.
+
+Mandatory output header (verbatim, FIRST lines of every terraform_fleet_hcl output):
+
+```hcl
+# ============================================================
+# EXPERIMENTAL FLEET PROVIDER WARNING
+# This output uses the community-maintained l-teles/fleetdm
+# Terraform provider, currently v0.5.4 (preview, May 2026).
+# The provider README explicitly says: "USE AT YOUR OWN RISK"
+# and notes it "has not been extensively tested in production
+# environments". Pin to exactly 0.5.4 — do NOT use `~> 0.5`.
+# Fleet's officially-recommended IaC path is GitOps YAML via
+# fleetctl (use "Fleet GitOps only" output mode for that).
+# ============================================================
+
+# FLEET TF APPLY RUNBOOK
+# 1. Validate: terraform init && terraform validate
+# 2. Apply:    terraform apply
+# Required env: FLEET_URL, FLEET_API_TOKEN
+# Server requirement: Fleet >= 4.82.0
+# Provider pin: l-teles/fleetdm = 0.5.4 (exact; preview release)
+```
+
+### Provider block (always include in terraform_fleet_hcl)
+
+```hcl
+terraform {
+  required_providers {
+    fleetdm = {
+      source  = "l-teles/fleetdm"
+      version = "0.5.4"
+    }
+  }
+}
+
+provider "fleetdm" {
+  url       = var.fleet_url
+  api_token = var.fleet_api_token
+}
+
+variable "fleet_url" {
+  type        = string
+  description = "Fleet server base URL (e.g. https://fleet.example.com)"
+}
+
+variable "fleet_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Fleet API token. Obtain from Fleet UI > Account > API token."
+}
+```
+
+CRITICAL: the version constraint MUST be `version = "0.5.4"` exactly. Do NOT use `~> 0.5`, `>= 0.5.0`, or any other range syntax. The provider is still in preview and a future patch release may break this output.
+
+### fleet_* -> fleetdm_* resource mapping (the parser uses fleet_*, the generator emits fleetdm_*)
+
+| Parser type | TF resource | Notes |
+|---|---|---|
+| fleet_policy | `fleetdm_policy` | Direct mapping |
+| fleet_label | `fleetdm_label` | Direct mapping |
+| fleet_query | `fleetdm_query` | Provider deprecates this in favor of `fleetdm_report` for reporting use cases; for simple saved queries `fleetdm_query` is still accepted |
+| fleet_configuration_profile | `fleetdm_configuration_profile` | Direct mapping |
+| fleet_script | `fleetdm_script` | Direct mapping |
+| fleet_software_package | `fleetdm_software_package` | Direct mapping |
+| fleet_agent_options | `fleetdm_configuration` | Renamed; the TF provider rolls global config + agent options into one resource |
+| fleet_team_settings | `fleetdm_fleet` | Renamed; `fleetdm_team` is a deprecated alias, do NOT emit it |
+
+The provider also exposes resources without a parser equivalent: `fleetdm_enroll_secret`, `fleetdm_user`, `fleetdm_bootstrap_package`, `fleetdm_setup_experience`, `fleetdm_report`. Only emit these when the prompt explicitly requests them.
+
+### fleetdm_policy
+
+Required: `name`, `query` (osquery SQL returning at least one row on PASS), `platform`.
+Optional: `description`, `resolution`, `critical` (bool), `team_id` (number; omit for global policy).
+
+Worked example (FileVault check on macOS):
+```hcl
+resource "fleetdm_policy" "filevault_enabled" {
+  name        = "macOS - FileVault is enabled"
+  description = "Verifies that full-disk encryption is on."
+  resolution  = "Enable FileVault under System Settings > Privacy & Security > FileVault."
+  query       = "SELECT 1 FROM filevault_status WHERE status = 'FileVault is On.';"
+  platform    = "darwin"
+  critical    = true
+}
+```
+
+### fleetdm_label
+
+Required: `name`. Exactly ONE of: `query` (dynamic) or `hosts` (manual; list of hardware UUIDs).
+Optional: `description`, `platform`, `label_membership_type` (`"dynamic"` or `"manual"`).
+
+Worked example (dynamic Arm64):
+```hcl
+resource "fleetdm_label" "arm64_hosts" {
+  name                   = "Arm64"
+  description            = "Hosts running on ARM64 (Apple Silicon, Windows on ARM)."
+  platform               = "darwin,windows"
+  query                  = "SELECT 1 FROM system_info WHERE cpu_type LIKE 'arm64%';"
+  label_membership_type  = "dynamic"
+}
+```
+
+Worked example (manual C-Suite):
+```hcl
+resource "fleetdm_label" "c_suite" {
+  name                   = "C-Suite"
+  description            = "Manual roster of C-Suite hosts."
+  label_membership_type  = "manual"
+  hosts                  = ["IR7M6ZGQJM", "JMFWY8VZ09"]
+}
+```
+
+### fleetdm_query
+
+Required: `name`, `query`, `interval` (number, seconds; 0 = manual-only).
+Optional: `description`, `platform`, `observer_can_run` (bool), `logging` (`"snapshot"`|`"differential"`|`"differential_ignore_removals"`).
+
+Worked example:
+```hcl
+resource "fleetdm_query" "chrome_extensions" {
+  name              = "chrome-extensions"
+  description       = "List all installed Chrome browser extensions per host."
+  query             = "SELECT * FROM chrome_extensions;"
+  interval          = 86400
+  platform          = "darwin,windows,linux"
+  observer_can_run  = true
+  logging           = "snapshot"
+}
+```
+
+### fleetdm_configuration_profile
+
+Configuration profiles reference external `.mobileconfig` (macOS) or `.xml` (Windows) files.
+
+Required: `name`, one of `mobileconfig` (string, the file path or inline plist) or `path` (preferred for external files), `platform` (`"darwin"` or `"windows"`).
+Optional: `team_id`, `labels_include_any` (list of label names).
+
+Worked example (macOS Wi-Fi profile):
+```hcl
+resource "fleetdm_configuration_profile" "corp_wifi" {
+  name      = "Corporate Wi-Fi"
+  path      = "../profiles/corp-wifi.mobileconfig"
+  platform  = "darwin"
+  labels_include_any = [fleetdm_label.engineering.name]
+}
+
+# NOTE: Upload the referenced .mobileconfig file to the profiles/ directory before running terraform apply.
+```
+
+### fleetdm_script
+
+Scripts reference external `.sh` (macOS/Linux) or `.ps1` (Windows) files.
+
+Required: `name`, `path` (file path to the script).
+Optional: `team_id`.
+
+Worked example:
+```hcl
+resource "fleetdm_script" "clear_dns_cache" {
+  name = "Clear DNS cache"
+  path = "../scripts/clear-dns-cache.sh"
+}
+
+# NOTE: Upload the referenced script file to the scripts/ directory before running terraform apply.
+```
+
+### fleetdm_software_package
+
+Three sub-types, selected by which of `package_path`, `fleet_maintained_app_slug`, or `app_store_app_id` is set.
+
+Worked example (Fleet-maintained Slack):
+```hcl
+resource "fleetdm_software_package" "slack" {
+  fleet_maintained_app_slug  = "slack/darwin"
+  version                    = "4.47.65"
+  self_service               = true
+  categories                 = ["Productivity"]
+}
+```
+
+Worked example (custom package):
+```hcl
+resource "fleetdm_software_package" "internal_tool" {
+  package_path  = "../software/internal-tool-1.2.0.pkg"
+  categories    = ["Developer Tools"]
+  self_service  = false
+}
+```
+
+### fleetdm_configuration
+
+Global Fleet configuration + osquery agent options rolled into one resource. The TF provider unifies these (in GitOps YAML they're separate keys: `agent_options` vs `org_settings`).
+
+Required: at least one of `agent_options_json` (string of JSON) or `org_info` block.
+
+Worked example (agent options only):
+```hcl
+resource "fleetdm_configuration" "global" {
+  agent_options_json = jsonencode({
+    config = {
+      options = {
+        distributed_interval = 30
+        pack_delimiter       = "/"
+        logger_tls_period    = 10
+      }
+      decorators = {
+        load = ["SELECT uuid AS host_uuid FROM system_info;"]
+      }
+    }
+  })
+}
+```
+
+### fleetdm_fleet (team settings; NOT fleetdm_team which is deprecated)
+
+Per-team settings: macOS update enforcement, Windows update enforcement, host expiry, MDM features.
+
+Required: `name`.
+Optional: `description`, `macos_updates`, `windows_updates`, `host_expiry_settings`, `mdm` block.
+
+Worked example (macOS update enforcement):
+```hcl
+resource "fleetdm_fleet" "engineering" {
+  name        = "Engineering"
+  description = "Engineering Macs and Windows hosts."
+
+  macos_updates {
+    minimum_version = "14.5"
+    deadline        = "2026-05-24"
+  }
+}
+```
+
+CRITICAL: emit `fleetdm_fleet`, NOT `fleetdm_team`. The provider keeps `fleetdm_team` as a deprecated alias; it works for now but will be removed. Always use `fleetdm_fleet`.
+
+### Composite mode "Okta + Fleet TF"
+
+When `output_mode` is `Okta + Fleet TF`, emit BOTH `terraform_okta_hcl` and `terraform_fleet_hcl`. Unlike the GitOps composite, BOTH files declare `terraform { required_providers {} }` blocks, and the terraform_gen.py composite-mode merge will dedupe the required_providers entries into okta.tf and strip the duplicate block from fleet.tf at the end of generation. Shared variables (e.g. `fleet_url` if Okta references it) are deduped automatically.
+
+### PARSER OVERRIDE — Fleet TF edition
+
+Identical to SECTION I: `intent.attributes.query`, `intent.attributes.platform`, and similar parser-supplied Fleet fields are UNRELIABLE. Derive the actual osquery SQL, platform, interval, etc. from `intent.resource_name`, `intent.notes`, and the original natural-language description.
+
+### Common mistakes (Fleet TF specific)
+
+- Using `~> 0.5` or any range constraint instead of exactly `version = "0.5.4"`. The provider is preview; even patch upgrades can break.
+- Emitting `fleetdm_team` instead of `fleetdm_fleet`. The former is deprecated.
+- Skipping the experimental warning block. Every terraform_fleet_hcl output MUST start with the 10-line warning + 6-line runbook block verbatim.
+- Mixing `package_path`, `fleet_maintained_app_slug`, and `app_store_app_id` on one `fleetdm_software_package`. Exactly one of the three must be set.
+- Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:

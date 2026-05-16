@@ -44,6 +44,11 @@ TARGET_CADENCE_DAYS = {
     # credentials we own end to end.
     "JAMF_CLIENT_ID": 90,
     "JAMF_CLIENT_SECRET": 90,
+    # Phase 13, Fleet MDM credentials. Same env vars cover both the GitOps
+    # (fleetctl apply) and the Terraform (l-teles/fleetdm provider) paths.
+    # 90-day cadence matches other API tokens we own end to end.
+    "FLEET_URL": 90,
+    "FLEET_API_TOKEN": 90,
 }
 
 _github_token: str = ""

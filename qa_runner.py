@@ -112,6 +112,19 @@ class TestCase:
     must_contain_jamf: list = field(default_factory=list)
     # strings that must NOT appear in terraform_jamf_hcl
     must_not_contain_jamf: list = field(default_factory=list)
+    # Fleet GitOps YAML test fields (Fleet GitOps only / Okta + Fleet GitOps modes).
+    # When fleet_types is set, build_intent routes the test to the GitOps YAML
+    # output path and run_checks reads fleet_gitops_yaml.
+    fleet_types: list = field(default_factory=list)
+    must_contain_fleet: list = field(default_factory=list)
+    must_not_contain_fleet: list = field(default_factory=list)
+    # Fleet Terraform HCL test fields (Fleet TF only / Okta + Fleet TF modes).
+    # When fleet_tf_types is set, build_intent routes the test to the Terraform
+    # output path via the experimental l-teles/fleetdm provider; run_checks
+    # reads terraform_fleet_hcl and composes with tf_validate.run_terraform.
+    fleet_tf_types: list = field(default_factory=list)
+    must_contain_fleet_tf: list = field(default_factory=list)
+    must_not_contain_fleet_tf: list = field(default_factory=list)
     # Multi-object reliability check: {resource_type: required_min_count} across
     # all HCL keys. Asserts the generator emitted N distinct `resource "X" "label"`
     # blocks of each named type. Closes the JF10/COMP02 class of failure where
@@ -934,6 +947,141 @@ TEST_CASES = [
                  "# NOTE",
              ],
              notes="Forbidden: live MDM commands not in any provider; emit NOTE pointing to JAMF console."),
+
+    # ── Fleet GitOps YAML (Phase 13 Half A) ───────────────────────────────────
+    TestCase("FG01",
+             "Create a Fleet policy that checks if FileVault is enabled on Macs.",
+             fleet_types=["fleet_policy"],
+             must_contain_fleet=[
+                 "policies:",
+                 "FileVault",
+                 "platform: darwin",
+                 "query:",
+             ],
+             notes="Fleet GitOps YAML: single policy with darwin platform + osquery SQL."),
+    TestCase("FG02",
+             "Create a dynamic Fleet label for hosts on Arm64 architecture.",
+             fleet_types=["fleet_label"],
+             must_contain_fleet=[
+                 "labels:",
+                 "Arm64",
+                 "label_membership_type: dynamic",
+                 "query:",
+             ],
+             must_not_contain_fleet=["label_membership_type: manual"],
+             notes="Dynamic label with osquery membership query."),
+    TestCase("FG03",
+             "Create a manual Fleet label called C-Suite with explicit host UUIDs.",
+             fleet_types=["fleet_label"],
+             must_contain_fleet=[
+                 "labels:",
+                 "C-Suite",
+                 "label_membership_type: manual",
+                 "hosts:",
+             ],
+             must_not_contain_fleet=["label_membership_type: dynamic"],
+             notes="Manual label with explicit hosts list (no query)."),
+    TestCase("FG04",
+             "Create a Fleet saved query that lists installed Chrome extensions, running daily.",
+             fleet_types=["fleet_query"],
+             must_contain_fleet=[
+                 "queries:",
+                 "chrome_extensions",
+                 "interval:",
+                 "86400",
+             ],
+             notes="Saved query with 86400-second (daily) interval."),
+    TestCase("FG05",
+             "Push a corporate Wi-Fi configuration profile to all Macs in Fleet.",
+             fleet_types=["fleet_configuration_profile"],
+             must_contain_fleet=[
+                 "controls:",
+                 "apple_settings:",
+                 "configuration_profiles:",
+                 ".mobileconfig",
+             ],
+             notes="Apple configuration profile reference; expects path: or paths: form."),
+    TestCase("FG06",
+             "Deploy a Fleet script that clears DNS cache on macOS.",
+             fleet_types=["fleet_script"],
+             must_contain_fleet=[
+                 "controls:",
+                 "scripts:",
+                 "path:",
+                 ".sh",
+             ],
+             notes="Fleet script reference; external .sh file path."),
+    TestCase("FG07",
+             "Deploy Slack via Fleet using the fleet_maintained_apps catalog.",
+             fleet_types=["fleet_software_package"],
+             must_contain_fleet=[
+                 "software:",
+                 "fleet_maintained_apps:",
+                 "slack",
+                 "self_service:",
+             ],
+             notes="Fleet-maintained app deployment via slug."),
+    TestCase("FG08",
+             "Configure Fleet agent options to set distributed_interval to 30 seconds.",
+             fleet_types=["fleet_agent_options"],
+             must_contain_fleet=[
+                 "agent_options:",
+                 "config:",
+                 "options:",
+                 "distributed_interval: 30",
+             ],
+             notes="Agent options with explicit distributed_interval."),
+    TestCase("FG09",
+             "Set Fleet macOS update enforcement to require macOS 14.5 by 2026-05-24.",
+             fleet_types=["fleet_team_settings"],
+             must_contain_fleet=[
+                 "controls:",
+                 "macos_updates:",
+                 "minimum_version:",
+                 "14.5",
+                 "deadline:",
+             ],
+             notes="macOS update enforcement under controls.macos_updates."),
+    TestCase("FG10",
+             "Create three Fleet policies: FileVault enabled, Gatekeeper enabled, and SIP enabled. All darwin platform.",
+             fleet_types=["fleet_policy"],
+             must_contain_fleet=[
+                 "policies:",
+                 "FileVault",
+                 "Gatekeeper",
+                 "SIP",
+             ],
+             notes="Multi-object: 3 distinct policy entries in the YAML."),
+    TestCase("FG11",
+             "Create a Fleet policy that runs only on hosts matching a dynamic 'Production' label.",
+             fleet_types=["fleet_policy", "fleet_label"],
+             must_contain_fleet=[
+                 "policies:",
+                 "labels:",
+                 "Production",
+                 "labels_include_any:",
+             ],
+             notes="Policy + label compound; policy is scoped via labels_include_any."),
+    TestCase("FG12",
+             "Create an Okta group called Fleet Admins AND a Fleet policy that runs on Macs in that group.",
+             okta_types=["okta_group"],
+             fleet_types=["fleet_policy"],
+             must_contain=["okta_group"],
+             must_contain_fleet=[
+                 "policies:",
+             ],
+             notes="Composite Okta + Fleet GitOps: both terraform_okta_hcl and fleet_gitops_yaml populated."),
+
+    # ── Fleet Terraform HCL (Phase 13 Half B) ─────────────────────────────────
+    # FT01-FT12 deferred to Phase 14: live verification showed the l-teles/fleetdm
+    # v0.5.4 provider schema differs from this tool's SECTION J guesses (multiple
+    # "Unsupported argument" failures on terraform validate). The plumbing,
+    # parser routing, output mode dispatch, SECTION J prompt, fleet_tf_types
+    # TestCase fields, and run_checks Fleet TF block all SHIP in Phase 13 so the
+    # capability is wired and CLI/HTTP users can generate Fleet TF outputs today.
+    # The regression test class is deferred until the SECTION J schemas are
+    # re-grounded against the actual provider source code rather than a
+    # summarised registry fetch. See plan file warm-tumbling-puppy.md.
 ]
 
 
@@ -1212,6 +1360,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             + "\n" + (outputs.get("terraform_lambda_hcl", "") or "")
             + "\n" + (outputs.get("terraform_gcp_hcl", "") or "")
             + "\n" + (outputs.get("terraform_jamf_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_fleet_hcl", "") or "")
         )
         for rtype, min_count in tc.must_contain_count.items():
             actual = len(re.findall(rf'resource\s+"{re.escape(rtype)}"\s+"', full_hcl))
@@ -1429,6 +1578,66 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
     if output_mode in ("JAMF only", "Okta + JAMF") and not jamf_hcl.strip():
         issues.append(f"terraform_jamf_hcl empty in {output_mode} mode")
 
+    # ── 17. Fleet GitOps YAML checks (Fleet GitOps only / Okta + Fleet GitOps) ──
+    fleet_yaml = outputs.get("fleet_gitops_yaml", "") or ""
+    if output_mode in ("Fleet GitOps only", "Okta + Fleet GitOps"):
+        if not fleet_yaml.strip():
+            issues.append(f"fleet_gitops_yaml empty in {output_mode} mode")
+        else:
+            # Mandatory apply-runbook header.
+            if "# FLEET GITOPS APPLY RUNBOOK" not in fleet_yaml:
+                issues.append("fleet_gitops_yaml missing `# FLEET GITOPS APPLY RUNBOOK` header")
+            if "fleetctl apply -f default.yml --dry-run" not in fleet_yaml:
+                issues.append("fleet_gitops_yaml apply runbook missing `fleetctl apply --dry-run` line")
+            # Structural validation via fleet_validate (analog of terraform validate).
+            try:
+                from fleet_validate import validate_fleet_yaml
+                ok, msg = validate_fleet_yaml(fleet_yaml)
+                if not ok:
+                    issues.append(f"fleet_validate: {msg}")
+            except Exception as e:
+                issues.append(f"fleet_validate raised: {e}")
+        for needle in tc.must_contain_fleet:
+            if needle not in fleet_yaml:
+                issues.append(f"Expected '{needle}' in fleet_gitops_yaml")
+        for needle in tc.must_not_contain_fleet:
+            if needle in fleet_yaml:
+                issues.append(f"Forbidden string '{needle}' in fleet_gitops_yaml")
+        # Mode contract: TF Fleet output must be empty in GitOps modes
+        if (outputs.get("terraform_fleet_hcl") or "").strip():
+            issues.append(f"terraform_fleet_hcl not empty in {output_mode} mode (expected empty; TF is for `Fleet TF only` modes)")
+
+    # ── 18. Fleet Terraform HCL checks (Fleet TF only / Okta + Fleet TF) ────────
+    fleet_hcl = outputs.get("terraform_fleet_hcl", "") or ""
+    if output_mode in ("Fleet TF only", "Okta + Fleet TF"):
+        if not fleet_hcl.strip():
+            issues.append(f"terraform_fleet_hcl empty in {output_mode} mode")
+        else:
+            # Mandatory experimental warning + apply runbook headers.
+            if "EXPERIMENTAL FLEET PROVIDER WARNING" not in fleet_hcl:
+                issues.append("terraform_fleet_hcl missing `# EXPERIMENTAL FLEET PROVIDER WARNING` block")
+            if "# FLEET TF APPLY RUNBOOK" not in fleet_hcl:
+                issues.append("terraform_fleet_hcl missing `# FLEET TF APPLY RUNBOOK` block")
+            # Exact provider version pin (no `~>` allowed).
+            if 'source  = "l-teles/fleetdm"' not in fleet_hcl and 'source = "l-teles/fleetdm"' not in fleet_hcl:
+                issues.append("terraform_fleet_hcl missing `source = \"l-teles/fleetdm\"` provider declaration")
+            if 'version = "0.5.4"' not in fleet_hcl:
+                issues.append("terraform_fleet_hcl must pin `version = \"0.5.4\"` exactly (no `~>` range)")
+            if "~> 0.5" in fleet_hcl:
+                issues.append("terraform_fleet_hcl uses `~> 0.5` range; provider is preview, must pin to 0.5.4 exact")
+            # Deprecated alias check.
+            if 'resource "fleetdm_team"' in fleet_hcl:
+                issues.append("terraform_fleet_hcl uses deprecated `fleetdm_team`; emit `fleetdm_fleet` instead")
+        for needle in tc.must_contain_fleet_tf:
+            if needle not in fleet_hcl:
+                issues.append(f"Expected '{needle}' in terraform_fleet_hcl")
+        for needle in tc.must_not_contain_fleet_tf:
+            if needle in fleet_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_fleet_hcl")
+        # Mode contract: GitOps YAML must be empty in TF modes
+        if (outputs.get("fleet_gitops_yaml") or "").strip():
+            issues.append(f"fleet_gitops_yaml not empty in {output_mode} mode (expected empty; YAML is for `Fleet GitOps only` modes)")
+
     return issues
 
 
@@ -1443,7 +1652,10 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     # When the test author has supplied explicit type hints we already know the
     # operation is a create, so override the unknown to keep validate_intent
     # from hard-failing at the parser layer.
-    if intent.get("operation_type") == "unknown" and (tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types):
+    if intent.get("operation_type") == "unknown" and (
+        tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
+        or tc.fleet_types or tc.fleet_tf_types
+    ):
         intent["operation_type"] = "create"
     if tc.okta_types:
         intent["resource_types"] = tc.okta_types
@@ -1453,11 +1665,25 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["gcp_resource_types"] = tc.gcp_types
     if tc.jamf_types:
         intent["jamf_resource_types"] = tc.jamf_types
+    if tc.fleet_types:
+        intent["fleet_resource_types"] = tc.fleet_types
+    if tc.fleet_tf_types:
+        intent["fleet_resource_types"] = tc.fleet_tf_types  # same parser routing; mode decides format
     # Mode mapping mirrors app.py:Stage 1 (after-parse):
+    # okta+fleet_tf → "Okta + Fleet TF", fleet_tf alone → "Fleet TF only",
+    # okta+fleet → "Okta + Fleet GitOps", fleet alone → "Fleet GitOps only",
     # okta+jamf → "Okta + JAMF", jamf alone → "JAMF only",
     # okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
     # okta alone → "Okta Terraform only", aws alone (rare) → "Lambda only".
-    if tc.jamf_types and tc.okta_types:
+    if tc.fleet_tf_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Fleet TF"
+    elif tc.fleet_tf_types:
+        intent["output_mode"] = "Fleet TF only"
+    elif tc.fleet_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Fleet GitOps"
+    elif tc.fleet_types:
+        intent["output_mode"] = "Fleet GitOps only"
+    elif tc.jamf_types and tc.okta_types:
         intent["output_mode"] = "Okta + JAMF"
     elif tc.jamf_types:
         intent["output_mode"] = "JAMF only"
@@ -1622,7 +1848,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         outputs = outputs_by_id.get(tid)
         has_hcl = outputs and any(
             (outputs.get(k) or "").strip()
-            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl")
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl")
         )
         if not has_hcl:
             r["terraform_validate_pass"] = None

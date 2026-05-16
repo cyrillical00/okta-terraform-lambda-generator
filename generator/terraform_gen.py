@@ -16,6 +16,8 @@ OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
     "cloud_function_python": "",
     "cloud_function_requirements": "",
     "terraform_jamf_hcl": "",
+    "fleet_gitops_yaml": "",
+    "terraform_fleet_hcl": "",
 }
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -198,10 +200,15 @@ def generate_all(
             ) from e
 
     # Hard-enforce output_mode constraints in code — prompt alone is not reliable enough.
+    # Every mode below zeros every output key not in its allow-set; Fleet GitOps and
+    # Fleet TF are independent output paths and their keys (fleet_gitops_yaml and
+    # terraform_fleet_hcl respectively) must NOT both be populated in any single mode.
     if output_mode == "Okta Terraform only":
         result["terraform_lambda_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -211,6 +218,8 @@ def generate_all(
         result["terraform_okta_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
@@ -218,24 +227,32 @@ def generate_all(
         result["terraform_okta_hcl"] = ""
         result["terraform_lambda_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["optional_tf"] = ""
     elif output_mode == "Okta + GCP":
         result["terraform_lambda_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
     elif output_mode == "Both":
-        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF
+        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF, NOT Fleet
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
     elif output_mode == "JAMF only":
         result["terraform_okta_hcl"] = ""
         result["terraform_lambda_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -244,6 +261,58 @@ def generate_all(
     elif output_mode == "Okta + JAMF":
         result["terraform_lambda_hcl"] = ""
         result["terraform_gcp_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+    elif output_mode == "Fleet GitOps only":
+        # Fleet GitOps YAML alone; zero every Terraform / Lambda output.
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + Fleet GitOps":
+        # Composite: Okta Terraform + Fleet GitOps YAML. Independent file types
+        # (HCL + YAML); no merge_terraform_blocks dedupe is needed because
+        # Fleet GitOps does not ship a Terraform provider.
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+    elif output_mode == "Fleet TF only":
+        # Fleet Terraform HCL alone via the experimental l-teles/fleetdm
+        # community provider (pinned to 0.5.4). Zero every other output key.
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + Fleet TF":
+        # Composite: Okta Terraform + Fleet Terraform. Both files declare a
+        # `terraform { required_providers {} }` block, so the composite-mode
+        # merge_terraform_blocks + dedupe_variable_blocks at the end of this
+        # function IS needed (unlike Okta + Fleet GitOps).
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -310,5 +379,18 @@ def generate_all(
         merged_okta, merged_jamf = dedupe_variable_blocks(merged_okta, merged_jamf)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_jamf_hcl"] = merged_jamf
+    elif output_mode == "Okta + Fleet TF":
+        # Both Okta and Fleet Terraform declare a `terraform { required_providers {} }`
+        # block. Merge the Fleet provider entry into okta.tf and strip the
+        # secondary terraform block from fleet.tf to avoid the "Duplicate required
+        # providers configuration" error at init time. Variable dedupe keeps shared
+        # vars (e.g. fleet_url) from being declared twice.
+        merged_okta, merged_fleet = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_fleet_hcl", ""),
+        )
+        merged_okta, merged_fleet = dedupe_variable_blocks(merged_okta, merged_fleet)
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_fleet_hcl"] = merged_fleet
 
     return result

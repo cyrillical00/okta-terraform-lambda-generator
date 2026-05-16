@@ -30,6 +30,21 @@ Two non-negotiable apply-time constraints baked into every JAMF output:
 
 Each generated `terraform_jamf_hcl` file ships with a top-of-file `# JAMF APPLY RUNBOOK` comment listing both constraints and the eventual-consistency warning so the apply runbook is self-documenting.
 
+### Fleet MDM (GitOps YAML, recommended)
+
+Fleet support targets the official `fleetctl` GitOps workflow. Output mode `Fleet GitOps only` (or composite `Okta + Fleet GitOps`) emits a single `fleet/default.yml` containing inline policies, labels, queries, agent options, controls, and software definitions, plus a `# FLEET GITOPS APPLY RUNBOOK` header documenting `fleetctl apply -f default.yml --dry-run` (validate) and `fleetctl apply -f default.yml` (apply). Required env: `FLEET_URL`, `FLEET_API_TOKEN`. Server requirement: Fleet >= 4.82.0.
+
+YAML validation runs in `fleet_validate.py` (pure Python, PyYAML-based) — confirms top-level keys, required fields per resource, label mutual-exclusivity (`query` XOR `hosts` XOR `criteria`), and apply runbook header presence. An optional `fleetctl apply --dry-run` second pass runs when `fleetctl` is on `PATH`.
+
+### Fleet MDM (Terraform, EXPERIMENTAL, regression deferred)
+
+For shops that want Fleet declarations alongside their Okta / AWS Terraform, output modes `Fleet TF only` and `Okta + Fleet TF` emit HCL using the community-maintained `l-teles/fleetdm` provider, pinned to exactly `0.5.4`. The provider README explicitly says "USE AT YOUR OWN RISK" and notes it was "developed primarily through AI assistance". Every `terraform_fleet_hcl` output ships with a loud `# EXPERIMENTAL FLEET PROVIDER WARNING` block at the top so the risk is visible at apply time.
+
+**Phase 13 ship status — Half B (Terraform):**
+- Plumbing wired (output keys, output modes, file map, parser routing, prompt SECTION J).
+- Regression test class (FT01–FT12) **deferred to Phase 14**. Initial live verification showed the SECTION J resource schemas in this tool's prompt do not match the actual provider's attribute names (multiple `Unsupported argument` errors from `terraform validate`). The schemas were grounded in a summarised registry fetch, not the provider source. Phase 14 will re-ground SECTION J against the provider's actual `internal/provider/*` Go source files and add the FT regression class with correct attribute references.
+- Use the GitOps YAML path (`Fleet GitOps only`) for production today. The Terraform path is callable and produces output, but the output is best-effort and unverified against the real provider until Phase 14 closes.
+
 ## Feature surface
 
 **Generation pipeline.** Anthropic Haiku 4.5 with prompt caching (system prompts wrapped in `cache_control: ephemeral`); intent parser, generator, and validator/refiner each run as a discrete pass. Live env context from Okta / AWS / GCP resolves real group, app, function, and project IDs into the parsed intent before generation.

@@ -33,6 +33,14 @@ ALLOWED_RESOURCE_TYPES = {
     "jamfpro_computer_extension_attribute",
     "jamfpro_restricted_software",
     "jamfpro_computer_prestage_enrollment",
+    "fleet_policy",
+    "fleet_label",
+    "fleet_query",
+    "fleet_configuration_profile",
+    "fleet_script",
+    "fleet_software_package",
+    "fleet_agent_options",
+    "fleet_team_settings",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}
