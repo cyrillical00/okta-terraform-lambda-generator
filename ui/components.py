@@ -28,8 +28,27 @@ _STARTER_CHIPS = [
 ]
 
 
-def _infer_mode(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> str:
-    """Mirror app.py's mode-inference logic so the read-only chip stays in sync."""
+def _infer_mode(
+    okta_types: list[str],
+    aws_types: list[str],
+    gcp_types: list[str],
+    jamf_types: list[str] | None = None,
+    fleet_types: list[str] | None = None,
+) -> str:
+    """Mirror app.py's mode-inference logic so the read-only chip stays in sync.
+
+    Order mirrors app.py: Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
+    Fleet TF stays CLI/HTTP-only, so the UI never infers a Fleet TF mode."""
+    jamf_types = jamf_types or []
+    fleet_types = fleet_types or []
+    if fleet_types and okta_types:
+        return "Okta + Fleet GitOps"
+    if fleet_types:
+        return "Fleet GitOps only"
+    if jamf_types and okta_types:
+        return "Okta + JAMF"
+    if jamf_types:
+        return "JAMF only"
     if gcp_types and okta_types:
         return "Okta + GCP"
     if gcp_types:
@@ -68,11 +87,17 @@ def render_hero_starters() -> None:
                 st.rerun()
 
 
-def render_mode_chip(okta_types: list[str], aws_types: list[str], gcp_types: list[str]) -> None:
+def render_mode_chip(
+    okta_types: list[str],
+    aws_types: list[str],
+    gcp_types: list[str],
+    jamf_types: list[str] | None = None,
+    fleet_types: list[str] | None = None,
+) -> None:
     """Render a small read-only mode pill that reflects the current checkbox
     selection. Pure presentation; does NOT change `output_mode` in state.
     """
-    mode = _infer_mode(okta_types, aws_types, gcp_types)
+    mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types)
     st.markdown(mode_chip_html(mode), unsafe_allow_html=True)
 
 
@@ -188,15 +213,47 @@ _GCP_RESOURCE_LABEL_TO_TF = {
     "Secret": "google_secret_manager_secret",
 }
 
+_JAMF_RESOURCE_LABEL_TO_TF = {
+    "Policy": "jamfpro_policy",
+    "Script": "jamfpro_script",
+    "Smart Group": "jamfpro_smart_computer_group_v2",
+    "Static Group": "jamfpro_static_computer_group",
+    "Config Profile": "jamfpro_macos_configuration_profile_plist_generator",
+    "Package": "jamfpro_package",
+    "Restricted SW": "jamfpro_restricted_software",
+    "Extension Attr": "jamfpro_computer_extension_attribute",
+}
 
-def render_resource_type_selector() -> tuple[list[str], list[str], list[str]]:
-    """Three-section checkbox selector. Returns (okta_types, aws_types, gcp_types)."""
+_FLEET_RESOURCE_LABEL_TO_TF = {
+    "Policy": "fleet_policy",
+    "Label": "fleet_label",
+    "Query": "fleet_query",
+    "Config Profile": "fleet_configuration_profile",
+    "Script": "fleet_script",
+    "Software": "fleet_software_package",
+    "Agent Opts": "fleet_agent_options",
+    "Team Settings": "fleet_team_settings",
+}
+
+
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    """Five-section checkbox selector. Returns (okta_types, aws_types, gcp_types, jamf_types, fleet_types).
+
+    JAMF rows route to terraform_jamf_hcl via the JAMF Pro provider; Fleet rows
+    route to fleet_gitops_yaml via the GitOps YAML path. Fleet TF (experimental,
+    l-teles/fleetdm) remains CLI/HTTP-only — selecting Fleet boxes here always
+    yields GitOps YAML output.
+    """
     okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
     aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
     gcp_labels = list(_GCP_RESOURCE_LABEL_TO_TF.keys())
+    jamf_labels = list(_JAMF_RESOURCE_LABEL_TO_TF.keys())
+    fleet_labels = list(_FLEET_RESOURCE_LABEL_TO_TF.keys())
     okta_selected: list[str] = []
     aws_selected: list[str] = []
     gcp_selected: list[str] = []
+    jamf_selected: list[str] = []
+    fleet_selected: list[str] = []
 
     # Okta row
     okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
@@ -237,7 +294,25 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str]]:
             if st.checkbox(label, key=f"rsel_gcp_{label.lower().replace(' ', '_').replace('/', '_')}"):
                 gcp_selected.append(_GCP_RESOURCE_LABEL_TO_TF[label])
 
-    return okta_selected, aws_selected, gcp_selected
+    # JAMF row (Phase 11)
+    jamf_cols = st.columns([0.7] + [1] * len(jamf_labels))
+    with jamf_cols[0]:
+        st.markdown("**JAMF**")
+    for i, label in enumerate(jamf_labels):
+        with jamf_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_jamf_{label.lower().replace(' ', '_')}"):
+                jamf_selected.append(_JAMF_RESOURCE_LABEL_TO_TF[label])
+
+    # Fleet row (Phase 13, GitOps YAML path; Fleet TF remains CLI/HTTP-only)
+    fleet_cols = st.columns([0.7] + [1] * len(fleet_labels))
+    with fleet_cols[0]:
+        st.markdown("**Fleet**")
+    for i, label in enumerate(fleet_labels):
+        with fleet_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_fleet_{label.lower().replace(' ', '_')}"):
+                fleet_selected.append(_FLEET_RESOURCE_LABEL_TO_TF[label])
+
+    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected
 
 
 def render_intent_card(intent: dict) -> dict | None:

@@ -867,8 +867,8 @@ st.caption("Describe an operation in plain English and get production-ready Terr
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types, gcp_types = render_resource_type_selector()
-    render_mode_chip(okta_types, aws_types, gcp_types)
+    okta_types, aws_types, gcp_types, jamf_types, fleet_types = render_resource_type_selector()
+    render_mode_chip(okta_types, aws_types, gcp_types, jamf_types, fleet_types)
     user_input = st.text_area(
         "Describe the operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -941,7 +941,23 @@ if parse_clicked and user_input.strip():
                     intent["aws_resource_types"] = aws_types
                 if gcp_types:
                     intent["gcp_resource_types"] = gcp_types
-                if gcp_types and okta_types:
+                if jamf_types:
+                    intent["jamf_resource_types"] = jamf_types
+                if fleet_types:
+                    intent["fleet_resource_types"] = fleet_types
+                # Mode inference order mirrors qa_runner.build_intent:
+                # Fleet -> JAMF -> GCP -> AWS -> Okta fallback. Fleet TF
+                # remains CLI/HTTP-only; selecting Fleet UI boxes always
+                # yields the GitOps YAML path.
+                if fleet_types and okta_types:
+                    intent["output_mode"] = "Okta + Fleet GitOps"
+                elif fleet_types:
+                    intent["output_mode"] = "Fleet GitOps only"
+                elif jamf_types and okta_types:
+                    intent["output_mode"] = "Okta + JAMF"
+                elif jamf_types:
+                    intent["output_mode"] = "JAMF only"
+                elif gcp_types and okta_types:
                     intent["output_mode"] = "Okta + GCP"
                 elif gcp_types:
                     intent["output_mode"] = "GCP only"
