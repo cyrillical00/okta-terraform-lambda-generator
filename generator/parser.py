@@ -41,6 +41,16 @@ ALLOWED_RESOURCE_TYPES = {
     "fleet_software_package",
     "fleet_agent_options",
     "fleet_team_settings",
+    "snowflake_warehouse",
+    "snowflake_database",
+    "snowflake_schema",
+    "snowflake_role",
+    "snowflake_user",
+    "snowflake_grant_account_role",
+    "snowflake_grant_privileges_to_account_role",
+    "snowflake_resource_monitor",
+    "snowflake_network_policy",
+    "snowflake_scim_integration",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}

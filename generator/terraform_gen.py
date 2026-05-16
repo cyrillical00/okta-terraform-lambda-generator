@@ -18,6 +18,7 @@ OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
     "terraform_jamf_hcl": "",
     "fleet_gitops_yaml": "",
     "terraform_fleet_hcl": "",
+    "terraform_snowflake_hcl": "",
 }
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -209,6 +210,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -220,6 +222,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
@@ -229,6 +232,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["optional_tf"] = ""
@@ -237,14 +241,16 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
     elif output_mode == "Both":
-        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF, NOT Fleet
+        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF, NOT Fleet, NOT Snowflake
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
     elif output_mode == "JAMF only":
@@ -253,6 +259,7 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -263,6 +270,7 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -274,6 +282,7 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -287,6 +296,7 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -299,6 +309,7 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -313,6 +324,35 @@ def generate_all(
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
+        result["terraform_snowflake_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+    elif output_mode == "Snowflake only":
+        # Snowflake Terraform HCL alone via snowflakedb/snowflake ~> 2.0
+        # (production-grade, Snowflake-owned). Zero every other output key.
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + Snowflake":
+        # Composite: Okta Terraform + Snowflake Terraform. Both files declare
+        # a `terraform { required_providers {} }` block, so the composite-mode
+        # merge_terraform_blocks + dedupe_variable_blocks at the end of this
+        # function IS needed (same pattern as Okta + JAMF and Okta + Fleet TF).
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -392,5 +432,18 @@ def generate_all(
         merged_okta, merged_fleet = dedupe_variable_blocks(merged_okta, merged_fleet)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_fleet_hcl"] = merged_fleet
+    elif output_mode == "Okta + Snowflake":
+        # Both Okta and Snowflake Terraform declare a `terraform { required_providers {} }`
+        # block. Same dedupe pattern as Okta + JAMF: merge Snowflake provider
+        # entry into okta.tf, strip the secondary terraform block from
+        # snowflake.tf. Variable dedupe keeps shared vars from being declared
+        # twice (e.g. snowflake_account when Okta refers to it for SCIM).
+        merged_okta, merged_snowflake = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_snowflake_hcl", ""),
+        )
+        merged_okta, merged_snowflake = dedupe_variable_blocks(merged_okta, merged_snowflake)
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_snowflake_hcl"] = merged_snowflake
 
     return result

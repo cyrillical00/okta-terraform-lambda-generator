@@ -278,6 +278,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     jamf_hcl = outputs.get("terraform_jamf_hcl", "")
     fleet_yaml = outputs.get("fleet_gitops_yaml", "")
     fleet_hcl = outputs.get("terraform_fleet_hcl", "")
+    snowflake_hcl = outputs.get("terraform_snowflake_hcl", "")
     lambda_py = outputs.get("lambda_python", "")
     lambda_reqs = outputs.get("lambda_requirements", "")
     cloud_function_py = outputs.get("cloud_function_python", "")
@@ -292,6 +293,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         jamf_tf_path = f"terraform/{base}_jamf.tf"
         fleet_yml_path = f"fleet/{base}.yml"
         fleet_tf_path = f"terraform/{base}_fleet.tf"
+        snowflake_tf_path = f"terraform/{base}_snowflake.tf"
         lambda_py_path = f"lambda/{base}.py"
         lambda_reqs_path = f"lambda/{base}_requirements.txt"
         cloud_function_py_path = f"cloud_function/{base}.py"
@@ -305,6 +307,7 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
         jamf_tf_path = "terraform/jamf.tf"
         fleet_yml_path = "fleet/default.yml"
         fleet_tf_path = "terraform/fleet.tf"
+        snowflake_tf_path = "terraform/snowflake.tf"
         lambda_py_path = "lambda/lambda_function.py"
         lambda_reqs_path = "lambda/requirements.txt"
         cloud_function_py_path = "cloud_function/main.py"
@@ -327,8 +330,10 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
             jamf_hcl = strip_provider_boilerplate(jamf_hcl)
         if fleet_hcl:
             fleet_hcl = strip_provider_boilerplate(fleet_hcl)
+        if snowflake_hcl:
+            snowflake_hcl = strip_provider_boilerplate(snowflake_hcl)
 
-    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF", "Okta + Fleet GitOps", "Okta + Fleet TF"):
+    if mode in ("Both", "Okta Terraform only", "Okta + GCP", "Okta + JAMF", "Okta + Fleet GitOps", "Okta + Fleet TF", "Okta + Snowflake"):
         if okta_hcl and okta_hcl.strip():
             files[okta_path] = okta_hcl
     if mode in ("Both",):
@@ -355,6 +360,9 @@ def _build_files(outputs: dict, mode: str, base: str = "") -> dict[str, str]:
     if mode in ("Fleet TF only", "Okta + Fleet TF"):
         if fleet_hcl and fleet_hcl.strip():
             files[fleet_tf_path] = fleet_hcl
+    if mode in ("Snowflake only", "Okta + Snowflake"):
+        if snowflake_hcl and snowflake_hcl.strip():
+            files[snowflake_tf_path] = snowflake_hcl
     if optional_tf and optional_tf.strip():
         files[optional_path] = optional_tf
     if tfvars and tfvars.strip():
@@ -903,8 +911,8 @@ st.caption("Describe an operation in plain English and get production-ready Terr
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types, gcp_types, jamf_types, fleet_types = render_resource_type_selector()
-    render_mode_chip(okta_types, aws_types, gcp_types, jamf_types, fleet_types)
+    okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types = render_resource_type_selector()
+    render_mode_chip(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
     user_input = st.text_area(
         "Describe the operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -981,11 +989,17 @@ if parse_clicked and user_input.strip():
                     intent["jamf_resource_types"] = jamf_types
                 if fleet_types:
                     intent["fleet_resource_types"] = fleet_types
+                if snowflake_types:
+                    intent["snowflake_resource_types"] = snowflake_types
                 # Mode inference order mirrors qa_runner.build_intent:
-                # Fleet -> JAMF -> GCP -> AWS -> Okta fallback. Fleet TF
-                # remains CLI/HTTP-only; selecting Fleet UI boxes always
-                # yields the GitOps YAML path.
-                if fleet_types and okta_types:
+                # Snowflake -> Fleet -> JAMF -> GCP -> AWS -> Okta fallback.
+                # Fleet TF remains CLI/HTTP-only; selecting Fleet UI boxes
+                # always yields the GitOps YAML path.
+                if snowflake_types and okta_types:
+                    intent["output_mode"] = "Okta + Snowflake"
+                elif snowflake_types:
+                    intent["output_mode"] = "Snowflake only"
+                elif fleet_types and okta_types:
                     intent["output_mode"] = "Okta + Fleet GitOps"
                 elif fleet_types:
                     intent["output_mode"] = "Fleet GitOps only"

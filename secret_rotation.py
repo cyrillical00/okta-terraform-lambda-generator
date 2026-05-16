@@ -49,6 +49,15 @@ TARGET_CADENCE_DAYS = {
     # 90-day cadence matches other API tokens we own end to end.
     "FLEET_URL": 90,
     "FLEET_API_TOKEN": 90,
+    # Phase 15, Snowflake credentials. Key-pair auth required (Snowflake
+    # deprecated password auth Nov 2025). Same 90-day cadence as the other
+    # provider credentials we own end to end.
+    "SNOWFLAKE_ACCOUNT": 90,
+    "SNOWFLAKE_USER": 90,
+    "SNOWFLAKE_PRIVATE_KEY": 90,
+    "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE": 90,
+    "SNOWFLAKE_ROLE": 90,
+    "SNOWFLAKE_WAREHOUSE": 90,
 }
 
 _github_token: str = ""

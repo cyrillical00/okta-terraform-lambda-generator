@@ -45,6 +45,16 @@ For shops that want Fleet declarations alongside their Okta / AWS Terraform, out
 - Regression test class (FT01–FT12) **deferred to Phase 14**. Initial live verification showed the SECTION J resource schemas in this tool's prompt do not match the actual provider's attribute names (multiple `Unsupported argument` errors from `terraform validate`). The schemas were grounded in a summarised registry fetch, not the provider source. Phase 14 will re-ground SECTION J against the provider's actual `internal/provider/*` Go source files and add the FT regression class with correct attribute references.
 - Use the GitOps YAML path (`Fleet GitOps only`) for production today. The Terraform path is callable and produces output, but the output is best-effort and unverified against the real provider until Phase 14 closes.
 
+### Snowflake (Terraform)
+
+Snowflake support targets `snowflakedb/snowflake` v2.x (production-grade, Snowflake-owned; the provider was renamed from `Snowflake-Labs/snowflake` in 2025). Pinned to `~> 2.0`. Covers 10 resources: warehouse, database, schema, role, user, grant_account_role, grant_privileges_to_account_role, resource_monitor, network_policy, scim_integration.
+
+Snowflake forces key-pair authentication as of November 2025; password auth is rejected at apply time. Output modes `Snowflake only` and `Okta + Snowflake` use the six required env vars: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` (optional), `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE`.
+
+Composite mode `Okta + Snowflake` wires SCIM provisioning: an `okta_app_oauth` on the Okta side points at the Snowflake SCIM endpoint, and a `snowflake_scim_integration` of type `OKTA` on the Snowflake side accepts the inbound requests. A manual step is required after apply: retrieve the SCIM bearer token from Snowflake (`SELECT SYSTEM$GENERATE_SCIM_ACCESS_TOKEN('OKTA_SCIM');`) and paste it into the Okta SCIM "API token" field. The generated HCL emits a `# NOTE` comment explaining this.
+
+Live Snowflake context (warehouses, databases, roles surfaced to the parser) is **deferred to Phase 15.5**. The Snowflake pill ships in `off / Not configured` state until 15.5 wires the live-context fetcher.
+
 ## Feature surface
 
 **Generation pipeline.** Anthropic Haiku 4.5 with prompt caching (system prompts wrapped in `cache_control: ephemeral`); intent parser, generator, and validator/refiner each run as a discrete pass. Live env context from Okta / AWS / GCP resolves real group, app, function, and project IDs into the parsed intent before generation.

@@ -59,6 +59,15 @@ VAR_DEFAULTS: dict[str, str] = {
     # URL + token works for `terraform init && terraform validate`.
     "fleet_url":                '"https://fleet.example.com"',
     "fleet_api_token":          '"placeholder-token-for-validate-only"',
+    # Snowflake (snowflakedb/snowflake ~> 2.0). Provider validates the auth
+    # shape but does not connect during `terraform validate`; placeholders
+    # that look syntactically valid let the validate sweep succeed.
+    "snowflake_account":            '"placeholder.us-east-1"',
+    "snowflake_user":               '"PLACEHOLDER_USER"',
+    "snowflake_role":               '"SYSADMIN"',
+    "snowflake_warehouse":          '"PLACEHOLDER_WH"',
+    "snowflake_private_key":        '"-----BEGIN PRIVATE KEY-----\\nplaceholder\\n-----END PRIVATE KEY-----"',
+    "snowflake_private_key_passphrase": '"placeholder"',
 }
 
 
@@ -121,6 +130,7 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     gcp = outputs.get("terraform_gcp_hcl", "") or ""
     jamf = outputs.get("terraform_jamf_hcl", "") or ""
     fleet = outputs.get("terraform_fleet_hcl", "") or ""
+    snowflake = outputs.get("terraform_snowflake_hcl", "") or ""
     if okta.strip() and lam.strip():
         okta, lam = dedupe_variable_blocks(okta, lam)
     if okta.strip() and gcp.strip():
@@ -129,6 +139,8 @@ def write_workspace(tid: str, outputs: dict) -> Path:
         okta, jamf = dedupe_variable_blocks(okta, jamf)
     if okta.strip() and fleet.strip():
         okta, fleet = dedupe_variable_blocks(okta, fleet)
+    if okta.strip() and snowflake.strip():
+        okta, snowflake = dedupe_variable_blocks(okta, snowflake)
     if okta.strip():
         (workdir / "okta.tf").write_text(okta, encoding="utf-8", newline="\n")
     if lam.strip():
@@ -137,9 +149,11 @@ def write_workspace(tid: str, outputs: dict) -> Path:
         (workdir / "gcp.tf").write_text(gcp, encoding="utf-8", newline="\n")
     if fleet.strip():
         (workdir / "fleet.tf").write_text(fleet, encoding="utf-8", newline="\n")
+    if snowflake.strip():
+        (workdir / "snowflake.tf").write_text(snowflake, encoding="utf-8", newline="\n")
     if jamf.strip():
         (workdir / "jamf.tf").write_text(jamf, encoding="utf-8", newline="\n")
-    types = parse_var_types(okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet)
+    types = parse_var_types(okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake)
     if types:
         lines = [f"{name} = {default_for(name, t)}" for name, t in sorted(types.items())]
         (workdir / "terraform.tfvars").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
@@ -147,7 +161,7 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     # validate time. Touch any referenced relative paths so validate does
     # not fail on missing files. file() is what JAMF scripts and macOS
     # configuration profiles use to load script contents from disk.
-    full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet
+    full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake
     for m in re.finditer(r'filebase64sha256\("([^"]+)"\)', full_hcl):
         rel_path = m.group(1)
         target = (workdir / rel_path).resolve()

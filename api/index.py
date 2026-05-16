@@ -75,6 +75,8 @@ OutputMode = Literal[
     "Okta + Fleet GitOps",
     "Fleet TF only",
     "Okta + Fleet TF",
+    "Snowflake only",
+    "Okta + Snowflake",
 ]
 
 

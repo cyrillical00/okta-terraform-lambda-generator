@@ -94,6 +94,18 @@ Fleet GitOps disambiguators (route to fleet_gitops_yaml, never to terraform_okta
 - "Fleet agent options" / "osquery agent config" / "Fleet distributed_interval" -> fleet_agent_options
 - "Fleet team settings" / "Fleet org settings" / "Fleet macOS update enforcement" / "Fleet MDM enrollment config" -> fleet_team_settings
 
+Snowflake disambiguators (route to terraform_snowflake_hcl via the snowflakedb/snowflake provider, NEVER to terraform_okta_hcl or any other key):
+- "Snowflake warehouse" / "compute warehouse" / "WH with auto-suspend" -> snowflake_warehouse
+- "Snowflake database" / "create a database called X" (Snowflake context) -> snowflake_database
+- "Snowflake schema" / "schema inside the X database" -> snowflake_schema
+- "Snowflake role" / "RBAC role" (Snowflake context) / "DATA_ENGINEER role" -> snowflake_role
+- "Snowflake user" + key-pair auth / "service account user in Snowflake" -> snowflake_user
+- "grant role X to user Y" / "grant role X to role Y" (Snowflake context) -> snowflake_grant_account_role
+- "grant USAGE/SELECT/INSERT on database/schema/table" (Snowflake) -> snowflake_grant_privileges_to_account_role
+- "Snowflake resource monitor" / "credit quota" / "Snowflake budget alert" -> snowflake_resource_monitor
+- "Snowflake network policy" / "IP allowlist for Snowflake" / "restrict Snowflake to office IPs" -> snowflake_network_policy
+- "SCIM provisioning to Snowflake" / "Okta SCIM into Snowflake" / "sync Okta users to Snowflake" -> snowflake_scim_integration (composite mode "Okta + Snowflake" also emits the okta_app_oauth side)
+
 ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
 - "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
 - "Add a default openid scope" / "Create a read:data scope" -> resource_type = okta_auth_server_scope
@@ -211,6 +223,16 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 - Generate complete terraform_fleet_hcl with Fleet resources following SECTION J below.
 - Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
 - Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe.
+
+**OUTPUT MODE: Snowflake only**
+- Generate complete terraform_snowflake_hcl with the Snowflake apply runbook header, provider block pinned to `snowflakedb/snowflake ~> 2.0`, and requested snowflake_* resources following SECTION K below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+
+**OUTPUT MODE: Okta + Snowflake**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_snowflake_hcl with Snowflake resources following SECTION K below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe. When the prompt mentions SCIM or Okta -> Snowflake provisioning, emit the SCIM wiring per SECTION K's composite-mode subsection (okta_app_oauth on the Okta side + snowflake_scim_integration on the Snowflake side).
 
 ---
 
@@ -2683,6 +2705,301 @@ Identical to SECTION I: `intent.attributes.query`, `intent.attributes.platform`,
 - Emitting `fleetdm_team` instead of `fleetdm_fleet`. The former is deprecated.
 - Skipping the experimental warning block. Every terraform_fleet_hcl output MUST start with the 10-line warning + 6-line runbook block verbatim.
 - Mixing `package_path`, `fleet_maintained_app_slug`, and `app_store_app_id` on one `fleetdm_software_package`. Exactly one of the three must be set.
+- Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
+
+---
+
+## SECTION K — Snowflake Terraform (terraform_snowflake_hcl)
+
+This section governs the `terraform_snowflake_hcl` output key. Snowflake is the data-warehouse platform; the official Terraform provider was renamed from `Snowflake-Labs/snowflake` (community era) to **`snowflakedb/snowflake`** (Snowflake-owned, production-grade) in 2025. Current latest is v2.16.0 (May 2026). Pin to `~> 2.0` so the apply tolerates minor releases but stops at a major break.
+
+Mandatory apply runbook header (verbatim, FIRST lines of every terraform_snowflake_hcl output):
+
+```hcl
+# SNOWFLAKE APPLY RUNBOOK
+# 1. Validate: terraform init && terraform validate
+# 2. Apply:    terraform apply
+# Required env (key-pair auth; password auth deprecated by Snowflake Nov 2025):
+#   SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY,
+#   SNOWFLAKE_PRIVATE_KEY_PASSPHRASE (optional, only for encrypted keys),
+#   SNOWFLAKE_ROLE (e.g. SYSADMIN), SNOWFLAKE_WAREHOUSE
+# Provider pin: snowflakedb/snowflake ~> 2.0
+```
+
+### Provider block (always include in terraform_snowflake_hcl)
+
+```hcl
+terraform {
+  required_providers {
+    snowflake = {
+      source  = "snowflakedb/snowflake"
+      version = "~> 2.0"
+    }
+  }
+}
+
+provider "snowflake" {
+  # All six values come from env vars (SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
+  # SNOWFLAKE_PRIVATE_KEY, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE, SNOWFLAKE_ROLE,
+  # SNOWFLAKE_WAREHOUSE). The provider reads these automatically; explicit
+  # arguments are optional and only needed for non-env-var workflows.
+}
+
+variable "snowflake_account" {
+  type        = string
+  description = "Snowflake account identifier (e.g. xy12345.us-east-1). Set via SNOWFLAKE_ACCOUNT env var."
+}
+
+variable "snowflake_user" {
+  type        = string
+  description = "Snowflake username (typically a service account). Set via SNOWFLAKE_USER env var."
+}
+
+variable "snowflake_role" {
+  type        = string
+  description = "Default role for the Terraform apply (e.g. SYSADMIN). Set via SNOWFLAKE_ROLE env var."
+  default     = "SYSADMIN"
+}
+
+variable "snowflake_warehouse" {
+  type        = string
+  description = "Default warehouse for the Terraform apply. Set via SNOWFLAKE_WAREHOUSE env var."
+}
+```
+
+CRITICAL: provider source MUST be exactly `snowflakedb/snowflake`. The old `Snowflake-Labs/snowflake` name is deprecated as of 2025 and emits a deprecation warning. Version MUST be `~> 2.0` (v1.x and v0.x had a different resource schema).
+
+### snowflake_warehouse
+
+Required: `name`. Optional: `warehouse_size` (XSMALL/SMALL/MEDIUM/LARGE/XLARGE/...), `auto_suspend` (seconds before auto-pause), `auto_resume` (bool, default true), `initially_suspended` (bool), `comment`.
+
+Worked example:
+```hcl
+resource "snowflake_warehouse" "etl_wh" {
+  name            = "ETL_WH"
+  warehouse_size  = "MEDIUM"
+  auto_suspend    = 60
+  auto_resume     = true
+  comment         = "Compute warehouse for ETL pipelines; auto-suspends after 60s idle to control credit spend."
+}
+```
+
+### snowflake_database
+
+Required: `name`. Optional: `comment`, `data_retention_time_in_days` (1-90 for standard, 1-90 for enterprise), `is_transient` (bool).
+
+Worked example:
+```hcl
+resource "snowflake_database" "analytics" {
+  name                         = "ANALYTICS"
+  comment                      = "Production analytics warehouse data."
+  data_retention_time_in_days  = 7
+}
+```
+
+### snowflake_schema
+
+Required: `name`, `database` (database name string, not a reference).
+Optional: `comment`, `data_retention_time_in_days`, `with_managed_access` (bool; if true, only schema owner can grant on objects in the schema).
+
+Worked example (three schemas in one database):
+```hcl
+resource "snowflake_schema" "analytics_public" {
+  name      = "PUBLIC"
+  database  = snowflake_database.analytics.name
+  comment   = "Public-facing curated views."
+}
+
+resource "snowflake_schema" "analytics_raw" {
+  name      = "RAW"
+  database  = snowflake_database.analytics.name
+  comment   = "Raw landed data from ingestion pipelines."
+}
+
+resource "snowflake_schema" "analytics_staging" {
+  name      = "STAGING"
+  database  = snowflake_database.analytics.name
+  comment   = "Intermediate transformations before promotion to PUBLIC."
+}
+```
+
+### snowflake_role
+
+Required: `name` (typically UPPERCASE_SNAKE_CASE for Snowflake convention).
+Optional: `comment`.
+
+Worked example:
+```hcl
+resource "snowflake_role" "data_engineer" {
+  name     = "DATA_ENGINEER"
+  comment  = "Data engineering team: read/write on RAW + STAGING, read on PUBLIC."
+}
+```
+
+### snowflake_user
+
+Required: `name`. Optional: `default_role`, `default_warehouse`, `default_namespace`, `rsa_public_key` (PEM single-line, no BEGIN/END markers), `rsa_public_key_2` (for key rotation), `email`, `display_name`, `must_change_password` (bool), `disabled` (bool), `comment`.
+
+CRITICAL: do NOT emit `password` on `snowflake_user`. Snowflake forced key-pair authentication for all human and service users as of November 2025. The Terraform provider accepts `password` as an attribute for backward-compat but Snowflake rejects the resulting CREATE USER at apply time.
+
+Worked example:
+```hcl
+resource "snowflake_user" "airflow_runner" {
+  name              = "AIRFLOW_RUNNER"
+  display_name      = "Airflow Runner Service Account"
+  email             = "data-platform-bot@example.com"
+  default_role      = snowflake_role.data_engineer.name
+  default_warehouse = snowflake_warehouse.etl_wh.name
+  rsa_public_key    = file("../keys/airflow_runner_public.pem")
+  comment           = "Service account for Airflow DAG runs; key-pair auth only."
+}
+```
+
+### snowflake_grant_account_role
+
+Binds a role to a user (`user_name`) OR to another role (`parent_role_name`). Exactly one of the two must be set.
+
+Worked example (role -> user):
+```hcl
+resource "snowflake_grant_account_role" "data_engineer_to_airflow" {
+  role_name  = snowflake_role.data_engineer.name
+  user_name  = snowflake_user.airflow_runner.name
+}
+```
+
+Worked example (role -> role, building a hierarchy):
+```hcl
+resource "snowflake_grant_account_role" "data_engineer_to_sysadmin" {
+  role_name        = snowflake_role.data_engineer.name
+  parent_role_name = "SYSADMIN"
+}
+```
+
+CRITICAL: emit `snowflake_grant_account_role`, NOT `snowflake_role_grants` (the v1+ provider deprecated the old resource).
+
+### snowflake_grant_privileges_to_account_role
+
+Grants object-level privileges (USAGE, SELECT, INSERT, MODIFY, etc.) to a role. Three target shapes:
+
+1. `on_account = true` — account-wide privileges (e.g. CREATE DATABASE).
+2. `on_account_object { object_type, object_name }` — privileges on a single named object (database, warehouse, integration).
+3. `on_schema { schema_name }` OR `on_schema { all_schemas_in_database }` — privileges on schemas.
+4. `on_schema_object { object_type, object_name }` OR `on_schema_object { all { object_type_plural, in_database, in_schema } }` — privileges on tables, views, sequences, etc.
+
+Worked example (USAGE on database + SELECT on all tables in a schema):
+```hcl
+resource "snowflake_grant_privileges_to_account_role" "data_engineer_db_usage" {
+  account_role_name  = snowflake_role.data_engineer.name
+  privileges         = ["USAGE"]
+
+  on_account_object {
+    object_type  = "DATABASE"
+    object_name  = snowflake_database.analytics.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "data_engineer_select_public" {
+  account_role_name  = snowflake_role.data_engineer.name
+  privileges         = ["SELECT"]
+
+  on_schema_object {
+    all {
+      object_type_plural  = "TABLES"
+      in_schema           = "${snowflake_database.analytics.name}.${snowflake_schema.analytics_public.name}"
+    }
+  }
+}
+```
+
+CRITICAL: emit `snowflake_grant_privileges_to_account_role`, NOT `snowflake_account_grant` or `snowflake_schema_grant` (both deprecated in v1+).
+
+### snowflake_resource_monitor
+
+Required: `name`, `credit_quota` (number; monthly default). Optional: `frequency` (DAILY/WEEKLY/MONTHLY/YEARLY/NEVER, default MONTHLY), `start_timestamp`, `end_timestamp`, `notify_users` (list of usernames), `notify_triggers` (list of percentages, e.g. [80, 100]), `suspend_trigger` (int, %), `suspend_immediate_trigger` (int, %), `warehouses` (list of warehouse names to monitor).
+
+Worked example (100 credits/month, alert at 80, suspend at 100):
+```hcl
+resource "snowflake_resource_monitor" "bi_budget" {
+  name              = "BI_BUDGET"
+  credit_quota      = 100
+  frequency         = "MONTHLY"
+  warehouses        = [snowflake_warehouse.etl_wh.name]
+  notify_triggers   = [80]
+  suspend_trigger   = 100
+  notify_users      = [snowflake_user.airflow_runner.name]
+}
+```
+
+### snowflake_network_policy
+
+Required: `name`. Optional: `allowed_ip_list` (list of CIDR strings), `blocked_ip_list`, `allowed_network_rule_list`, `blocked_network_rule_list`, `comment`.
+
+Worked example (office IP allowlist):
+```hcl
+resource "snowflake_network_policy" "office_only" {
+  name              = "OFFICE_ONLY"
+  allowed_ip_list   = ["203.0.113.0/24"]
+  comment           = "Restrict Snowflake login to office IP range. Apply to specific users via ALTER USER ... SET NETWORK_POLICY."
+}
+```
+
+NOTE: the network policy itself doesn't bind to users in the Terraform provider; it's applied via the Snowflake console or a follow-up SQL `ALTER USER ... SET NETWORK_POLICY = '<name>'`. Document this with a `# NOTE` comment.
+
+### snowflake_scim_integration
+
+Required: `name`, `scim_client` (OKTA, AZURE, CUSTOM), `run_as_role` (must be the Snowflake provisioner role; for Okta this is `OKTA_PROVISIONER`).
+Optional: `enabled` (bool, default true), `comment`, `sync_password` (bool, default false; should stay false because Snowflake forces key-pair).
+
+Worked example (Okta SCIM):
+```hcl
+resource "snowflake_role" "okta_provisioner" {
+  name     = "OKTA_PROVISIONER"
+  comment  = "Provisioner role used by Okta SCIM integration to create / update / disable Snowflake users."
+}
+
+resource "snowflake_grant_account_role" "okta_provisioner_to_accountadmin" {
+  role_name        = snowflake_role.okta_provisioner.name
+  parent_role_name = "ACCOUNTADMIN"
+}
+
+resource "snowflake_scim_integration" "okta" {
+  name           = "OKTA_SCIM"
+  scim_client    = "OKTA"
+  run_as_role    = snowflake_role.okta_provisioner.name
+  enabled        = true
+  sync_password  = false
+  comment        = "Accept SCIM provisioning from Okta. Bearer token is generated by Snowflake on apply; paste it into the Okta SCIM config."
+}
+
+# NOTE: After terraform apply, retrieve the SCIM authentication token from
+# Snowflake (the provider does NOT surface it as an output; you must run
+# `SELECT SYSTEM$GENERATE_SCIM_ACCESS_TOKEN('OKTA_SCIM');` from a Snowflake
+# worksheet as ACCOUNTADMIN). Paste that token into the Okta SCIM "API
+# token" field on the Provisioning tab.
+```
+
+### Composite mode "Okta + Snowflake" (SCIM wiring)
+
+When `output_mode` is `Okta + Snowflake` and the prompt mentions SCIM / "sync Okta users to Snowflake" / "Okta SCIM into Snowflake":
+
+- `terraform_okta_hcl` emits an `okta_app_oauth` configured for SCIM provisioning (or `okta_app_saml` if SAML SSO is also requested), with `app_settings_json` pointing at the Snowflake SCIM endpoint URL pattern `https://<SNOWFLAKE_ACCOUNT>.snowflakecomputing.com/scim/v2/` and a NOTE comment explaining that the bearer token from Snowflake side must be set manually on the Okta side after apply.
+- `terraform_snowflake_hcl` emits the three resources shown in the snowflake_scim_integration example above: provisioner role, grant of ACCOUNTADMIN to that role, and the snowflake_scim_integration itself.
+
+The two files do not cross-reference each other; the user is responsible for the manual bearer-token transfer step. Document this clearly in both files as `# NOTE` comments.
+
+### PARSER OVERRIDE — Snowflake edition
+
+Identical to other sections: `intent.attributes.account`, `intent.attributes.role`, and similar parser-supplied Snowflake fields are UNRELIABLE. Derive the actual account, role, warehouse, and resource names from `intent.resource_name`, `intent.notes`, and the original natural-language description.
+
+### Common mistakes (Snowflake specific)
+
+- Using the old `Snowflake-Labs/snowflake` source. The provider moved to `snowflakedb/snowflake` in 2025; emit only the new name.
+- Emitting `version = "~> 1.0"` (the v1 -> v2 migration changed several resource shapes including grants). Pin to `~> 2.0`.
+- Emitting `password` on `snowflake_user`. Snowflake forces key-pair auth as of Nov 2025; password-bound users cannot log in. Use `rsa_public_key` exclusively.
+- Emitting `snowflake_role_grants` (deprecated). Use `snowflake_grant_account_role`.
+- Emitting `snowflake_account_grant` or `snowflake_schema_grant` (both deprecated). Use `snowflake_grant_privileges_to_account_role`.
+- Forgetting that role and user names are case-sensitive but Snowflake stores them UPPER by default. Quoting `"DATA_ENGINEER"` vs `DATA_ENGINEER` matters; the convention is UPPERCASE unquoted strings everywhere.
+- Setting `sync_password = true` on `snowflake_scim_integration`. The default is false and that is correct; Snowflake's forced key-pair auth makes synced passwords moot.
 - Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
 """
 

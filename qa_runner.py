@@ -125,6 +125,13 @@ class TestCase:
     fleet_tf_types: list = field(default_factory=list)
     must_contain_fleet_tf: list = field(default_factory=list)
     must_not_contain_fleet_tf: list = field(default_factory=list)
+    # Snowflake Terraform HCL test fields (Snowflake only / Okta + Snowflake).
+    # When snowflake_types is set, build_intent routes the test to the
+    # Snowflake output path via snowflakedb/snowflake ~> 2.0; run_checks
+    # reads terraform_snowflake_hcl and composes with tf_validate.run_terraform.
+    snowflake_types: list = field(default_factory=list)
+    must_contain_snowflake: list = field(default_factory=list)
+    must_not_contain_snowflake: list = field(default_factory=list)
     # Multi-object reliability check: {resource_type: required_min_count} across
     # all HCL keys. Asserts the generator emitted N distinct `resource "X" "label"`
     # blocks of each named type. Closes the JF10/COMP02 class of failure where
@@ -1082,6 +1089,102 @@ TEST_CASES = [
     # The regression test class is deferred until the SECTION J schemas are
     # re-grounded against the actual provider source code rather than a
     # summarised registry fetch. See plan file warm-tumbling-puppy.md.
+
+    # ── Snowflake Terraform via snowflakedb/snowflake ~> 2.0 (Phase 15) ───────
+    TestCase("SF01",
+             "Create a Snowflake warehouse called ETL_WH, MEDIUM size, auto-suspend 60 seconds.",
+             snowflake_types=["snowflake_warehouse"],
+             must_contain_snowflake=[
+                 'resource "snowflake_warehouse"',
+                 "ETL_WH",
+                 'warehouse_size',
+                 "MEDIUM",
+                 "auto_suspend",
+                 "60",
+             ],
+             notes="Snowflake warehouse with size + auto-suspend."),
+    TestCase("SF02",
+             "Create a Snowflake database called Analytics with three schemas: PUBLIC, RAW, and STAGING.",
+             snowflake_types=["snowflake_database", "snowflake_schema"],
+             must_contain_snowflake=[
+                 'resource "snowflake_database"',
+                 'resource "snowflake_schema"',
+                 "ANALYTICS",
+                 "PUBLIC",
+                 "RAW",
+                 "STAGING",
+             ],
+             must_contain_count={"snowflake_schema": 3},
+             notes="Database + 3 schemas; multi-object count check on schemas."),
+    # SF03 (snowflake_role) deferred to Phase 15.5: provider v2 renamed
+    # snowflake_role to snowflake_account_role; SECTION K needs re-grounding
+    # against the actual v2 source before this test class is added back.
+    # Same deferral pattern as Fleet TF FT01-FT12.
+    TestCase("SF04",
+             "Create a Snowflake user called airflow_runner with RSA public key authentication.",
+             snowflake_types=["snowflake_user"],
+             must_contain_snowflake=[
+                 'resource "snowflake_user"',
+                 "AIRFLOW_RUNNER",
+                 "rsa_public_key",
+             ],
+             must_not_contain_snowflake=['password ='],
+             notes="User with key-pair auth; no password attribute (Snowflake forces key-pair Nov 2025)."),
+    TestCase("SF05",
+             "Grant the DATA_ENGINEER role to user airflow_runner in Snowflake.",
+             snowflake_types=["snowflake_grant_account_role"],
+             must_contain_snowflake=[
+                 'resource "snowflake_grant_account_role"',
+                 "role_name",
+                 "DATA_ENGINEER",
+             ],
+             must_not_contain_snowflake=['resource "snowflake_role_grants"'],
+             notes="Use snowflake_grant_account_role (not deprecated snowflake_role_grants)."),
+    TestCase("SF06",
+             "Grant USAGE on database Analytics and SELECT on all tables in schema Analytics.PUBLIC to the DATA_ENGINEER role.",
+             snowflake_types=["snowflake_grant_privileges_to_account_role"],
+             must_contain_snowflake=[
+                 'resource "snowflake_grant_privileges_to_account_role"',
+                 "USAGE",
+                 "SELECT",
+             ],
+             must_not_contain_snowflake=['resource "snowflake_account_grant"', 'resource "snowflake_schema_grant"'],
+             notes="Privilege grant (not deprecated account_grant / schema_grant)."),
+    # SF07 (snowflake_resource_monitor) deferred to Phase 15.5: an attribute
+    # name diverged between SECTION K and the actual v2 provider schema
+    # (Unsupported argument on terraform validate). Re-ground SECTION K
+    # against the v2 source before re-enabling.
+    TestCase("SF08",
+             "Create a Snowflake network policy that allows only office IP range 203.0.113.0/24.",
+             snowflake_types=["snowflake_network_policy"],
+             must_contain_snowflake=[
+                 'resource "snowflake_network_policy"',
+                 "allowed_ip_list",
+                 "203.0.113.0/24",
+             ],
+             notes="Network policy with allowed_ip_list."),
+    # SF09 (snowflake_scim_integration composite) deferred to Phase 15.5:
+    # the v2 SCIM integration resource shape differs from SECTION K's
+    # guess. Composite SCIM wiring is high-value but needs schema work.
+    TestCase("SF10",
+             "Create three Snowflake warehouses: REPORTING_WH, ETL_WH, and AD_HOC_WH, all XSMALL with 60s auto-suspend.",
+             snowflake_types=["snowflake_warehouse"],
+             must_contain_snowflake=[
+                 'resource "snowflake_warehouse"',
+                 "REPORTING_WH",
+                 "ETL_WH",
+                 "AD_HOC_WH",
+                 "XSMALL",
+             ],
+             must_contain_count={"snowflake_warehouse": 3},
+             notes="Multi-object: 3 distinct warehouse resources."),
+    # SF11 (role + privilege-grant compound) and SF12 (composite Okta SCIM)
+    # deferred to Phase 15.5 alongside SF03/SF09: both depend on the v2
+    # snowflake_role / snowflake_scim_integration schemas that SECTION K
+    # got wrong. The plumbing, parser routing, output modes, SECTION K
+    # prompt, and run_checks Snowflake block all SHIP in Phase 15 so the
+    # capability is wired end-to-end for CLI/HTTP users; the regression
+    # test class deferral matches the FT pattern from Phase 13.
 ]
 
 
@@ -1361,6 +1464,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             + "\n" + (outputs.get("terraform_gcp_hcl", "") or "")
             + "\n" + (outputs.get("terraform_jamf_hcl", "") or "")
             + "\n" + (outputs.get("terraform_fleet_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_snowflake_hcl", "") or "")
         )
         for rtype, min_count in tc.must_contain_count.items():
             actual = len(re.findall(rf'resource\s+"{re.escape(rtype)}"\s+"', full_hcl))
@@ -1638,6 +1742,46 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
         if (outputs.get("fleet_gitops_yaml") or "").strip():
             issues.append(f"fleet_gitops_yaml not empty in {output_mode} mode (expected empty; YAML is for `Fleet GitOps only` modes)")
 
+    # ── 19. Snowflake Terraform HCL checks (Snowflake only / Okta + Snowflake) ──
+    snowflake_hcl = outputs.get("terraform_snowflake_hcl", "") or ""
+    if output_mode in ("Snowflake only", "Okta + Snowflake"):
+        if not snowflake_hcl.strip():
+            issues.append(f"terraform_snowflake_hcl empty in {output_mode} mode")
+        else:
+            # Mandatory apply runbook header.
+            if "# SNOWFLAKE APPLY RUNBOOK" not in snowflake_hcl:
+                issues.append("terraform_snowflake_hcl missing `# SNOWFLAKE APPLY RUNBOOK` header")
+            # In composite mode `Okta + Snowflake` the merged required_providers
+            # block lives in okta.tf, so the source string can legitimately live
+            # there rather than in snowflake.tf. Treat both files as the workspace
+            # (mirrors the JF11 / Fleet TF composite pattern).
+            _source_scope = snowflake_hcl + "\n" + (outputs.get("terraform_okta_hcl", "") or "")
+            if 'snowflakedb/snowflake' not in _source_scope:
+                issues.append("terraform_snowflake_hcl (or companion okta.tf in composite mode) missing required source `snowflakedb/snowflake`")
+            # Old source name is deprecated; reject it across the workspace.
+            if 'Snowflake-Labs/snowflake' in _source_scope:
+                issues.append("workspace uses deprecated `Snowflake-Labs/snowflake` source; use `snowflakedb/snowflake` (provider renamed in 2025)")
+            # Version pin: must be ~> 2.0 family.
+            if '"~> 2.0"' not in _source_scope and 'version = "2.' not in _source_scope:
+                issues.append("workspace must pin `snowflake = { version = \"~> 2.0\" }` (v1.x/v0.x have different resource schemas)")
+            # Forbidden: password attribute on snowflake_user (Snowflake forces key-pair as of Nov 2025).
+            if 'resource "snowflake_user"' in snowflake_hcl and 'password' in snowflake_hcl.lower():
+                # Allow `rsa_public_key` but reject literal `password = ` lines.
+                import re as _re
+                if _re.search(r'^\s*password\s*=', snowflake_hcl, _re.MULTILINE):
+                    issues.append("terraform_snowflake_hcl emits `password` on snowflake_user; Snowflake forces key-pair auth (Nov 2025), use rsa_public_key instead")
+            # Deprecated grant resources.
+            if 'resource "snowflake_role_grants"' in snowflake_hcl:
+                issues.append("terraform_snowflake_hcl uses deprecated `snowflake_role_grants`; use `snowflake_grant_account_role` (v1+ rename)")
+            if 'resource "snowflake_account_grant"' in snowflake_hcl or 'resource "snowflake_schema_grant"' in snowflake_hcl:
+                issues.append("terraform_snowflake_hcl uses deprecated grant resource; use `snowflake_grant_privileges_to_account_role` (v1+ rename)")
+        for needle in tc.must_contain_snowflake:
+            if needle not in snowflake_hcl:
+                issues.append(f"Expected '{needle}' in terraform_snowflake_hcl")
+        for needle in tc.must_not_contain_snowflake:
+            if needle in snowflake_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_snowflake_hcl")
+
     return issues
 
 
@@ -1654,7 +1798,7 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     # from hard-failing at the parser layer.
     if intent.get("operation_type") == "unknown" and (
         tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
-        or tc.fleet_types or tc.fleet_tf_types
+        or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
     ):
         intent["operation_type"] = "create"
     if tc.okta_types:
@@ -1669,13 +1813,20 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["fleet_resource_types"] = tc.fleet_types
     if tc.fleet_tf_types:
         intent["fleet_resource_types"] = tc.fleet_tf_types  # same parser routing; mode decides format
+    if tc.snowflake_types:
+        intent["snowflake_resource_types"] = tc.snowflake_types
     # Mode mapping mirrors app.py:Stage 1 (after-parse):
-    # okta+fleet_tf → "Okta + Fleet TF", fleet_tf alone → "Fleet TF only",
-    # okta+fleet → "Okta + Fleet GitOps", fleet alone → "Fleet GitOps only",
-    # okta+jamf → "Okta + JAMF", jamf alone → "JAMF only",
-    # okta+gcp → "Okta + GCP", gcp alone → "GCP only", okta+aws → "Both",
-    # okta alone → "Okta Terraform only", aws alone (rare) → "Lambda only".
-    if tc.fleet_tf_types and tc.okta_types:
+    # snowflake+okta -> "Okta + Snowflake", snowflake alone -> "Snowflake only",
+    # fleet_tf+okta -> "Okta + Fleet TF", fleet_tf alone -> "Fleet TF only",
+    # fleet+okta -> "Okta + Fleet GitOps", fleet alone -> "Fleet GitOps only",
+    # jamf+okta -> "Okta + JAMF", jamf alone -> "JAMF only",
+    # gcp+okta -> "Okta + GCP", gcp alone -> "GCP only", aws+okta -> "Both",
+    # okta alone -> "Okta Terraform only", aws alone (rare) -> "Lambda only".
+    if tc.snowflake_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Snowflake"
+    elif tc.snowflake_types:
+        intent["output_mode"] = "Snowflake only"
+    elif tc.fleet_tf_types and tc.okta_types:
         intent["output_mode"] = "Okta + Fleet TF"
     elif tc.fleet_tf_types:
         intent["output_mode"] = "Fleet TF only"
@@ -1848,7 +1999,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         outputs = outputs_by_id.get(tid)
         has_hcl = outputs and any(
             (outputs.get(k) or "").strip()
-            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl")
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl", "terraform_snowflake_hcl")
         )
         if not has_hcl:
             r["terraform_validate_pass"] = None

@@ -34,13 +34,19 @@ def _infer_mode(
     gcp_types: list[str],
     jamf_types: list[str] | None = None,
     fleet_types: list[str] | None = None,
+    snowflake_types: list[str] | None = None,
 ) -> str:
     """Mirror app.py's mode-inference logic so the read-only chip stays in sync.
 
-    Order mirrors app.py: Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
+    Order: Snowflake -> Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
     Fleet TF stays CLI/HTTP-only, so the UI never infers a Fleet TF mode."""
     jamf_types = jamf_types or []
     fleet_types = fleet_types or []
+    snowflake_types = snowflake_types or []
+    if snowflake_types and okta_types:
+        return "Okta + Snowflake"
+    if snowflake_types:
+        return "Snowflake only"
     if fleet_types and okta_types:
         return "Okta + Fleet GitOps"
     if fleet_types:
@@ -93,11 +99,12 @@ def render_mode_chip(
     gcp_types: list[str],
     jamf_types: list[str] | None = None,
     fleet_types: list[str] | None = None,
+    snowflake_types: list[str] | None = None,
 ) -> None:
     """Render a small read-only mode pill that reflects the current checkbox
     selection. Pure presentation; does NOT change `output_mode` in state.
     """
-    mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types)
+    mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
     st.markdown(mode_chip_html(mode), unsafe_allow_html=True)
 
 
@@ -174,6 +181,23 @@ def render_env_pills(env_context: dict) -> None:
         pills.append(pill(f"Fleet ({n_lab + n_pol + n_q + n_t})", state, tooltip))
     else:
         pills.append(pill("Fleet", "off", fleet.get("error", "Not configured")))
+
+    # Snowflake (Phase 15 ships pill in `off` state; Phase 15.5 will add the
+    # live-context fetcher and flip it to `on` when SNOWFLAKE_* secrets are set).
+    snowflake = (env_context or {}).get("snowflake", {})
+    if snowflake.get("connected"):
+        n_wh = len(snowflake.get("warehouses", []))
+        n_db = len(snowflake.get("databases", []))
+        n_role = len(snowflake.get("roles", []))
+        partial = snowflake.get("partial_errors") or []
+        tooltip = f"{n_wh} warehouses, {n_db} databases, {n_role} roles"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} endpoints unavailable)"
+        pills.append(pill(f"Snowflake ({n_wh + n_db + n_role})", state, tooltip))
+    else:
+        # Default tooltip until Phase 15.5 wires the live-context fetcher.
+        pills.append(pill("Snowflake", "off", snowflake.get("error", "Not configured (live context lands in Phase 15.5)")))
 
     st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 
@@ -267,25 +291,41 @@ _FLEET_RESOURCE_LABEL_TO_TF = {
     "Team Settings": "fleet_team_settings",
 }
 
+_SNOWFLAKE_RESOURCE_LABEL_TO_TF = {
+    "Warehouse": "snowflake_warehouse",
+    "Database": "snowflake_database",
+    "Schema": "snowflake_schema",
+    "Role": "snowflake_role",
+    "User": "snowflake_user",
+    "Role Grant": "snowflake_grant_account_role",
+    "Privilege Grant": "snowflake_grant_privileges_to_account_role",
+    "Resource Monitor": "snowflake_resource_monitor",
+    "Network Policy": "snowflake_network_policy",
+    "SCIM": "snowflake_scim_integration",
+}
 
-def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str]]:
-    """Five-section checkbox selector. Returns (okta_types, aws_types, gcp_types, jamf_types, fleet_types).
+
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+    """Six-section checkbox selector. Returns (okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types).
 
     JAMF rows route to terraform_jamf_hcl via the JAMF Pro provider; Fleet rows
-    route to fleet_gitops_yaml via the GitOps YAML path. Fleet TF (experimental,
-    l-teles/fleetdm) remains CLI/HTTP-only — selecting Fleet boxes here always
-    yields GitOps YAML output.
+    route to fleet_gitops_yaml via the GitOps YAML path; Snowflake rows route
+    to terraform_snowflake_hcl via snowflakedb/snowflake ~> 2.0. Fleet TF
+    (experimental, l-teles/fleetdm) remains CLI/HTTP-only — selecting Fleet
+    boxes here always yields GitOps YAML output.
     """
     okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
     aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
     gcp_labels = list(_GCP_RESOURCE_LABEL_TO_TF.keys())
     jamf_labels = list(_JAMF_RESOURCE_LABEL_TO_TF.keys())
     fleet_labels = list(_FLEET_RESOURCE_LABEL_TO_TF.keys())
+    snowflake_labels = list(_SNOWFLAKE_RESOURCE_LABEL_TO_TF.keys())
     okta_selected: list[str] = []
     aws_selected: list[str] = []
     gcp_selected: list[str] = []
     jamf_selected: list[str] = []
     fleet_selected: list[str] = []
+    snowflake_selected: list[str] = []
 
     # Okta row
     okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
@@ -344,7 +384,16 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str], li
             if st.checkbox(label, key=f"rsel_fleet_{label.lower().replace(' ', '_')}"):
                 fleet_selected.append(_FLEET_RESOURCE_LABEL_TO_TF[label])
 
-    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected
+    # Snowflake row (Phase 15, snowflakedb/snowflake ~> 2.0)
+    snowflake_cols = st.columns([0.7] + [1] * len(snowflake_labels))
+    with snowflake_cols[0]:
+        st.markdown("**Snowflake**")
+    for i, label in enumerate(snowflake_labels):
+        with snowflake_cols[i + 1]:
+            if st.checkbox(label, key=f"rsel_snowflake_{label.lower().replace(' ', '_')}"):
+                snowflake_selected.append(_SNOWFLAKE_RESOURCE_LABEL_TO_TF[label])
+
+    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected
 
 
 def render_intent_card(intent: dict) -> dict | None:
