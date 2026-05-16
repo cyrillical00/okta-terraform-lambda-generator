@@ -145,12 +145,61 @@ def build_env_context(
     jamf_fqdn: str = "",
     jamf_client_id: str = "",
     jamf_client_secret: str = "",
+    fleet_url: str = "",
+    fleet_api_token: str = "",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
         "aws": fetch_aws_context(aws_region, aws_access_key, aws_secret_key),
         "gcp": fetch_gcp_context(gcp_project_id, gcp_sa_json, gcp_region or "us-central1"),
         "jamf": fetch_jamf_context(jamf_fqdn, jamf_client_id, jamf_client_secret),
+        "fleet": fetch_fleet_context(fleet_url, fleet_api_token),
+    }
+
+
+def fetch_fleet_context(url: str, api_token: str) -> dict:
+    """Best-effort fetch of live Fleet labels / policies / queries / teams.
+
+    Returns the canonical env-context shape used by render_env_pills and the
+    sidebar status block: `{connected, url, labels, policies, queries, teams,
+    error, partial_errors}`. When `url` or `api_token` is empty, short-circuits
+    to the disconnected shape without contacting the network.
+
+    Per-endpoint failures are non-fatal and append a one-line summary to
+    `partial_errors`, matching the JAMF pattern.
+    """
+    if not url or not api_token:
+        return {"connected": False, "error": "Not configured, add FLEET_URL and FLEET_API_TOKEN to secrets."}
+    try:
+        from fleet_client import FleetClient, FleetError
+    except ImportError as e:
+        return {"connected": False, "error": f"Fleet client unavailable: {e}"}
+    try:
+        client = FleetClient(url, api_token)
+    except FleetError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except FleetError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    canonical_url = url.rstrip("/")
+    return {
+        "connected": True,
+        "url": canonical_url,
+        "labels": _safe("labels", client.list_labels),
+        "policies": _safe("policies", client.list_policies),
+        "queries": _safe("queries", client.list_queries),
+        "teams": _safe("teams", client.list_teams),
+        "error": None,
+        "partial_errors": partial_errors,
     }
 
 
@@ -160,6 +209,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     aws = env_context.get("aws", {})
     gcp = env_context.get("gcp", {})
     jamf = env_context.get("jamf", {})
+    fleet = env_context.get("fleet", {})
     sections = []
 
     if okta.get("connected"):
@@ -254,6 +304,34 @@ def format_context_for_prompt(env_context: dict) -> str:
             lines.append('**Scripts** (reference via data "jamfpro_script"):')
             for s in scripts[:40]:
                 lines.append(f'  - name: "{s["name"]}"  id: {s["id"]}')
+        sections.append("\n".join(lines))
+
+    if fleet.get("connected"):
+        lines = ["### Fleet MDM live resources"]
+        url = fleet.get("url", "")
+        if url:
+            lines.append("**Fleet instance metadata** (use this URL in the provider block):")
+            lines.append(f'  - fleet_url: "{url}"')
+        labels = fleet.get("labels", [])
+        if labels:
+            lines.append('**Labels** (reference by name in YAML labels_include_any, or by id in Terraform):')
+            for l in labels[:40]:
+                lines.append(f'  - name: "{l.get("name", "")}"  id: {l.get("id", "")}')
+        policies = fleet.get("policies", [])
+        if policies:
+            lines.append('**Policies** (existing policy names; do not duplicate):')
+            for p in policies[:40]:
+                lines.append(f'  - name: "{p.get("name", "")}"  id: {p.get("id", "")}')
+        queries = fleet.get("queries", [])
+        if queries:
+            lines.append('**Queries** (existing saved query names; do not duplicate):')
+            for q in queries[:40]:
+                lines.append(f'  - name: "{q.get("name", "")}"  id: {q.get("id", "")}')
+        teams = fleet.get("teams", [])
+        if teams:
+            lines.append('**Teams** (use team_id when scoping a fleetdm_fleet resource):')
+            for t in teams[:40]:
+                lines.append(f'  - name: "{t.get("name", "")}"  id: {t.get("id", "")}')
         sections.append("\n".join(lines))
 
     if not sections:

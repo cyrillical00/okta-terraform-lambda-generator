@@ -451,13 +451,13 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
 
 def _load_env_context() -> None:
-    """Fetch Okta/AWS/GCP context once per session. Skips if already loaded.
-    Wraps the live-context fetch in st.status so the user sees activity when
-    Okta or AWS is slow to respond.
+    """Fetch live environment context (Okta / AWS / GCP / JAMF / Fleet) once per
+    session. Skips if already loaded. Wraps the live-context fetch in st.status
+    so the user sees activity when any provider is slow to respond.
     """
     if st.session_state.env_context is not None:
         return
-    with st.status("Connecting to Okta, AWS, GCP...", expanded=False) as status:
+    with st.status("Connecting to Okta, AWS, GCP, JAMF, Fleet...", expanded=False) as status:
         st.session_state.env_context = build_env_context(
             okta_org_url=_get_secret("OKTA_ORG_URL"),
             okta_api_token=_get_secret("OKTA_API_TOKEN"),
@@ -467,13 +467,18 @@ def _load_env_context() -> None:
             gcp_project_id=_get_secret("GCP_PROJECT_ID"),
             gcp_sa_json=_get_secret("GCP_SA_JSON"),
             gcp_region=_get_secret("GCP_REGION") or "us-central1",
+            jamf_fqdn=_get_secret("JAMF_INSTANCE_FQDN") or _get_secret("JAMF_FQDN"),
+            jamf_client_id=_get_secret("JAMF_CLIENT_ID"),
+            jamf_client_secret=_get_secret("JAMF_CLIENT_SECRET"),
+            fleet_url=_get_secret("FLEET_URL"),
+            fleet_api_token=_get_secret("FLEET_API_TOKEN"),
         )
         ctx = st.session_state.env_context or {}
         connected = sum(
-            1 for k in ("okta", "aws", "gcp") if ctx.get(k, {}).get("connected")
+            1 for k in ("okta", "aws", "gcp", "jamf", "fleet") if ctx.get(k, {}).get("connected")
         )
         status.update(
-            label=f"Live context ready: {connected} of 3 providers connected",
+            label=f"Live context ready: {connected} of 5 providers connected",
             state="complete",
         )
 
@@ -487,6 +492,8 @@ def _render_env_sidebar() -> None:
     okta = ctx.get("okta", {})
     aws = ctx.get("aws", {})
     gcp = ctx.get("gcp", {})
+    jamf = ctx.get("jamf", {})
+    fleet = ctx.get("fleet", {})
 
     st.markdown("**Environment**")
 
@@ -523,6 +530,35 @@ def _render_env_sidebar() -> None:
     else:
         err = gcp.get("error", "Not configured")
         st.caption(f"GCP: {err}")
+
+    if jamf.get("connected"):
+        n_pol = len(jamf.get("policies", []))
+        n_sg = len(jamf.get("smart_groups", []))
+        n_scr = len(jamf.get("scripts", []))
+        st.success(f"JAMF: {n_pol} policies · {n_sg} smart groups · {n_scr} scripts")
+        partial = jamf.get("partial_errors") or []
+        if partial:
+            st.caption(f"JAMF partial: {len(partial)} endpoint(s) unavailable")
+            for p in partial:
+                st.caption(f"· {p[:140]}")
+    else:
+        err = jamf.get("error", "Not configured")
+        st.caption(f"JAMF: {err}")
+
+    if fleet.get("connected"):
+        n_lab = len(fleet.get("labels", []))
+        n_pol = len(fleet.get("policies", []))
+        n_q = len(fleet.get("queries", []))
+        n_t = len(fleet.get("teams", []))
+        st.success(f"Fleet: {n_lab} labels · {n_pol} policies · {n_q} queries · {n_t} teams")
+        partial = fleet.get("partial_errors") or []
+        if partial:
+            st.caption(f"Fleet partial: {len(partial)} endpoint(s) unavailable")
+            for p in partial:
+                st.caption(f"· {p[:140]}")
+    else:
+        err = fleet.get("error", "Not configured")
+        st.caption(f"Fleet: {err}")
 
     if st.button("Refresh environment", use_container_width=True):
         _audit.log(st.user.email, "env_refresh")

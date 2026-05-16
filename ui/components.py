@@ -102,11 +102,14 @@ def render_mode_chip(
 
 
 def render_env_pills(env_context: dict) -> None:
-    """Render a horizontal row of Okta / AWS / GCP status pills at the top of
-    the main panel. Tooltip exposes resource counts. Pure presentation."""
+    """Render a horizontal row of Okta / AWS / GCP / JAMF / Fleet status pills
+    at the top of the main panel. Tooltip exposes resource counts. Pure
+    presentation."""
     okta = (env_context or {}).get("okta", {})
     aws = (env_context or {}).get("aws", {})
     gcp = (env_context or {}).get("gcp", {})
+    jamf = (env_context or {}).get("jamf", {})
+    fleet = (env_context or {}).get("fleet", {})
 
     pills = []
 
@@ -142,6 +145,35 @@ def render_env_pills(env_context: dict) -> None:
         pills.append(pill(f"GCP ({n_fns + n_sa + n_topics})", state, tooltip))
     else:
         pills.append(pill("GCP", "off", gcp.get("error", "Not configured")))
+
+    # JAMF, with warn state when partial errors are present (mirrors GCP)
+    if jamf.get("connected"):
+        n_pol = len(jamf.get("policies", []))
+        n_sg = len(jamf.get("smart_groups", []))
+        n_scr = len(jamf.get("scripts", []))
+        partial = jamf.get("partial_errors") or []
+        tooltip = f"{n_pol} policies, {n_sg} smart groups, {n_scr} scripts"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} endpoints unavailable)"
+        pills.append(pill(f"JAMF ({n_pol + n_sg + n_scr})", state, tooltip))
+    else:
+        pills.append(pill("JAMF", "off", jamf.get("error", "Not configured")))
+
+    # Fleet, with warn state when partial errors are present
+    if fleet.get("connected"):
+        n_lab = len(fleet.get("labels", []))
+        n_pol = len(fleet.get("policies", []))
+        n_q = len(fleet.get("queries", []))
+        n_t = len(fleet.get("teams", []))
+        partial = fleet.get("partial_errors") or []
+        tooltip = f"{n_lab} labels, {n_pol} policies, {n_q} queries, {n_t} teams"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} endpoints unavailable)"
+        pills.append(pill(f"Fleet ({n_lab + n_pol + n_q + n_t})", state, tooltip))
+    else:
+        pills.append(pill("Fleet", "off", fleet.get("error", "Not configured")))
 
     st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 
