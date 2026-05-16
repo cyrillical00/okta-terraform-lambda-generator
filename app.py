@@ -123,7 +123,7 @@ from gh_push.push import push_to_github, build_commit_message
 from ui.components import (
     render_intent_card, render_code_panels, render_action_buttons,
     render_validation_result, render_optional_tf, render_tfvars_example,
-    render_resource_type_selector, render_hero_starters, render_mode_chip,
+    render_resource_type_selector, render_hero_starters, render_output_mode_picker, _infer_mode,
     render_env_pills, render_gcp_partial_warning, render_success_card,
     render_version_switcher, render_diff_viewer,
     render_intent_output_compare, render_feedback_widget,
@@ -912,7 +912,8 @@ st.caption("Describe an operation in plain English and get production-ready Terr
 # Stage 1 — Input
 with st.container():
     okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types = render_resource_type_selector()
-    render_mode_chip(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
+    _inferred_mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
+    _resolved_output_mode = render_output_mode_picker(_inferred_mode)
     user_input = st.text_area(
         "Describe the operation",
         placeholder='e.g. "Create a SAML app for Google Workspace with SCIM provisioning" or "Build a Lambda that fires when a user is deactivated in Okta"',
@@ -991,30 +992,13 @@ if parse_clicked and user_input.strip():
                     intent["fleet_resource_types"] = fleet_types
                 if snowflake_types:
                     intent["snowflake_resource_types"] = snowflake_types
-                # Mode inference order mirrors qa_runner.build_intent:
-                # Snowflake -> Fleet -> JAMF -> GCP -> AWS -> Okta fallback.
-                # Fleet TF remains CLI/HTTP-only; selecting Fleet UI boxes
-                # always yields the GitOps YAML path.
-                if snowflake_types and okta_types:
-                    intent["output_mode"] = "Okta + Snowflake"
-                elif snowflake_types:
-                    intent["output_mode"] = "Snowflake only"
-                elif fleet_types and okta_types:
-                    intent["output_mode"] = "Okta + Fleet GitOps"
-                elif fleet_types:
-                    intent["output_mode"] = "Fleet GitOps only"
-                elif jamf_types and okta_types:
-                    intent["output_mode"] = "Okta + JAMF"
-                elif jamf_types:
-                    intent["output_mode"] = "JAMF only"
-                elif gcp_types and okta_types:
-                    intent["output_mode"] = "Okta + GCP"
-                elif gcp_types:
-                    intent["output_mode"] = "GCP only"
-                elif aws_types:
-                    intent["output_mode"] = "Both"
-                else:
-                    intent["output_mode"] = "Okta Terraform only"
+                # Output mode comes from the explicit picker (Phase 16). When
+                # the picker is on "Auto" the resolved value is the same as
+                # the inference cascade below; when the user has overridden
+                # (e.g. picked "Lambda only" with Okta boxes checked), the
+                # override wins. render_output_mode_picker already resolved
+                # this above, so we just stamp the value here.
+                intent["output_mode"] = _resolved_output_mode
                 errors = validate_intent(intent)
                 if errors:
                     st.session_state.parse_error = "Validation errors: " + "; ".join(errors)

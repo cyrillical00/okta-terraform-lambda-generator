@@ -4,7 +4,7 @@ import re
 import zipfile
 import streamlit as st
 
-from ui.css import pill, mode_chip_html
+from ui.css import pill, mode_chip_html  # mode_chip_html retained for any external callers; render_mode_chip itself removed in Phase 16
 
 
 def _count_resources(hcl: str) -> int:
@@ -93,19 +93,12 @@ def render_hero_starters() -> None:
                 st.rerun()
 
 
-def render_mode_chip(
-    okta_types: list[str],
-    aws_types: list[str],
-    gcp_types: list[str],
-    jamf_types: list[str] | None = None,
-    fleet_types: list[str] | None = None,
-    snowflake_types: list[str] | None = None,
-) -> None:
-    """Render a small read-only mode pill that reflects the current checkbox
-    selection. Pure presentation; does NOT change `output_mode` in state.
-    """
-    mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
-    st.markdown(mode_chip_html(mode), unsafe_allow_html=True)
+# render_mode_chip was removed in Phase 16. The read-only mode pill it
+# rendered has been replaced by render_output_mode_picker, which is an
+# interactive st.selectbox combining the chip's display role with the new
+# explicit-override picker. `_infer_mode` is still exported for use by
+# `render_output_mode_picker` as the default-value computation when the
+# picker is on "Auto".
 
 
 def render_env_pills(env_context: dict) -> None:
@@ -305,39 +298,40 @@ _SNOWFLAKE_RESOURCE_LABEL_TO_TF = {
 }
 
 
-def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
-    """Six-section checkbox selector. Returns (okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types).
+def _render_checkbox_grid(
+    labels: list[str],
+    label_to_tf: dict[str, str],
+    key_prefix: str,
+    cols_per_row: int = 4,
+) -> list[str]:
+    """Render a wrapping grid of checkboxes inside the current container.
 
-    JAMF rows route to terraform_jamf_hcl via the JAMF Pro provider; Fleet rows
-    route to fleet_gitops_yaml via the GitOps YAML path; Snowflake rows route
-    to terraform_snowflake_hcl via snowflakedb/snowflake ~> 2.0. Fleet TF
-    (experimental, l-teles/fleetdm) remains CLI/HTTP-only — selecting Fleet
-    boxes here always yields GitOps YAML output.
+    Used inside each provider tab. `cols_per_row` controls wrap width — 4 columns
+    fits cleanly on a 1280px viewport without horizontal crowding. Returns the
+    Terraform resource-type strings for boxes the user has checked.
+
+    Widget `key` values are stable across the Phase 16 tab rewrite so existing
+    session-state selections survive the migration.
     """
+    selected: list[str] = []
+    rows = [labels[i:i + cols_per_row] for i in range(0, len(labels), cols_per_row)]
+    for row in rows:
+        cols = st.columns(cols_per_row)
+        for col_idx, label in enumerate(row):
+            with cols[col_idx]:
+                key = f"rsel_{key_prefix}_{label.lower().replace(' ', '_').replace('/', '_')}" if key_prefix else f"rsel_{label.lower().replace(' ', '_')}"
+                if st.checkbox(label, key=key):
+                    selected.append(label_to_tf[label])
+    return selected
+
+
+def _render_okta_tab() -> list[str]:
+    """Okta tab body. Resource checkboxes + Application sub-selector with app-type
+    radio (SAML vs OAuth/OIDC). Keeps the existing `rsel_application` and
+    `rsel_app_type` widget keys for state continuity across the Phase 16 migration."""
     okta_labels = list(_RESOURCE_LABEL_TO_TF.keys())
-    aws_labels = list(_AWS_RESOURCE_LABEL_TO_TF.keys())
-    gcp_labels = list(_GCP_RESOURCE_LABEL_TO_TF.keys())
-    jamf_labels = list(_JAMF_RESOURCE_LABEL_TO_TF.keys())
-    fleet_labels = list(_FLEET_RESOURCE_LABEL_TO_TF.keys())
-    snowflake_labels = list(_SNOWFLAKE_RESOURCE_LABEL_TO_TF.keys())
-    okta_selected: list[str] = []
-    aws_selected: list[str] = []
-    gcp_selected: list[str] = []
-    jamf_selected: list[str] = []
-    fleet_selected: list[str] = []
-    snowflake_selected: list[str] = []
-
-    # Okta row
-    okta_cols = st.columns([0.7] + [1] * (len(okta_labels) + 1))
-    with okta_cols[0]:
-        st.markdown("**Okta**")
-    for i, label in enumerate(okta_labels):
-        with okta_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_{label.lower().replace(' ', '_')}"):
-                okta_selected.append(_RESOURCE_LABEL_TO_TF[label])
-    with okta_cols[-1]:
-        app_checked = st.checkbox("Application", key="rsel_application")
-
+    selected = _render_checkbox_grid(okta_labels, _RESOURCE_LABEL_TO_TF, key_prefix="", cols_per_row=4)
+    app_checked = st.checkbox("Application", key="rsel_application")
     if app_checked:
         app_type = st.radio(
             "Application type",
@@ -346,54 +340,116 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str], li
             key="rsel_app_type",
             label_visibility="collapsed",
         )
-        okta_selected.append(_APP_TYPE_TO_TF[app_type])
+        selected.append(_APP_TYPE_TO_TF[app_type])
+    return selected
 
-    # AWS row
-    aws_cols = st.columns([0.7] + [1] * len(aws_labels))
-    with aws_cols[0]:
-        st.markdown("**AWS**")
-    for i, label in enumerate(aws_labels):
-        with aws_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_aws_{label.lower().replace(' ', '_')}"):
-                aws_selected.append(_AWS_RESOURCE_LABEL_TO_TF[label])
 
-    # GCP row
-    gcp_cols = st.columns([0.7] + [1] * len(gcp_labels))
-    with gcp_cols[0]:
-        st.markdown("**GCP**")
-    for i, label in enumerate(gcp_labels):
-        with gcp_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_gcp_{label.lower().replace(' ', '_').replace('/', '_')}"):
-                gcp_selected.append(_GCP_RESOURCE_LABEL_TO_TF[label])
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+    """Provider-tabbed resource-type selector. Returns (okta_types, aws_types,
+    gcp_types, jamf_types, fleet_types, snowflake_types).
 
-    # JAMF row (Phase 11)
-    jamf_cols = st.columns([0.7] + [1] * len(jamf_labels))
-    with jamf_cols[0]:
-        st.markdown("**JAMF**")
-    for i, label in enumerate(jamf_labels):
-        with jamf_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_jamf_{label.lower().replace(' ', '_')}"):
-                jamf_selected.append(_JAMF_RESOURCE_LABEL_TO_TF[label])
+    Phase 16 redesign: replaced the six horizontally-stacked rows (~50 checkboxes
+    visible at once) with `st.tabs` so only the active provider's checkboxes
+    render. Tab switches are cheap because Streamlit's session state retains all
+    checkbox values regardless of which tab body is currently visible, so the
+    6-tuple return always reflects the user's full selection across every
+    provider.
 
-    # Fleet row (Phase 13, GitOps YAML path; Fleet TF remains CLI/HTTP-only)
-    fleet_cols = st.columns([0.7] + [1] * len(fleet_labels))
-    with fleet_cols[0]:
-        st.markdown("**Fleet**")
-    for i, label in enumerate(fleet_labels):
-        with fleet_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_fleet_{label.lower().replace(' ', '_')}"):
-                fleet_selected.append(_FLEET_RESOURCE_LABEL_TO_TF[label])
+    Provider routing is unchanged:
+      - JAMF -> terraform_jamf_hcl
+      - Fleet -> fleet_gitops_yaml (Fleet TF stays CLI/HTTP-only)
+      - Snowflake -> terraform_snowflake_hcl via snowflakedb/snowflake ~> 2.0
+    """
+    okta_tab, aws_tab, gcp_tab, jamf_tab, fleet_tab, snowflake_tab = st.tabs(
+        ["Okta", "AWS", "GCP", "JAMF", "Fleet", "Snowflake"]
+    )
 
-    # Snowflake row (Phase 15, snowflakedb/snowflake ~> 2.0)
-    snowflake_cols = st.columns([0.7] + [1] * len(snowflake_labels))
-    with snowflake_cols[0]:
-        st.markdown("**Snowflake**")
-    for i, label in enumerate(snowflake_labels):
-        with snowflake_cols[i + 1]:
-            if st.checkbox(label, key=f"rsel_snowflake_{label.lower().replace(' ', '_')}"):
-                snowflake_selected.append(_SNOWFLAKE_RESOURCE_LABEL_TO_TF[label])
+    with okta_tab:
+        okta_selected = _render_okta_tab()
+
+    with aws_tab:
+        aws_selected = _render_checkbox_grid(
+            list(_AWS_RESOURCE_LABEL_TO_TF.keys()),
+            _AWS_RESOURCE_LABEL_TO_TF,
+            key_prefix="aws",
+        )
+
+    with gcp_tab:
+        gcp_selected = _render_checkbox_grid(
+            list(_GCP_RESOURCE_LABEL_TO_TF.keys()),
+            _GCP_RESOURCE_LABEL_TO_TF,
+            key_prefix="gcp",
+        )
+
+    with jamf_tab:
+        jamf_selected = _render_checkbox_grid(
+            list(_JAMF_RESOURCE_LABEL_TO_TF.keys()),
+            _JAMF_RESOURCE_LABEL_TO_TF,
+            key_prefix="jamf",
+        )
+
+    with fleet_tab:
+        fleet_selected = _render_checkbox_grid(
+            list(_FLEET_RESOURCE_LABEL_TO_TF.keys()),
+            _FLEET_RESOURCE_LABEL_TO_TF,
+            key_prefix="fleet",
+        )
+
+    with snowflake_tab:
+        snowflake_selected = _render_checkbox_grid(
+            list(_SNOWFLAKE_RESOURCE_LABEL_TO_TF.keys()),
+            _SNOWFLAKE_RESOURCE_LABEL_TO_TF,
+            key_prefix="snowflake",
+        )
 
     return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected
+
+
+_AUTO_LABEL = "Auto (inferred from selection)"
+
+_ALL_OUTPUT_MODES = [
+    _AUTO_LABEL,
+    "Okta Terraform only",
+    "Lambda only",
+    "GCP only",
+    "Both",
+    "Okta + GCP",
+    "JAMF only",
+    "Okta + JAMF",
+    "Fleet GitOps only",
+    "Okta + Fleet GitOps",
+    "Fleet TF only",
+    "Okta + Fleet TF",
+    "Snowflake only",
+    "Okta + Snowflake",
+]
+
+
+def render_output_mode_picker(inferred_mode: str) -> str:
+    """Render an explicit output-mode dropdown and return the resolved mode.
+
+    Phase 16 replaces the read-only `render_mode_chip` with a `st.selectbox`
+    showing all 13 explicit modes plus a sentinel "Auto" entry that defers to
+    the inference computed from the user's checkbox selection. Default index
+    is 0 (Auto), so first-load behaviour matches the prior chip-based UX. The
+    user's pick survives reruns via the `output_mode_picker` session-state key.
+
+    Returns `inferred_mode` when the picker is on Auto, otherwise the literal
+    mode string the user selected.
+    """
+    picked = st.selectbox(
+        "Output mode",
+        options=_ALL_OUTPUT_MODES,
+        index=0,
+        key="output_mode_picker",
+        help=(
+            f"Inferred from your selection: {inferred_mode}. Pick 'Auto' to "
+            "track the inferred mode automatically, or pick an explicit mode "
+            "to override (e.g. force 'Lambda only' even when Okta resources "
+            "are checked)."
+        ),
+    )
+    return inferred_mode if picked == _AUTO_LABEL else picked
 
 
 def render_intent_card(intent: dict) -> dict | None:
