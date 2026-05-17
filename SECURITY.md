@@ -55,25 +55,60 @@ Cost records live in `_tftool/usage/<email-hash>.json`, keyed by UTC date. Used 
 
 ## PII redaction
 
-`redact.py` strips the following from every prompt **before** it leaves Streamlit for Anthropic:
+`redact.py` strips the following from every prompt **before** it leaves Streamlit for Anthropic. Categories below are listed in the order patterns are applied (longer / more specific first, so they consume bytes before broader patterns match).
+
+**Multi-line credentials (PEM blocks):**
+
+- RSA private keys (`-----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----`)
+- OpenSSH private keys (`-----BEGIN OPENSSH PRIVATE KEY-----`)
+- EC private keys (`-----BEGIN EC PRIVATE KEY-----`)
+- DSA private keys (`-----BEGIN DSA PRIVATE KEY-----`)
+- Generic PKCS#8 private keys (`-----BEGIN PRIVATE KEY-----`)
+
+**Cloud credential blobs:**
+
+- GCP service account JSON (`{"type": "service_account", ...}`)
+- AWS access key IDs (`AKIA`, `ASIA`, `AROA`, `AIDA`, `ANPA`, `ANVA`, `AGPA` prefixes)
+- AWS secret access keys (40-char base64-ish value, context-aware: only when preceded by `aws_secret_access_key=` or `AWS_SECRET_ACCESS_KEY=`)
+
+**Vendor API keys:**
+
+- Anthropic (`sk-ant-...`, covers `sk-ant-api03-...`)
+- OpenAI (`sk-...`, 32+ chars)
+- Stripe (`(sk|pk|rk)_(live|test)_...`)
+- GitHub classic PAT (`ghp_...`)
+- GitHub fine-grained PAT (`github_pat_...`, 50+ char suffix)
+- Slack tokens (`xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`, `xoxo-`)
+- Snowflake account identifier (`[a-z]{2}\d{5}\.<region>[.<cloud>]`)
+
+**Generic credentials:**
+
+- JWT tokens (3-part base64url with `eyJ` prefix)
+- Bearer tokens (`Bearer <40+ char body>`; JWT-shaped bodies still label as JWT thanks to ordering)
+
+**Personally identifiable information:**
 
 - Email addresses
 - US-style phone numbers
-- US Social Security Numbers (formatted as NNN-NN-NNNN)
+- US Social Security Numbers (NNN-NN-NNNN)
 - Credit card numbers (only when the digits pass a Luhn check)
-- API keys: Anthropic (`sk-ant-...`), OpenAI (`sk-...`), Stripe (`(sk|pk|rk)_(live|test)_...`), GitHub PATs (`ghp_...`, `github_pat_...`)
-- AWS access key IDs (`AKIA...`, `ASIA...`, etc.)
-- JWT tokens (3-part base64url)
 
-Patterns intentionally NOT redacted because they are infrastructure context the model needs:
+**Network identifiers:**
 
-- IP addresses
+- IPv4 addresses, except a small allowlist of well-known publics that show up constantly in instructional context: `0.0.0.0`, `127.0.0.1`, `1.1.1.1`, `1.0.0.1`, `8.8.8.8`, `8.8.4.4`
+- IPv6 addresses (full and abbreviated forms, including `::1` and `::`)
+- MAC addresses (6 hex pairs separated by `:` or `-`)
+
+Patterns intentionally NOT redacted because they are infrastructure context the model needs to generate correct Terraform:
+
 - Hostnames and full URLs
 - GCP project IDs
 - Okta organization names
-- SAML entity IDs and ARNs
+- SAML entity IDs and AWS ARNs
+- Role names
+- Terraform-side resource identifiers
 
-Admins can toggle redaction off per session via the sidebar. Every redaction event is audit-logged with the per-category counts (no values).
+Admins can toggle redaction off per session via the sidebar. Every redaction event is audit-logged with the per-category counts (no values). Unit tests at `tests/test_redact.py` cover one positive plus one negative case per pattern, and a 10KB-prompt performance smoke that asserts the full pattern set runs in under 100ms.
 
 ## Per-user daily cost cap
 
@@ -108,6 +143,10 @@ Admins see a sidebar warning when any tracked secret is older than its target ro
 | `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_USER` / `SNOWFLAKE_PRIVATE_KEY` / `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` / `SNOWFLAKE_ROLE` / `SNOWFLAKE_WAREHOUSE` | 90 days | Snowflake Terraform (snowflakedb/snowflake v2.x). Key-pair auth required (Snowflake deprecated password Nov 2025). |
 
 Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via the in-app sidebar widget, or directly in GitHub).
+
+### Local pre-commit secrets scan
+
+Developers should install the repo's pre-commit hooks (`pip install pre-commit && pre-commit install`) so that gitleaks and `detect-private-key` run against every staged commit before it reaches GitHub. Config lives at `.pre-commit-config.yaml`; CI runs the same scans server-side via the `gitleaks` job in `.github/workflows/ci.yml`.
 
 ### Rolling the headless-surface secrets
 
