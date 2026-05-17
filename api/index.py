@@ -25,7 +25,8 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import audit
@@ -33,9 +34,35 @@ import cost
 import redact
 from core import service as core_service
 from gh_push.push import push_to_github
+from headless_rate_limit import (
+    HTTP_RATE_LIMITER,
+    INPUT_LENGTH_CAP_BYTES,
+    check_input_length,
+)
 
 from api._auth import verify_api_key
 from api._bootstrap import prepare_client, quota_blocked
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP for rate-limiter keying.
+
+    Vercel sets `X-Forwarded-For` with the original caller's IP as the
+    first comma-separated entry; we prefer that over `request.client.host`
+    (which is the inbound TLS terminator, not the real caller). Falls
+    back to "unknown" when neither is set so the limiter still has a
+    stable key for tests / local runs.
+    """
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        # First entry is the original client; subsequent entries are
+        # intermediate proxies appended by each hop.
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
 # ─── shared FastAPI app ───────────────────────────────────────────────────
@@ -140,15 +167,16 @@ def health() -> HealthResponse:
 @app.post("/api/generate", response_model=GenerateResponse)
 def generate_endpoint(
     body: GenerateRequest,
+    request: Request,
     actor_id: str = Depends(verify_api_key),
-) -> GenerateResponse:
+) -> Any:
     """Full free-text -> Terraform pipeline.
 
     Flow mirrors app.py and cli.py:
       1. redact PII from the prompt
       2. quota check against today's spend
       3. cost-wrapped Anthropic client
-      4. core.service.generate() — parse + generate + refine + sanitize
+      4. core.service.generate() parse + generate + refine + sanitize
       5. _build_files maps outputs to file paths (mirrors cli._build_file_map)
       6. audit.log the action
 
@@ -156,8 +184,53 @@ def generate_endpoint(
     clients can distinguish a generation failure (the model returned bad
     JSON, the prompt was unparseable) from an infrastructure failure
     (network, 500). Validation failures from Pydantic still come back as
-    422 — that's intended.
+    422; that's intended.
+
+    Rate limiting and input-length capping run before quota check / LLM
+    work so abusive callers cost zero LLM tokens. The 429 / 413 responses
+    are JSONResponse instances rather than raised HTTPException so we can
+    set a `Retry-After` header alongside the structured error body.
     """
+    client_ip = _client_ip(request)
+
+    allowed, retry_after = HTTP_RATE_LIMITER.check(client_ip)
+    if not allowed:
+        audit.log(
+            actor_id,
+            "rate_limited_http",
+            extra={
+                "surface": "http",
+                "client_ip": client_ip,
+                "retry_after_seconds": retry_after,
+            },
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limited", "retry_after_seconds": retry_after},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    ok, reason = check_input_length(body.prompt, INPUT_LENGTH_CAP_BYTES)
+    if not ok:
+        audit.log(
+            actor_id,
+            "input_too_large_http",
+            extra={
+                "surface": "http",
+                "client_ip": client_ip,
+                "reason": reason,
+                "cap_bytes": INPUT_LENGTH_CAP_BYTES,
+            },
+        )
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "input_too_large",
+                "reason": reason,
+                "cap_bytes": INPUT_LENGTH_CAP_BYTES,
+            },
+        )
+
     ctx = prepare_client(actor_id)
 
     blocked, spent, quota = quota_blocked(ctx)

@@ -95,3 +95,30 @@ jobs:
           languages: python
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3.35.5
+
+  # Phase 18a lockfile gate, added 2026-05-16. requirements.in is the
+  # human-edited source of truth; requirements.txt is the pinned
+  # pip-compile output. This job regenerates the lockfile against the
+  # committed requirements.in and fails if the result differs from the
+  # checked-in requirements.txt, so PRs that bump a dep without
+  # re-running pip-compile cannot merge. pip-tools 7.x has no native
+  # --check; the canonical CI idiom is regenerate-to-temp + diff.
+  lock-check:
+    name: lock-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pip-tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-tools
+      - name: Verify requirements.txt is in sync with requirements.in
+        run: |
+          cp requirements.txt requirements.txt.committed
+          pip-compile --quiet --strip-extras -o requirements.txt requirements.in
+          diff requirements.txt.committed requirements.txt

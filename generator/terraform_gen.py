@@ -9,6 +9,7 @@ from .okta_data_source_sanitizer import sanitize_okta_data_source_refs
 from .okta_variable_hygiene_sanitizer import sanitize_okta_variable_hygiene
 from .multi_object_sanitizer import sanitize_multi_object
 from .hcl_utils import merge_terraform_blocks, dedupe_variable_blocks
+from .output_scanner import scan_outputs_for_secrets
 
 REQUIRED_OUTPUT_KEYS = {"terraform_okta_hcl", "terraform_lambda_hcl", "lambda_python", "lambda_requirements"}
 OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
@@ -445,5 +446,13 @@ def generate_all(
         merged_okta, merged_snowflake = dedupe_variable_blocks(merged_okta, merged_snowflake)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_snowflake_hcl"] = merged_snowflake
+
+    # Phase 18b: post-generation secret-shape scan. Runs after every
+    # sanitizer and the composite-mode block-merge step so it sees the
+    # final outputs that ship to the UI / GitHub push. Findings are
+    # attached as a private dict key so callers that ignore it stay on
+    # the existing `dict` return contract; qa_runner and app.py read
+    # the key explicitly to fail tests / block the push button.
+    result["_secret_scan_findings"] = scan_outputs_for_secrets(result)
 
     return result

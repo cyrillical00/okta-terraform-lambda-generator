@@ -148,6 +148,10 @@ Rotation dates are recorded in `_tftool/secret_rotation.json` (admin-edited via 
 
 Developers should install the repo's pre-commit hooks (`pip install pre-commit && pre-commit install`) so that gitleaks and `detect-private-key` run against every staged commit before it reaches GitHub. Config lives at `.pre-commit-config.yaml`; CI runs the same scans server-side via the `gitleaks` job in `.github/workflows/ci.yml`.
 
+### Dependency lockfile
+
+Phase 18a (2026-05-16) introduced a pinned lockfile via `pip-compile`. `requirements.in` carries the 16 direct deps with their loose `>=` constraints; `requirements.txt` is the regenerated lockfile that pins every direct and transitive package to an exact version. The lockfile shrinks the CVE-resolution window: when `pip-audit` flags a vulnerable transitive dep, the fix is a single deterministic `pip-compile` re-run rather than a guessing game about which transitive version users will resolve to at install time. The `lock-check` CI job rejects PRs where `requirements.txt` is out of sync with `requirements.in`, and Dependabot (configured in `.github/dependabot.yml`) opens weekly PRs against `requirements.in` so direct-dep upgrades and lockfile regeneration stay coupled to the existing `pip-audit` + `gitleaks` + CodeQL workflow.
+
 ### Rolling the headless-surface secrets
 
 - **`TFGEN_API_KEY`**: generate a new random string (`openssl rand -hex 32`), update the Vercel env var, redeploy. Notify every script / Slack/JIRA bot that holds the old value. Old key stops working the moment the new value is bound; rotate during a low-traffic window.

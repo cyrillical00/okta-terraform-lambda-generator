@@ -1091,6 +1091,30 @@ if st.session_state.outputs:
     # Phase 8B B.2: side-by-side intent vs output for quick interpret-check.
     render_intent_output_compare(display_intent, display_outputs)
     render_code_panels(display_outputs, mode)
+
+    # Phase 18b: surface post-generation secret-shape findings. When the
+    # scanner finds anything (real credential or hallucinated lookalike)
+    # we block the GitHub push action below via session_state and render
+    # an error block here so the user can inspect, edit, or regenerate
+    # before exfiltrating the value. The download / ZIP path stays open
+    # so the user can grab the file locally for triage.
+    _scan_findings = display_outputs.get("_secret_scan_findings") or []
+    if _scan_findings:
+        st.session_state.secret_scan_blocked = True
+        st.error(
+            f"Secret-shaped content detected in {len(_scan_findings)} "
+            "location(s). GitHub push is disabled until the output is "
+            "regenerated or edited. Download stays available for local "
+            "inspection."
+        )
+        for f in _scan_findings:
+            st.markdown(
+                f"- `{f['key']}` line {f['line']}, category "
+                f"`{f['category']}`: `{f['snippet']}`"
+            )
+    else:
+        st.session_state.secret_scan_blocked = False
+
     # Phase 8B B.3: feedback widget. Posts a GitHub issue on submit; renders
     # nothing when feedback is not configured.
     render_feedback_widget(display_intent, display_outputs, st.session_state.last_user_input, st.user.email)
@@ -1232,7 +1256,19 @@ if st.session_state.outputs:
     # GitHub push
     if push_clicked:
         github_token = _get_secret("GITHUB_TOKEN")
-        if not github_token:
+        if st.session_state.get("secret_scan_blocked"):
+            # Phase 18b: zero-tolerance gate. The error panel above already
+            # lists every finding; this branch just refuses to ship.
+            st.error(
+                "Push blocked: secret-shaped content detected in the "
+                "generated output. Regenerate or edit before pushing."
+            )
+            _audit.log(
+                st.user.email,
+                "push_blocked_secret_scan",
+                extra={"finding_count": len(st.session_state.outputs.get("_secret_scan_findings") or [])},
+            )
+        elif not github_token:
             st.error("GITHUB_TOKEN must be configured in secrets to push to GitHub.")
         elif not repo_override:
             st.error("Repository name is required to push to GitHub.")

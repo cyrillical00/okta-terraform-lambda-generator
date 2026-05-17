@@ -1782,6 +1782,17 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             if needle in snowflake_hcl:
                 issues.append(f"Forbidden string '{needle}' in terraform_snowflake_hcl")
 
+    # ── 20. Universal post-check: Phase 18b secret-shape scanner ──
+    # generator.terraform_gen.generate_all attaches its scanner findings
+    # under the private `_secret_scan_findings` key. Any non-empty list
+    # fails every test class without per-test opt-in, mirroring the
+    # zero-tolerance posture for credential leakage in generated code.
+    for f in outputs.get("_secret_scan_findings") or []:
+        issues.append(
+            f"Secret-shape '{f['category']}' detected in {f['key']} "
+            f"line {f['line']}: {f['snippet']}"
+        )
+
     return issues
 
 

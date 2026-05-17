@@ -70,12 +70,18 @@ from urllib.parse import urlparse
 
 import requests
 from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 
 import audit
 import cost
 import redact
 from core import service as core_service
 from gh_push.push import push_to_github
+from headless_rate_limit import (
+    INPUT_LENGTH_CAP_BYTES,
+    JIRA_RATE_LIMITER,
+    check_input_length,
+)
 
 from api.index import _build_files, app
 from api._bootstrap import prepare_client, quota_blocked
@@ -240,7 +246,7 @@ _PREVIEW_MAX = 2000
 
 
 @app.post("/api/jira/webhook")
-async def jira_webhook(request: Request) -> dict:
+async def jira_webhook(request: Request) -> Any:
     """Process a JIRA Cloud webhook event.
 
     Returns 200 with a status payload on every accepted event (including
@@ -290,6 +296,62 @@ async def jira_webhook(request: Request) -> dict:
         project_key = issue_key.split("-", 1)[0]
 
     base_url = _jira_base_url(issue.get("self") or "")
+
+    # ─── rate limit + input length ───────────────────────────────────────
+    # Keyed on the JIRA accountId when present (stable across email
+    # changes) so a single user spamming bulk label changes can't
+    # burn the daily quota. Fall back to email or "jira-anonymous" so
+    # the limiter still rejects floods from unauthenticated automation
+    # rules that don't populate `creator`.
+    rl_key = creator_account or creator_email or "jira-anonymous"
+    allowed, retry_after = JIRA_RATE_LIMITER.check(rl_key)
+    if not allowed:
+        msg = (
+            f"TF Tool is rate limiting requests from this account. "
+            f"Try again in {retry_after} seconds."
+        )
+        ok, err = _post_comment(base_url, issue_key, msg)
+        audit.log(
+            actor_label,
+            "rate_limited_jira",
+            extra={
+                "surface": "jira",
+                "issue_key": issue_key,
+                "project_key": project_key,
+                "account_id": creator_account,
+                "retry_after_seconds": retry_after,
+                "comment_ok": ok,
+                "comment_error": err,
+            },
+        )
+        # JIRA backs off on 429, which is what we want here.
+        return JSONResponse(
+            status_code=429,
+            content={"status": "rate_limited", "retry_after_seconds": retry_after},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    ok_len, len_reason = check_input_length(prompt, INPUT_LENGTH_CAP_BYTES)
+    if not ok_len:
+        msg = (
+            f"TF Tool rejected this issue: {len_reason}. "
+            f"Shorten the summary + description to fit within {INPUT_LENGTH_CAP_BYTES} bytes."
+        )
+        ok, err = _post_comment(base_url, issue_key, msg)
+        audit.log(
+            actor_label,
+            "input_too_large_jira",
+            extra={
+                "surface": "jira",
+                "issue_key": issue_key,
+                "project_key": project_key,
+                "reason": len_reason,
+                "cap_bytes": INPUT_LENGTH_CAP_BYTES,
+                "comment_ok": ok,
+                "comment_error": err,
+            },
+        )
+        return {"status": "input_too_large", "reason": len_reason}
 
     # ─── prepare client + quota check ────────────────────────────────────
     try:

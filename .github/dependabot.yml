@@ -2,12 +2,22 @@
 # Weekly PRs for pip and github-actions ecosystems. Minor + patch
 # updates grouped to keep noise low; majors land as individual PRs.
 # Labels are applied so reviewers can filter the dependencies queue.
+#
+# Phase 18a (2026-05-16): pip ecosystem now watches requirements.in
+# (the loose-pinned source of truth) instead of requirements.txt (the
+# pinned pip-compile lockfile). Without this, Dependabot would open a
+# PR for every transitive dep bump in the lockfile. Direct deps live
+# in requirements.in; lockfile regeneration is the maintainer's job
+# after the Dependabot PR lands. versioning-strategy is set to
+# increase-if-necessary so the loose constraints (e.g. anthropic
+# >=0.28.0) are bumped only when the current floor is incompatible.
 
 version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     target-branch: "master"
+    versioning-strategy: "increase-if-necessary"
     schedule:
       interval: "weekly"
       day: "monday"

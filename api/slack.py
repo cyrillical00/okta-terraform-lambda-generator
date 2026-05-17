@@ -55,6 +55,11 @@ import cost
 import redact
 from core import service as core_service
 from gh_push.push import push_to_github
+from headless_rate_limit import (
+    INPUT_LENGTH_CAP_BYTES,
+    SLACK_RATE_LIMITER,
+    check_input_length,
+)
 
 from api._bootstrap import prepare_client, quota_blocked
 from api.index import app, _build_files
@@ -412,6 +417,50 @@ async def slack_tfgen(request: Request, background_tasks: BackgroundTasks) -> di
             "text": (
                 "Usage: /tfgen <plain-English description>\n"
                 "Example: /tfgen create an Engineering Okta group"
+            ),
+        }
+
+    # Rate limit + input-length checks run synchronously inside the
+    # slash-command request so a flood of /tfgen calls from one user
+    # never queues background tasks. Ephemeral text + HTTP 200 is the
+    # Slack convention for "show the user a message" without surfacing
+    # an error to the Slack workspace.
+    rl_actor = _actor_id_for_slack_user(slack_user_id)
+    allowed, retry_after = SLACK_RATE_LIMITER.check(slack_user_id or "anonymous")
+    if not allowed:
+        audit.log(
+            rl_actor,
+            "rate_limited_slack",
+            extra={
+                "surface": "slack",
+                "slack_user_id": slack_user_id,
+                "channel_id": channel_id,
+                "retry_after_seconds": retry_after,
+            },
+        )
+        return {
+            "response_type": "ephemeral",
+            "text": f"You're being rate limited. Try again in {retry_after} seconds.",
+        }
+
+    ok, reason = check_input_length(text, INPUT_LENGTH_CAP_BYTES)
+    if not ok:
+        audit.log(
+            rl_actor,
+            "input_too_large_slack",
+            extra={
+                "surface": "slack",
+                "slack_user_id": slack_user_id,
+                "channel_id": channel_id,
+                "reason": reason,
+                "cap_bytes": INPUT_LENGTH_CAP_BYTES,
+            },
+        )
+        return {
+            "response_type": "ephemeral",
+            "text": (
+                f"Your prompt is too long ({reason}). "
+                f"Shorten it to fit within {INPUT_LENGTH_CAP_BYTES} bytes and try again."
             ),
         }
 
