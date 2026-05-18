@@ -88,6 +88,27 @@ def log(
         record["extra"] = extra
     line = json.dumps(record, separators=(",", ":")) + "\n"
 
+    # Phase 21c: mirror to the opt-in GitHub audit sink. The sink swallows
+    # every exception internally, so a sink failure cannot block the local
+    # audit write below (defence in depth).
+    try:
+        import audit_github_sink
+        audit_github_sink.append_event({
+            "timestamp": record["timestamp_utc"],
+            "actor_id": record["actor_email"],
+            "action": record["action"],
+            "extra": {
+                "resource_type": record["resource_type"],
+                "output_mode": record["output_mode"],
+                "cost_estimate_usd": record["cost_estimate_usd"],
+                "commit_url": record["commit_url"],
+                "request_id": record["request_id"],
+                **(extra or {}),
+            },
+        })
+    except Exception:
+        pass
+
     if _github_token and _github_repo:
         try:
             _append_to_github(email, line)

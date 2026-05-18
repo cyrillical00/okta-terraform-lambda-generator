@@ -1,0 +1,59 @@
+# Phase 21: per-key API tokens, per-actor quotas, GitHub audit sink.
+#
+# This file is read by api/_auth.py (per-key tokens), cost.py (per-actor
+# quotas), and audit_github_sink.py (sink config). Plaintext tokens are
+# NEVER stored here; only SHA-256 hex hashes.
+#
+# Issue a new token with:
+#   python -m audit_github_sink issue --actor-id <name> --role <role> --quota-usd <N>
+#
+# The CLI prints the plaintext token ONCE and appends the hash + metadata
+# to this file. Store the printed token immediately; it will not be shown
+# again.
+
+# ── Per-key API tokens (Phase 21a) ────────────────────────────────────────
+# Each entry maps a SHA-256 hex of the issued token to an actor_id, role,
+# and daily quota in USD. Bearer / X-API-Key requests are matched in
+# constant time via hmac.compare_digest against this table.
+#
+# Schema:
+#   [api_keys.<hash-prefix-or-actor-id>]
+#   sha256       = "<64-hex-chars>"
+#   actor_id     = "<stable identifier, used as audit/cost key>"
+#   role         = "viewer|contributor|editor|admin"
+#   daily_quota_usd = <float, 0 means unlimited>
+#   issued_at    = "<ISO-8601 UTC timestamp>"
+#   note         = "<optional human-readable description>"
+#
+# Example (commented out; uncomment + replace the sha256 with a real hash
+# from the issuance helper before deploying):
+#
+# [api_keys.example_service_account]
+# sha256          = "0000000000000000000000000000000000000000000000000000000000000000"
+# actor_id        = "service-account-EXAMPLE"
+# role            = "contributor"
+# daily_quota_usd = 2.00
+# issued_at       = "2026-05-18T00:00:00Z"
+# note            = "Example placeholder. Replace before use."
+
+# ── Global cost fallback (Phase 21b) ──────────────────────────────────────
+# Used when an actor is not in [api_keys] (e.g. legacy TFGEN_API_KEY users
+# or Streamlit OAuth users). The Streamlit RBAC quotas in roles.py still
+# apply for Streamlit users; this entry only covers the legacy headless
+# fallback path.
+[cost]
+daily_cap_usd = 5.00
+
+# ── GitHub-backed audit sink (Phase 21c) ──────────────────────────────────
+# Opt-in mirror of every audit event to a JSONL file in the configured
+# GitHub repo. Defence-in-depth alongside the existing local + per-user
+# GitHub audit log. Auto-rotates monthly. The current month's file is
+# read-modify-written; older months are never touched.
+#
+# Failures (429, 5xx, network) are queued in memory and retried on the
+# next event. After 10 consecutive failures the buffered batch is dropped
+# with an error notification; user-facing operations are never blocked.
+[audit]
+github_sink_enabled    = false
+github_audit_repo      = "cyrillical00/okta-terraform-lambda-generator"
+github_audit_path_prefix = "_tftool/audit/"

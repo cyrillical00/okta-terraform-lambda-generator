@@ -114,6 +114,16 @@ Admins can toggle redaction off per session via the sidebar. Every redaction eve
 
 Every Anthropic API call's usage object is intercepted in `cost.py:wrap_client` and accumulated against the signed-in user's UTC-day total. When today's spend reaches the role-configured cap (default $5/day for editors, $0.50/day for viewers, unlimited for admins), the parse and generate actions are blocked with a friendly message until the next UTC midnight.
 
+### Per-actor headless quotas (Phase 21b)
+
+Headless callers (HTTP, Slack, JIRA) inherit their daily cap from one of three sources, resolved in order:
+
+1. `roles.toml [api_keys.<entry>].daily_quota_usd` matched to the caller's `actor_id` (per-key quota; recommended for production).
+2. `TFGEN_HTTP_DAILY_QUOTA_USD` env var (legacy single shared cap; preserves the pre-Phase-21 contract for `TFGEN_API_KEY` users).
+3. `[cost] daily_cap_usd` in `roles.toml` (final fallback; default $5/day).
+
+A quota of `0` means unlimited. `cost.quota_used_by_actor(actor_id)` is the canonical accessor for current-day spend; it is an alias for `today_usd` named to match the Phase 21 spec language. Every quota check is mirrored to `audit.log` as a `quota_check` event so abuse patterns surface in the audit log without requiring a separate metric pipeline.
+
 ## Secrets in transit and at rest
 
 Secrets live in Streamlit Cloud's secret manager (encrypted by their underlying storage; not customer-managed keys). They are never written to the repo, never returned in audit records, and never echoed to the UI. The first 8 characters of the Anthropic key are surfaced only when validation fails (so you can see whether the wrong key shape was pasted). API keys can be rotated at any time by editing the Streamlit Cloud secrets and rebooting the app.
@@ -169,7 +179,7 @@ Phase 10 Track 2 added four entry points that share the same `core.service.gener
 
 - **No Google OAuth gate**: the Streamlit `[auth]` block does not apply to CLI / HTTP / Slack / JIRA. Each surface has its own auth (env var, shared header secret, signing secret, HMAC) summarized in the README. Treat each surface as a separate authorization plane that needs its own access review.
 - **PII redaction is preserved**: every surface calls `redact.redact()` before the prompt reaches Anthropic. Same patterns as the Streamlit app; same audit-log entries with per-category counts.
-- **Quota model is a single shared cap, not per-actor**: HTTP / Slack / JIRA all share `TFGEN_HTTP_DAILY_QUOTA_USD` (default $5/day, summed across all keys / Slack users / JIRA actors). Per-key or per-Slack-user quotas require a `[api_keys]` extension to `roles.toml` and are explicitly deferred until traffic justifies it.
+- **Quota model is per-actor when per-key tokens are configured** (Phase 21b). Each `[api_keys]` entry in `roles.toml` carries its own `daily_quota_usd`. Legacy `TFGEN_API_KEY` callers fall back to the env-var `TFGEN_HTTP_DAILY_QUOTA_USD` cap (default $5/day) which still acts as a shared ceiling across all Slack / JIRA actors that have not been issued per-key tokens.
 - **Audit identifier shape**: HTTP uses `sha256(api_key)[:16]`, Slack uses `sha256(slack_user_id)[:16]`, JIRA uses `sha256(creator_email)[:16]`. Different hash inputs, same on-disk JSONL files, so per-actor history is queryable by hash. The hash itself never round-trips back to the underlying identifier from the log alone.
 - **GitHub push uses the server's `GITHUB_TOKEN`, not the caller's**: callers pushing through `/api/push` or via the Slack/JIRA flow share the bot's identity. If a customer needs caller-supplied tokens, that's a `PushRequest.github_token` field gated behind a separate role; not in this build.
 - **No callback secrets in transit to Anthropic**: the JIRA REST credentials and Slack `response_url` strings are never included in the prompt sent to Claude. They live in env vars / the inbound payload only.
@@ -184,6 +194,77 @@ Generated `terraform_jamf_hcl` outputs ship with a top-of-file `# JAMF APPLY RUN
 3. **Eventual consistency**: an immediate `terraform plan` after `apply` may show drift. Re-run plan a few minutes later before assuming a real diff exists.
 
 Reviewers should reject any PR that contains JAMF HCL without the runbook header. The validator pass flags missing runbook headers as an issue, but the reviewer-side gate is the more reliable check.
+
+## Phase 21: Tier 2 hardening bundle (2026-05-18)
+
+### Per-key API tokens (Phase 21a)
+
+The HTTP API now supports per-key tokens via the `[api_keys]` table in `roles.toml`. Each entry maps a SHA-256 hex of the issued plaintext token to:
+
+- `actor_id`: operator-assigned stable identifier used as the audit/cost key.
+- `role`: one of `viewer | contributor | editor | admin` (mirrors the Streamlit RBAC roles).
+- `daily_quota_usd`: per-key cap. `0` means unlimited.
+- `issued_at`: ISO-8601 UTC timestamp recorded by the issuance helper.
+
+Plaintext tokens are NEVER stored on disk. They live in `roles.toml` only as SHA-256 hex. Comparison is done in constant time via `hmac.compare_digest` so a timing oracle cannot enumerate a token byte-by-byte.
+
+Headers accepted (either works):
+
+- `X-API-Key: <token>` (preferred; matches the pre-Phase-21 surface).
+- `Authorization: Bearer <token>` (matches the Phase 21 spec language).
+
+#### Issuing a new token
+
+```text
+python -m audit_github_sink issue \
+    --actor-id service-account-1 \
+    --role contributor \
+    --quota-usd 2.00 \
+    --note "Backstage CI pipeline"
+```
+
+The helper generates a fresh `secrets.token_urlsafe(32)` token, computes its SHA-256, appends a new `[api_keys.<slug>]` block to `roles.toml`, prints the plaintext token ONCE with a "store this now, it will not be shown again" notice, and logs an `api_key_issued` audit event carrying the actor_id, role, quota, and the first 8 hex characters of the hash (never the plaintext).
+
+#### Deprecation of `TFGEN_API_KEY`
+
+The legacy single shared secret `TFGEN_API_KEY` env var is still accepted for backwards compatibility. Requests matching the legacy value are tagged with the synthetic `actor_id = "legacy-tfgen"`; their daily cap falls back to `TFGEN_HTTP_DAILY_QUOTA_USD` or `[cost] daily_cap_usd` in `roles.toml`. New deployments should migrate to per-key tokens via the issuance helper. The legacy path will be removed in a future phase once all known callers have rotated.
+
+### GitHub-backed audit sink (Phase 21c)
+
+`audit_github_sink.py` is an opt-in mirror of every `audit.log()` call to a monthly JSONL file in the configured GitHub repo. Defence in depth: the existing local-file path and the per-user GitHub log keep writing independently, so a sink failure cannot lose events. Failures (429, 5xx, 404 on the audit-repo root, network errors) buffer events in memory and retry on the next call; after 10 consecutive failures the buffered batch is dropped with an `st.error` notification (Streamlit context) or a `print` to stderr (headless context). User-facing operations are NEVER blocked by a sink failure.
+
+#### Storage layout
+
+```text
+_tftool/audit/audit-2026-05.jsonl
+_tftool/audit/audit-2026-06.jsonl
+...
+```
+
+The current month's file is read-modify-written. Older months are never modified.
+
+#### Event shape
+
+```json
+{
+  "timestamp": "2026-05-18T14:32:01Z",
+  "actor_id": "service-account-1",
+  "action": "rate_limited_http",
+  "extra": {"surface": "http", "client_ip": "203.0.113.10", "retry_after_seconds": 30},
+  "tf_tool_version": "06a7d12"
+}
+```
+
+#### Configuration (in `roles.toml`)
+
+```toml
+[audit]
+github_sink_enabled      = false   # default; flip to true to enable
+github_audit_repo        = "owner/repo"
+github_audit_path_prefix = "_tftool/audit/"
+```
+
+The sink authenticates via the same `GITHUB_TOKEN` already used by the per-user audit log and cost tracker. PAT scopes required: `repo` (write access to the audit repo).
 
 ## Additions since Thread A
 

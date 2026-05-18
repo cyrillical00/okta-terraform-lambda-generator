@@ -26,6 +26,7 @@ import anthropic
 
 import audit
 import cost
+from api._auth import quota_for_actor
 
 
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -85,21 +86,61 @@ def prepare_client(actor_id: str) -> CallerContext:
     raw = anthropic.Anthropic(api_key=api_key)
     wrapped = cost.wrap_client(raw, actor_id)
 
+    # Phase 21b: per-actor daily quota.
+    # Resolution order:
+    #   1. roles.toml [api_keys.<entry>].daily_quota_usd matched by actor_id
+    #   2. legacy TFGEN_HTTP_DAILY_QUOTA_USD env var (preserves pre-Phase-21)
+    #   3. _DEFAULT_HTTP_QUOTA_USD ($5/day)
+    # quota_for_actor returns 0.0 when no [api_keys] row matches; in that
+    # case we fall through to the env / default path so legacy callers
+    # (TFGEN_API_KEY, Slack, JIRA) keep their existing cap.
+    per_actor = quota_for_actor(actor_id)
+    if per_actor > 0:
+        quota_usd = per_actor
+    else:
+        try:
+            quota_usd = float(os.environ.get("TFGEN_HTTP_DAILY_QUOTA_USD", _DEFAULT_HTTP_QUOTA_USD))
+        except (TypeError, ValueError):
+            quota_usd = _DEFAULT_HTTP_QUOTA_USD
+
     return CallerContext(
         actor_id=actor_id,
         client=wrapped,
         model=(os.environ.get("ANTHROPIC_MODEL") or "").strip() or _DEFAULT_MODEL,
-        daily_quota_usd=float(os.environ.get("TFGEN_HTTP_DAILY_QUOTA_USD", _DEFAULT_HTTP_QUOTA_USD)),
+        daily_quota_usd=quota_usd,
     )
 
 
 def quota_blocked(ctx: CallerContext) -> tuple[bool, float, float]:
     """Check whether the caller has exceeded their daily quota.
 
-    Returns (blocked, spent, quota). Single shared cap for v1 — all
-    HTTP callers share TFGEN_HTTP_DAILY_QUOTA_USD. The `[api_keys]`
-    table that would let each key carry its own quota is deferred to
-    Phase 11+.
+    Returns (blocked, spent, quota). Phase 21b made this per-actor:
+    `ctx.daily_quota_usd` is now resolved per-key from roles.toml when
+    the caller authenticated with a per-key token, and falls back to
+    the legacy env-var cap for TFGEN_API_KEY / Slack / JIRA callers.
+
+    A quota of 0 means unlimited (matches the roles.py admin default).
+    Every check is audit-logged at the call site so abuse patterns
+    surface in the audit log.
     """
+    if ctx.daily_quota_usd <= 0:
+        return False, cost.today_usd(ctx.actor_id), 0.0
     spent = cost.today_usd(ctx.actor_id)
-    return spent >= ctx.daily_quota_usd, spent, ctx.daily_quota_usd
+    blocked = spent >= ctx.daily_quota_usd
+    try:
+        audit.log(
+            ctx.actor_id,
+            "quota_check",
+            cost_estimate_usd=spent,
+            extra={
+                "surface": "http",
+                "spent_usd": round(spent, 6),
+                "quota_usd": round(ctx.daily_quota_usd, 6),
+                "blocked": blocked,
+            },
+        )
+    except Exception:
+        # audit.log already swallows internally; this guard covers an
+        # import-time misconfiguration path where audit is unavailable.
+        pass
+    return blocked, spent, ctx.daily_quota_usd

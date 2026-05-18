@@ -164,6 +164,18 @@ def _bump_local(email: str, today: str, delta: float) -> None:
         pass
 
 
+def quota_used_by_actor(actor_id: str) -> float:
+    """Phase 21b: per-actor accumulated USD spend for today (UTC).
+
+    Alias for `today_usd` named to match the Phase 21 spec language. The
+    underlying tracker is already per-actor (every storage path is keyed
+    on `_email_hash(actor_id)`); this name makes the intent explicit at
+    HTTP / Slack / JIRA call sites where the parameter is an opaque
+    actor_id rather than an email.
+    """
+    return today_usd(actor_id)
+
+
 def today_usd(email: str) -> float:
     """Return the user's accumulated USD spend for today (UTC)."""
     today = _today_key()

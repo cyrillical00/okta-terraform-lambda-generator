@@ -215,6 +215,172 @@ def test_auth_actor_id_is_stable():
     assert len(a) == 16, f"expected 16-char hash, got {len(a)}"
 
 
+# ─── Phase 21a: per-key tokens via [api_keys] in roles.toml ──────────────
+
+
+def _write_roles_toml_with_keys(tmp_path, entries: list[dict]) -> str:
+    """Write a roles.toml with the given [api_keys.*] entries and return its path."""
+    import hashlib
+    lines = ["[cost]", "daily_cap_usd = 5.00", ""]
+    for i, e in enumerate(entries):
+        slug = e.get("slug") or f"entry{i}"
+        plaintext = e["plaintext"]
+        digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+        lines.append(f"[api_keys.{slug}]")
+        lines.append(f'sha256          = "{digest}"')
+        lines.append(f'actor_id        = "{e["actor_id"]}"')
+        lines.append(f'role            = "{e["role"]}"')
+        lines.append(f"daily_quota_usd = {e.get('quota', 1.0)}")
+        lines.append("")
+    p = tmp_path / "roles.toml"
+    p.write_text("\n".join(lines), encoding="utf-8")
+    return str(p)
+
+
+def test_per_key_token_resolves_to_configured_actor_id(tmp_path, monkeypatch):
+    """A token whose hash is in roles.toml resolves to the operator-set actor_id."""
+    plaintext = "a" * 32  # synthetic low-entropy fixture
+    roles_path = _write_roles_toml_with_keys(tmp_path, [{
+        "plaintext": plaintext,
+        "actor_id": "service-EXAMPLE-1",
+        "role": "contributor",
+        "quota": 2.0,
+        "slug": "svc1",
+    }])
+    monkeypatch.setenv("TFGEN_ROLES_TOML", roles_path)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    entry = auth.resolve_token(plaintext)
+    assert entry is not None
+    assert entry.actor_id == "service-EXAMPLE-1"
+    assert entry.role == "contributor"
+    assert abs(entry.daily_quota_usd - 2.0) < 1e-6
+
+
+def test_per_key_token_wrong_token_returns_none(tmp_path, monkeypatch):
+    plaintext = "b" * 32
+    roles_path = _write_roles_toml_with_keys(tmp_path, [{
+        "plaintext": plaintext,
+        "actor_id": "svc",
+        "role": "viewer",
+        "quota": 0.5,
+    }])
+    monkeypatch.setenv("TFGEN_ROLES_TOML", roles_path)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    assert auth.resolve_token("c" * 32) is None
+
+
+def test_legacy_tfgen_api_key_still_works(tmp_path, monkeypatch):
+    """Backwards compat: TFGEN_API_KEY env var resolves to `legacy-tfgen` actor."""
+    # Empty roles.toml -> only the env var should match.
+    p = tmp_path / "roles.toml"
+    p.write_text("[cost]\ndaily_cap_usd = 5.00\n", encoding="utf-8")
+    monkeypatch.setenv("TFGEN_ROLES_TOML", str(p))
+    monkeypatch.setenv("TFGEN_API_KEY", "legacy-key-EXAMPLE")
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    # Per-key lookup must NOT match TFGEN_API_KEY.
+    assert auth.resolve_token("legacy-key-EXAMPLE") is None
+    # quota_for_actor(legacy-tfgen) -> [cost] daily_cap_usd fallback.
+    monkeypatch.delenv("TFGEN_HTTP_DAILY_QUOTA_USD", raising=False)
+    assert auth.quota_for_actor("legacy-tfgen") == 5.00
+
+
+def test_verify_api_key_per_key_path(tmp_path, monkeypatch):
+    """End-to-end: a per-key token in the X-API-Key header returns the actor_id."""
+    plaintext = "d" * 32
+    roles_path = _write_roles_toml_with_keys(tmp_path, [{
+        "plaintext": plaintext,
+        "actor_id": "actor-PER-KEY",
+        "role": "editor",
+        "quota": 10.0,
+    }])
+    monkeypatch.setenv("TFGEN_ROLES_TOML", roles_path)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    import asyncio
+    # Per-key token in X-API-Key header
+    got = asyncio.run(auth.verify_api_key(x_api_key=plaintext, authorization=None))
+    assert got == "actor-PER-KEY"
+
+
+def test_verify_api_key_bearer_header(tmp_path, monkeypatch):
+    """A per-key token in Authorization: Bearer is also accepted."""
+    plaintext = "e" * 32
+    roles_path = _write_roles_toml_with_keys(tmp_path, [{
+        "plaintext": plaintext,
+        "actor_id": "actor-BEARER",
+        "role": "viewer",
+        "quota": 0.5,
+    }])
+    monkeypatch.setenv("TFGEN_ROLES_TOML", roles_path)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    import asyncio
+    got = asyncio.run(auth.verify_api_key(x_api_key=None, authorization=f"Bearer {plaintext}"))
+    assert got == "actor-BEARER"
+
+
+def test_verify_api_key_rejects_unknown_token(tmp_path, monkeypatch):
+    """A token absent from both [api_keys] and TFGEN_API_KEY env returns 401."""
+    p = tmp_path / "roles.toml"
+    p.write_text("[cost]\ndaily_cap_usd = 5.00\n", encoding="utf-8")
+    monkeypatch.setenv("TFGEN_ROLES_TOML", str(p))
+    monkeypatch.delenv("TFGEN_API_KEY", raising=False)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    import asyncio
+    from fastapi import HTTPException
+    try:
+        asyncio.run(auth.verify_api_key(x_api_key="not-a-real-key", authorization=None))
+    except HTTPException as e:
+        assert e.status_code == 401
+        return
+    raise AssertionError("expected 401 HTTPException")
+
+
+def test_verify_api_key_missing_returns_401(tmp_path, monkeypatch):
+    p = tmp_path / "roles.toml"
+    p.write_text("[cost]\ndaily_cap_usd = 5.00\n", encoding="utf-8")
+    monkeypatch.setenv("TFGEN_ROLES_TOML", str(p))
+    monkeypatch.delenv("TFGEN_API_KEY", raising=False)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    import asyncio
+    from fastapi import HTTPException
+    try:
+        asyncio.run(auth.verify_api_key(x_api_key=None, authorization=None))
+    except HTTPException as e:
+        assert e.status_code == 401
+        return
+    raise AssertionError("expected 401 HTTPException")
+
+
+def test_quota_for_actor_per_key(tmp_path, monkeypatch):
+    """quota_for_actor returns the [api_keys] entry's daily_quota_usd."""
+    plaintext = "f" * 32
+    roles_path = _write_roles_toml_with_keys(tmp_path, [{
+        "plaintext": plaintext,
+        "actor_id": "qfa-actor",
+        "role": "contributor",
+        "quota": 3.50,
+    }])
+    monkeypatch.setenv("TFGEN_ROLES_TOML", roles_path)
+    import importlib
+    import api._auth as auth
+    importlib.reload(auth)
+    assert auth.quota_for_actor("qfa-actor") == 3.50
+    assert auth.quota_for_actor("nonexistent") == 0.0
+
+
 # ─── runner for standalone invocation ────────────────────────────────────
 
 
