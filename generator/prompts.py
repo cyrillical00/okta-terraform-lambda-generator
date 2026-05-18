@@ -2457,6 +2457,19 @@ The same 8 `fleet_*` parser resource types route to either format depending on o
 
 This section governs the `terraform_fleet_hcl` output key. Unlike SECTION I (Fleet GitOps YAML), this section emits Terraform HCL using the community-maintained `l-teles/fleetdm` provider, currently in preview at v0.5.4. The provider's README explicitly says "USE AT YOUR OWN RISK" and notes it was "developed primarily through AI assistance" and "has not been extensively tested in production environments". For most users, SECTION I (GitOps YAML) is the safer path; SECTION J is for shops that want Fleet declarations to live alongside Okta / AWS Terraform in a single IaC stack.
 
+All attribute names, defaults, env var names, and worked examples below come directly from the cached provider BINARY schema (`terraform providers schema -json` against `_tftool/.terraform-plugin-cache/registry.terraform.io/l-teles/fleetdm/0.5.4/windows_amd64/terraform-provider-fleetdm_v0.5.4.exe`). The cached README and CHANGELOG in the same directory document several attributes that the binary does NOT accept (e.g. README shows `hosts` and `label_membership_type` on `fleetdm_label`, but the binary only has `name` + `query` + `platform`; README shows `agent_options_json` on `fleetdm_configuration`, but the binary uses `agent_options`). Trust the binary schema, not the README, whenever they disagree.
+
+BINARY SCHEMA REALITY CHECK (where the cached README is wrong):
+- `fleetdm_policy.platform` is a LIST of strings, not a string. Use `platform = ["darwin"]`, not `platform = "darwin"`.
+- `fleetdm_report.platform` is a LIST of strings (same form as `fleetdm_policy.platform`).
+- `fleetdm_query.platform` is a LIST of strings (the binary still ships `fleetdm_query` as a parallel resource; both `fleetdm_report` and `fleetdm_query` validate. README marks `fleetdm_query` deprecated; emit `fleetdm_report` going forward to track that direction).
+- `fleetdm_label` has ONLY `name` (required), `query` (required), `description`, `platform`. It does NOT accept `hosts`, `label_membership_type`, or any manual-roster form. Manual labels are a Fleet API concept the v0.5.4 binary does not expose; emit a dynamic-only label and add a `# NOTE` comment if the user asked for manual.
+- `fleetdm_fleet` has ONLY `name`, `description`, `enable_disk_encryption`, `host_expiry_enabled`, `host_expiry_window`. There is NO `macos_updates` block, no `windows_updates` block, no `mdm` block. Update enforcement is a configuration_profile concern.
+- `fleetdm_configuration` requires `org_name` and uses `agent_options` (string, NOT `agent_options_json`). Pass JSON via `jsonencode(...)`.
+- `fleetdm_configuration_profile` does NOT accept `name`, `path`, `platform`, or `mobileconfig`. It requires `profile_content` (raw string, typically `file("path.mobileconfig")`). `name`, `platform`, `identifier` are COMPUTED from the profile.
+- `fleetdm_script` requires `name` + `content` + `team_id` (team_id REQUIRED, not optional). No `path` attribute.
+- `fleetdm_software_package` uses `fleet_maintained_app_id` (number, NOT `fleet_maintained_app_slug` string). No `categories` attribute. `version` is COMPUTED (do not set).
+
 Mandatory output header (verbatim, FIRST lines of every terraform_fleet_hcl output):
 
 ```hcl
@@ -2466,7 +2479,7 @@ Mandatory output header (verbatim, FIRST lines of every terraform_fleet_hcl outp
 # Terraform provider, currently v0.5.4 (preview, May 2026).
 # The provider README explicitly says: "USE AT YOUR OWN RISK"
 # and notes it "has not been extensively tested in production
-# environments". Pin to exactly 0.5.4 — do NOT use `~> 0.5`.
+# environments". Pin to exactly 0.5.4 (no range constraints).
 # Fleet's officially-recommended IaC path is GitOps YAML via
 # fleetctl (use "Fleet GitOps only" output mode for that).
 # ============================================================
@@ -2474,7 +2487,7 @@ Mandatory output header (verbatim, FIRST lines of every terraform_fleet_hcl outp
 # FLEET TF APPLY RUNBOOK
 # 1. Validate: terraform init && terraform validate
 # 2. Apply:    terraform apply
-# Required env: FLEET_URL, FLEET_API_TOKEN
+# Required env: FLEETDM_URL, FLEETDM_API_TOKEN
 # Server requirement: Fleet >= 4.82.0
 # Provider pin: l-teles/fleetdm = 0.5.4 (exact; preview release)
 ```
@@ -2492,43 +2505,58 @@ terraform {
 }
 
 provider "fleetdm" {
-  url       = var.fleet_url
-  api_token = var.fleet_api_token
+  server_address = var.fleetdm_url
+  api_key        = var.fleetdm_api_key
+  verify_tls     = true
 }
 
-variable "fleet_url" {
+variable "fleetdm_url" {
   type        = string
-  description = "Fleet server base URL (e.g. https://fleet.example.com)"
+  description = "Fleet server base URL (e.g. https://fleet.example.com). Maps to provider attribute `server_address` and env var FLEETDM_URL."
 }
 
-variable "fleet_api_token" {
+variable "fleetdm_api_key" {
   type        = string
   sensitive   = true
-  description = "Fleet API token. Obtain from Fleet UI > Account > API token."
+  description = "Fleet API key. Obtain from Fleet UI > Account > API token. Maps to provider attribute `api_key` and env var FLEETDM_API_TOKEN."
 }
 ```
 
 CRITICAL: the version constraint MUST be `version = "0.5.4"` exactly. Do NOT use `~> 0.5`, `>= 0.5.0`, or any other range syntax. The provider is still in preview and a future patch release may break this output.
 
+CRITICAL provider attribute names (from cached README, do NOT invent variants):
+- `server_address` (NOT `url`, NOT `address`, NOT `endpoint`)
+- `api_key` (NOT `api_token`, NOT `token`, NOT `auth_token`)
+- `verify_tls` (default `true`; only emit if disabling)
+- `timeout` (default `30`; only emit if overriding)
+
+Apply-time environment variables (from cached README):
+- `FLEETDM_URL` (NOT `FLEET_URL`)
+- `FLEETDM_API_TOKEN` (NOT `FLEET_API_TOKEN`)
+- `FLEETDM_VERIFY_TLS` (optional; mirrors `verify_tls`)
+
 ### fleet_* -> fleetdm_* resource mapping (the parser uses fleet_*, the generator emits fleetdm_*)
 
 | Parser type | TF resource | Notes |
 |---|---|---|
-| fleet_policy | `fleetdm_policy` | Direct mapping |
-| fleet_label | `fleetdm_label` | Direct mapping |
-| fleet_query | `fleetdm_query` | Provider deprecates this in favor of `fleetdm_report` for reporting use cases; for simple saved queries `fleetdm_query` is still accepted |
-| fleet_configuration_profile | `fleetdm_configuration_profile` | Direct mapping |
-| fleet_script | `fleetdm_script` | Direct mapping |
-| fleet_software_package | `fleetdm_software_package` | Direct mapping |
-| fleet_agent_options | `fleetdm_configuration` | Renamed; the TF provider rolls global config + agent options into one resource |
-| fleet_team_settings | `fleetdm_fleet` | Renamed; `fleetdm_team` is a deprecated alias, do NOT emit it |
+| fleet_policy | `fleetdm_policy` | Direct mapping. |
+| fleet_label | `fleetdm_label` | Direct mapping. |
+| fleet_query | `fleetdm_report` | RENAME. Provider v0.5.4 keeps `fleetdm_query` as a deprecated alias; emit `fleetdm_report` going forward. |
+| fleet_configuration_profile | `fleetdm_configuration_profile` | PREMIUM. Direct mapping. |
+| fleet_script | `fleetdm_script` | Direct mapping. |
+| fleet_software_package | `fleetdm_software_package` | PREMIUM. Direct mapping. |
+| fleet_agent_options | `fleetdm_configuration` | Renamed; the TF provider rolls global config + agent options into one resource. |
+| fleet_team_settings | `fleetdm_fleet` | Renamed; `fleetdm_team` is a deprecated alias, do NOT emit it. |
 
-The provider also exposes resources without a parser equivalent: `fleetdm_enroll_secret`, `fleetdm_user`, `fleetdm_bootstrap_package`, `fleetdm_setup_experience`, `fleetdm_report`. Only emit these when the prompt explicitly requests them.
+The provider also exposes resources without a parser equivalent: `fleetdm_enroll_secret`, `fleetdm_user`, `fleetdm_bootstrap_package` (PREMIUM), `fleetdm_setup_experience` (PREMIUM). Only emit these when the prompt explicitly requests them.
+
+Provider edition gating: the cached README marks `fleetdm_software_package`, `fleetdm_bootstrap_package`, `fleetdm_configuration_profile`, and `fleetdm_setup_experience` as Premium-only. When emitting any of these, prepend a single-line comment `# PREMIUM: requires a Fleet Premium licence at apply time` directly above the resource block so the user sees the gating in their generated file.
 
 ### fleetdm_policy
 
-Required: `name`, `query` (osquery SQL returning at least one row on PASS), `platform`.
-Optional: `description`, `resolution`, `critical` (bool), `team_id` (number; omit for global policy).
+Binary schema:
+- Required: `name` (string), `query` (string; osquery SQL).
+- Optional: `description` (string), `resolution` (string), `critical` (bool), `platform` (LIST of string; valid values include `"darwin"`, `"windows"`, `"linux"`, `"chrome"`), `team_id` (number; omit for global policy), `calendar_events_enabled` (bool), `script_id` (number), `software_title_id` (number).
 
 Worked example (FileVault check on macOS):
 ```hcl
@@ -2537,124 +2565,152 @@ resource "fleetdm_policy" "filevault_enabled" {
   description = "Verifies that full-disk encryption is on."
   resolution  = "Enable FileVault under System Settings > Privacy & Security > FileVault."
   query       = "SELECT 1 FROM filevault_status WHERE status = 'FileVault is On.';"
-  platform    = "darwin"
+  platform    = ["darwin"]
   critical    = true
+}
+```
+
+Multi-platform example:
+```hcl
+resource "fleetdm_policy" "screenlock" {
+  name     = "Screen lock enabled"
+  query    = "SELECT 1 FROM screenlock WHERE enabled = 1;"
+  platform = ["darwin", "windows"]
 }
 ```
 
 ### fleetdm_label
 
-Required: `name`. Exactly ONE of: `query` (dynamic) or `hosts` (manual; list of hardware UUIDs).
-Optional: `description`, `platform`, `label_membership_type` (`"dynamic"` or `"manual"`).
+Binary schema:
+- Required: `name` (string), `query` (string; osquery SQL).
+- Optional: `description` (string), `platform` (string; e.g. `"darwin"`).
+- Does NOT accept: `hosts`, `label_membership_type`. The v0.5.4 binary supports DYNAMIC labels only. Manual labels are a Fleet API concept the binary does not expose.
 
-Worked example (dynamic Arm64):
+Worked example (dynamic, the only supported form):
 ```hcl
 resource "fleetdm_label" "arm64_hosts" {
-  name                   = "Arm64"
-  description            = "Hosts running on ARM64 (Apple Silicon, Windows on ARM)."
-  platform               = "darwin,windows"
-  query                  = "SELECT 1 FROM system_info WHERE cpu_type LIKE 'arm64%';"
-  label_membership_type  = "dynamic"
+  name        = "Arm64"
+  description = "Hosts running on ARM64 (Apple Silicon, Windows on ARM)."
+  platform    = "darwin"
+  query       = "SELECT 1 FROM system_info WHERE cpu_type LIKE 'arm64%';"
 }
 ```
 
-Worked example (manual C-Suite):
+When the user asks for a MANUAL label with an explicit host list (e.g. "C-Suite roster"), emit a dynamic label whose query selects by the listed identifiers AND add a `# NOTE` line documenting the workaround. Example:
 ```hcl
+# NOTE: The l-teles/fleetdm v0.5.4 binary does not expose a manual-label form;
+# this dynamic label matches the requested hosts by hardware serial.
 resource "fleetdm_label" "c_suite" {
-  name                   = "C-Suite"
-  description            = "Manual roster of C-Suite hosts."
-  label_membership_type  = "manual"
-  hosts                  = ["IR7M6ZGQJM", "JMFWY8VZ09"]
+  name        = "C-Suite"
+  description = "C-Suite roster, matched by hardware serial."
+  query       = "SELECT 1 FROM system_info WHERE hardware_serial IN ('IR7M6ZGQJM', 'JMFWY8VZ09');"
 }
 ```
 
-### fleetdm_query
+### fleetdm_report (canonical name for saved queries; replaces fleetdm_query)
 
-Required: `name`, `query`, `interval` (number, seconds; 0 = manual-only).
-Optional: `description`, `platform`, `observer_can_run` (bool), `logging` (`"snapshot"`|`"differential"`|`"differential_ignore_removals"`).
+Binary schema:
+- Required: `name` (string), `query` (string).
+- Optional: `description`, `interval` (number, seconds; 0 = manual-only), `logging` (string; `"snapshot"` | `"differential"` | `"differential_ignore_removals"`), `platform` (LIST of string), `observer_can_run` (bool), `automations_enabled` (bool), `discard_data` (bool), `min_osquery_version` (string), `fleet_id` (number).
 
-Worked example:
+Worked example (Chrome extensions, daily snapshot):
 ```hcl
-resource "fleetdm_query" "chrome_extensions" {
-  name              = "chrome-extensions"
-  description       = "List all installed Chrome browser extensions per host."
-  query             = "SELECT * FROM chrome_extensions;"
-  interval          = 86400
-  platform          = "darwin,windows,linux"
-  observer_can_run  = true
-  logging           = "snapshot"
+resource "fleetdm_report" "chrome_extensions" {
+  name             = "chrome-extensions"
+  description      = "List all installed Chrome browser extensions per host."
+  query            = "SELECT * FROM chrome_extensions;"
+  interval         = 86400
+  platform         = ["darwin", "windows", "linux"]
+  observer_can_run = true
+  logging          = "snapshot"
 }
 ```
 
-### fleetdm_configuration_profile
+DO NOT EMIT `fleetdm_query`. The binary keeps `fleetdm_query` as a parallel resource for now (it shares the same shape modulo `fleet_id` vs `team_id`), but the README marks it deprecated. Emit `fleetdm_report` going forward.
 
-Configuration profiles reference external `.mobileconfig` (macOS) or `.xml` (Windows) files.
+### fleetdm_configuration_profile (PREMIUM)
 
-Required: `name`, one of `mobileconfig` (string, the file path or inline plist) or `path` (preferred for external files), `platform` (`"darwin"` or `"windows"`).
-Optional: `team_id`, `labels_include_any` (list of label names).
+Binary schema:
+- Required: `profile_content` (string; the raw `.mobileconfig` XML body, typically `file("...")`).
+- Optional: `team_id` (number), `labels_include_any` (LIST of string), `labels_include_all` (LIST of string), `labels_exclude_any` (LIST of string), `display_name` (string).
+- COMPUTED (do NOT set): `name`, `platform`, `identifier`, `profile_uuid`, `checksum`, `created_at`, `uploaded_at`.
 
 Worked example (macOS Wi-Fi profile):
 ```hcl
+# PREMIUM: requires a Fleet Premium licence at apply time
 resource "fleetdm_configuration_profile" "corp_wifi" {
-  name      = "Corporate Wi-Fi"
-  path      = "../profiles/corp-wifi.mobileconfig"
-  platform  = "darwin"
-  labels_include_any = [fleetdm_label.engineering.name]
+  profile_content    = file("${path.module}/profiles/corp-wifi.mobileconfig")
+  labels_include_any = ["Engineering"]
 }
 
-# NOTE: Upload the referenced .mobileconfig file to the profiles/ directory before running terraform apply.
+# NOTE: Place the referenced corp-wifi.mobileconfig file at profiles/ next to
+#       your TF config before running terraform apply. `name`, `platform`, and
+#       `identifier` are derived from the profile XML by the provider.
 ```
 
 ### fleetdm_script
 
-Scripts reference external `.sh` (macOS/Linux) or `.ps1` (Windows) files.
+Binary schema:
+- Required: `name` (string), `content` (string; typically `file("...")`), `team_id` (number; REQUIRED at the binary level, there is no global-script scope).
+- COMPUTED: `id`, `created_at`, `updated_at`.
 
-Required: `name`, `path` (file path to the script).
-Optional: `team_id`.
-
-Worked example:
+Worked example (macOS DNS cache clear):
 ```hcl
 resource "fleetdm_script" "clear_dns_cache" {
-  name = "Clear DNS cache"
-  path = "../scripts/clear-dns-cache.sh"
+  team_id = fleetdm_fleet.workstations.id
+  name    = "clear-dns-cache.sh"
+  content = file("${path.module}/scripts/clear-dns-cache.sh")
 }
 
-# NOTE: Upload the referenced script file to the scripts/ directory before running terraform apply.
+# NOTE: Place the referenced script body at scripts/clear-dns-cache.sh next to your TF config before running terraform apply.
 ```
 
-### fleetdm_software_package
+If the user has not declared a `fleetdm_fleet` resource and the prompt is global in nature, declare a `fleetdm_fleet "default"` resource and reference its `id`. The binary requires a numeric `team_id`; there is no global-script form.
 
-Three sub-types, selected by which of `package_path`, `fleet_maintained_app_slug`, or `app_store_app_id` is set.
+### fleetdm_software_package (PREMIUM)
 
-Worked example (Fleet-maintained Slack):
+Binary schema:
+- Optional (the resource has no required attributes at the binary level; in practice you must supply ONE of `fleet_maintained_app_id`, `package_path`, or `app_store_id`): `team_id` (number), `fleet_maintained_app_id` (NUMBER, NOT a string slug), `package_path` (string), `app_store_id` (string), `filename` (string), `self_service` (bool), `automatic_install` (bool), `install_script` (string), `uninstall_script` (string), `post_install_script` (string), `pre_install_query` (string), `labels_include_any` (LIST of string), `labels_exclude_any` (LIST of string), `platform` (string), `package_sha256` (string).
+- COMPUTED (do NOT set): `name`, `version`, `id`, `title_id`.
+- Does NOT accept: `fleet_maintained_app_slug` (the binary takes a numeric id), `categories`.
+
+Worked example (Fleet-maintained Slack, by numeric app id):
 ```hcl
+# PREMIUM: requires a Fleet Premium licence at apply time
 resource "fleetdm_software_package" "slack" {
-  fleet_maintained_app_slug  = "slack/darwin"
-  version                    = "4.47.65"
-  self_service               = true
-  categories                 = ["Productivity"]
+  team_id                 = fleetdm_fleet.workstations.id
+  fleet_maintained_app_id = 12  # Slack for macOS; resolve real id via Fleet UI > Software > Add software > Fleet-maintained
+  self_service            = true
 }
 ```
 
-Worked example (custom package):
+The `# PREMIUM:` line MUST appear directly above EVERY `fleetdm_software_package`, `fleetdm_configuration_profile`, `fleetdm_bootstrap_package`, and `fleetdm_setup_experience` resource block in the generated HCL. Skipping it on any of those four resource types is a regression.
+
+Worked example (custom package, by filename + package_path + install/uninstall script):
 ```hcl
-resource "fleetdm_software_package" "internal_tool" {
-  package_path  = "../software/internal-tool-1.2.0.pkg"
-  categories    = ["Developer Tools"]
-  self_service  = false
+# PREMIUM: requires a Fleet Premium licence at apply time
+resource "fleetdm_software_package" "zoom" {
+  team_id          = fleetdm_fleet.workstations.id
+  filename         = "zoom-installer.pkg"
+  package_path     = "./packages/zoom-installer.pkg"
+  install_script   = "installer -pkg /tmp/zoom-installer.pkg -target /"
+  uninstall_script = "rm -rf /Applications/zoom.us.app"
+  self_service     = true
 }
 ```
 
 ### fleetdm_configuration
 
-Global Fleet configuration + osquery agent options rolled into one resource. The TF provider unifies these (in GitOps YAML they're separate keys: `agent_options` vs `org_settings`).
+Binary schema (global Fleet org config + osquery agent options rolled into one resource):
+- Required: `org_name` (string).
+- Optional: `agent_options` (STRING, NOT `agent_options_json`; the value is a JSON-encoded string built with `jsonencode(...)`), `server_url` (string), `enable_analytics` (bool), `enable_host_users` (bool), `enable_software_inventory` (bool), `live_query_disabled` (bool), `query_reports_disabled` (bool), `scripts_disabled` (bool), `ai_features_disabled` (bool), `host_expiry_enabled` (bool), `host_expiry_window` (number), `activity_expiry_enabled` (bool), `activity_expiry_window` (number), `contact_url` (string), `transparency_url` (string), `org_logo_url` (string), `org_logo_url_light_background` (string).
+- Does NOT accept: `agent_options_json` (use `agent_options`).
 
-Required: at least one of `agent_options_json` (string of JSON) or `org_info` block.
-
-Worked example (agent options only):
+Worked example (agent options with distributed_interval, plus the required `org_name`):
 ```hcl
 resource "fleetdm_configuration" "global" {
-  agent_options_json = jsonencode({
+  org_name      = "Example Corp"
+  agent_options = jsonencode({
     config = {
       options = {
         distributed_interval = 30
@@ -2669,31 +2725,45 @@ resource "fleetdm_configuration" "global" {
 }
 ```
 
-### fleetdm_fleet (team settings; NOT fleetdm_team which is deprecated)
+### fleetdm_fleet (team/fleet settings; canonical replacement for fleetdm_team)
 
-Per-team settings: macOS update enforcement, Windows update enforcement, host expiry, MDM features.
+Binary schema:
+- Required: `name` (string).
+- Optional: `description` (string), `enable_disk_encryption` (bool), `host_expiry_enabled` (bool), `host_expiry_window` (number, days).
+- Does NOT accept: `macos_updates` block, `windows_updates` block, `mdm` block, `host_expiry_settings` block. Update enforcement and MDM features live on configuration profiles, not on the fleet resource itself.
 
-Required: `name`.
-Optional: `description`, `macos_updates`, `windows_updates`, `host_expiry_settings`, `mdm` block.
-
-Worked example (macOS update enforcement):
+Worked example (host expiry + disk encryption):
 ```hcl
-resource "fleetdm_fleet" "engineering" {
-  name        = "Engineering"
-  description = "Engineering Macs and Windows hosts."
-
-  macos_updates {
-    minimum_version = "14.5"
-    deadline        = "2026-05-24"
-  }
+resource "fleetdm_fleet" "workstations" {
+  name                   = "Workstations"
+  description            = "All workstation devices"
+  enable_disk_encryption = true
+  host_expiry_enabled    = true
+  host_expiry_window     = 30
 }
 ```
 
-CRITICAL: emit `fleetdm_fleet`, NOT `fleetdm_team`. The provider keeps `fleetdm_team` as a deprecated alias; it works for now but will be removed. Always use `fleetdm_fleet`.
+When the user asks for macOS update enforcement on a fleet (e.g. "require macOS 14.5 by 2026-05-24"), emit a `fleetdm_configuration_profile` carrying an Apple SoftwareUpdate `.mobileconfig` payload rather than trying to add a `macos_updates` block to `fleetdm_fleet`. Add a `# NOTE` explaining the binary does not have a dedicated update-enforcement attribute. Example:
+```hcl
+# NOTE: The l-teles/fleetdm v0.5.4 binary does not expose a macos_updates block
+# on fleetdm_fleet. macOS update enforcement (e.g. minimum_version 14.5 by
+# deadline 2026-05-24) is delivered via a fleetdm_configuration_profile with
+# an Apple SoftwareUpdate payload. The fleetdm_fleet resource below carries
+# only the binary-supported attributes; the macos_updates intent is preserved
+# in this NOTE for the apply runbook.
+resource "fleetdm_fleet" "engineering" {
+  name        = "Engineering"
+  description = "Engineering Macs and Windows hosts."
+}
+```
+
+CRITICAL: emit `fleetdm_fleet`, NOT `fleetdm_team`. Both resources exist in the v0.5.4 binary with the same attribute set, but the README marks `fleetdm_team` deprecated.
+
+DO NOT EMIT `fleetdm_team`. DO NOT EMIT `fleetdm_query`. Both are deprecated in v0.5.4 and the regression class explicitly forbids them.
 
 ### Composite mode "Okta + Fleet TF"
 
-When `output_mode` is `Okta + Fleet TF`, emit BOTH `terraform_okta_hcl` and `terraform_fleet_hcl`. Unlike the GitOps composite, BOTH files declare `terraform { required_providers {} }` blocks, and the terraform_gen.py composite-mode merge will dedupe the required_providers entries into okta.tf and strip the duplicate block from fleet.tf at the end of generation. Shared variables (e.g. `fleet_url` if Okta references it) are deduped automatically.
+When `output_mode` is `Okta + Fleet TF`, emit BOTH `terraform_okta_hcl` and `terraform_fleet_hcl`. Unlike the GitOps composite, BOTH files declare `terraform { required_providers {} }` blocks, and the terraform_gen.py composite-mode merge will dedupe the required_providers entries into okta.tf and strip the duplicate block from fleet.tf at the end of generation. Shared variables (e.g. `fleetdm_url` if Okta references it) are deduped automatically.
 
 ### PARSER OVERRIDE — Fleet TF edition
 
@@ -2701,10 +2771,23 @@ Identical to SECTION I: `intent.attributes.query`, `intent.attributes.platform`,
 
 ### Common mistakes (Fleet TF specific)
 
-- Using `~> 0.5` or any range constraint instead of exactly `version = "0.5.4"`. The provider is preview; even patch upgrades can break.
-- Emitting `fleetdm_team` instead of `fleetdm_fleet`. The former is deprecated.
+- Using any range constraint (tilde-greater-than, greater-or-equal, etc.) instead of exactly `version = "0.5.4"`. The provider is preview; even patch upgrades can break.
+- Emitting `fleetdm_team` instead of `fleetdm_fleet`. The former is a deprecated alias.
+- Emitting `fleetdm_query` instead of `fleetdm_report`. The former is a deprecated alias as of v0.5.4.
+- Setting `platform = "darwin"` (string) on `fleetdm_policy` or `fleetdm_report`. The binary requires `platform = ["darwin"]` (LIST of string).
+- Setting `hosts = [...]` or `label_membership_type = "manual"` on `fleetdm_label`. The binary does not accept either; use a dynamic query and add a `# NOTE` workaround.
+- Setting a `macos_updates`, `windows_updates`, or `mdm` block on `fleetdm_fleet`. The binary does not accept any of them; deliver update enforcement via a configuration profile.
+- Setting `agent_options_json = ...` on `fleetdm_configuration`. The binary uses `agent_options` (string).
+- Forgetting `org_name` on `fleetdm_configuration`. It is required.
+- Setting `name`, `path`, `platform`, or `mobileconfig` on `fleetdm_configuration_profile`. The binary requires `profile_content` (string) and computes the rest from the profile XML.
+- Setting `fleet_maintained_app_slug = "..."` on `fleetdm_software_package`. The binary requires `fleet_maintained_app_id = <number>`.
+- Setting `categories = [...]` on `fleetdm_software_package`. The binary does not accept it.
+- Omitting `team_id` on `fleetdm_script`. The binary requires it; declare a `fleetdm_fleet "default"` and reference its `id` if the script is intended to be global.
+- Setting `path = "..."` on `fleetdm_script`. The binary requires `content = file("...")` instead.
+- Provider block typos: `url`, `api_token`, `address`, `endpoint`, `token`. The cached README ONLY accepts `server_address`, `api_key`, `verify_tls`, `timeout`.
+- Env var typos: `FLEET_URL`, `FLEET_API_TOKEN`. The cached README ONLY documents `FLEETDM_URL`, `FLEETDM_API_TOKEN`, `FLEETDM_VERIFY_TLS`.
 - Skipping the experimental warning block. Every terraform_fleet_hcl output MUST start with the 10-line warning + 6-line runbook block verbatim.
-- Mixing `package_path`, `fleet_maintained_app_slug`, and `app_store_app_id` on one `fleetdm_software_package`. Exactly one of the three must be set.
+- Forgetting the `# PREMIUM` marker on `fleetdm_software_package`, `fleetdm_bootstrap_package`, `fleetdm_configuration_profile`, or `fleetdm_setup_experience`. Users without a Premium licence will hit a 403 at apply time without the marker.
 - Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
 
 ---
@@ -2712,6 +2795,12 @@ Identical to SECTION I: `intent.attributes.query`, `intent.attributes.platform`,
 ## SECTION K — Snowflake Terraform (terraform_snowflake_hcl)
 
 This section governs the `terraform_snowflake_hcl` output key. Snowflake is the data-warehouse platform; the official Terraform provider was renamed from `Snowflake-Labs/snowflake` (community era) to **`snowflakedb/snowflake`** (Snowflake-owned, production-grade) in 2025. Current latest is v2.16.0 (May 2026). Pin to `~> 2.0` so the apply tolerates minor releases but stops at a major break.
+
+V2 SCHEMA MIGRATION NOTES (Phase 19c re-grounded SECTION K against the cached v2.16.0 provider binary at `_tftool/.terraform-plugin-cache/registry.terraform.io/snowflakedb/snowflake/2.16.0/`):
+- The legacy `snowflake_role` resource was REMOVED in v2 and is now `snowflake_account_role` (same shape: required `name`, optional `comment`). Existing HCL that still says `snowflake_role` will fail `terraform validate` with "The provider does not support resource type snowflake_role". Always emit `snowflake_account_role`.
+- `snowflake_resource_monitor` does NOT accept a `warehouses` attribute in v2. To bind a warehouse to a monitor, set the `resource_monitor` attribute on the `snowflake_warehouse` resource itself (string field, name of the monitor).
+- `snowflake_scim_integration` requires `enabled` (was optional in older docs); `sync_password` is a STRING ("true" / "false"), not a bool.
+- Several `snowflake_user` attributes shifted to STRING type in v2 to support tri-state semantics: `disabled`, `must_change_password`, and `disable_mfa` take "true" / "false" string values, not bools.
 
 Mandatory apply runbook header (verbatim, FIRST lines of every terraform_snowflake_hcl output):
 
@@ -2747,7 +2836,7 @@ provider "snowflake" {
 
 variable "snowflake_account" {
   type        = string
-  description = "Snowflake account identifier (e.g. xy12345.us-east-1). Set via SNOWFLAKE_ACCOUNT env var."
+  description = "Snowflake account identifier. Set via SNOWFLAKE_ACCOUNT env var. Format is the organization/account locator your Snowflake admin gave you."
 }
 
 variable "snowflake_user" {
@@ -2823,14 +2912,16 @@ resource "snowflake_schema" "analytics_staging" {
 }
 ```
 
-### snowflake_role
+### snowflake_account_role (the v2 replacement for snowflake_role)
+
+V2 RENAME: in `snowflakedb/snowflake ~> 2.0` the legacy resource name `snowflake_role` was removed. Always emit `snowflake_account_role`. The schema is otherwise unchanged.
 
 Required: `name` (typically UPPERCASE_SNAKE_CASE for Snowflake convention).
 Optional: `comment`.
 
 Worked example:
 ```hcl
-resource "snowflake_role" "data_engineer" {
+resource "snowflake_account_role" "data_engineer" {
   name     = "DATA_ENGINEER"
   comment  = "Data engineering team: read/write on RAW + STAGING, read on PUBLIC."
 }
@@ -2838,7 +2929,9 @@ resource "snowflake_role" "data_engineer" {
 
 ### snowflake_user
 
-Required: `name`. Optional: `default_role`, `default_warehouse`, `default_namespace`, `rsa_public_key` (PEM single-line, no BEGIN/END markers), `rsa_public_key_2` (for key rotation), `email`, `display_name`, `must_change_password` (bool), `disabled` (bool), `comment`.
+Required: `name`. Optional: `default_role`, `default_warehouse`, `default_namespace`, `rsa_public_key` (PEM single-line, no BEGIN/END markers), `rsa_public_key_2` (for key rotation), `email`, `display_name`, `login_name`, `first_name`, `last_name`, `comment`.
+
+V2 STRING-TYPED tri-state attributes (these are STRINGS, not bools): `disabled`, `must_change_password`, `disable_mfa`. Use "true" / "false" string literals. If you write `disabled = true` (bool) `terraform validate` fails with "expected type 'string', got 'bool'".
 
 CRITICAL: do NOT emit `password` on `snowflake_user`. Snowflake forced key-pair authentication for all human and service users as of November 2025. The Terraform provider accepts `password` as an attribute for backward-compat but Snowflake rejects the resulting CREATE USER at apply time.
 
@@ -2848,7 +2941,7 @@ resource "snowflake_user" "airflow_runner" {
   name              = "AIRFLOW_RUNNER"
   display_name      = "Airflow Runner Service Account"
   email             = "data-platform-bot@example.com"
-  default_role      = snowflake_role.data_engineer.name
+  default_role      = snowflake_account_role.data_engineer.name
   default_warehouse = snowflake_warehouse.etl_wh.name
   rsa_public_key    = file("../keys/airflow_runner_public.pem")
   comment           = "Service account for Airflow DAG runs; key-pair auth only."
@@ -2862,7 +2955,7 @@ Binds a role to a user (`user_name`) OR to another role (`parent_role_name`). Ex
 Worked example (role -> user):
 ```hcl
 resource "snowflake_grant_account_role" "data_engineer_to_airflow" {
-  role_name  = snowflake_role.data_engineer.name
+  role_name  = snowflake_account_role.data_engineer.name
   user_name  = snowflake_user.airflow_runner.name
 }
 ```
@@ -2870,7 +2963,7 @@ resource "snowflake_grant_account_role" "data_engineer_to_airflow" {
 Worked example (role -> role, building a hierarchy):
 ```hcl
 resource "snowflake_grant_account_role" "data_engineer_to_sysadmin" {
-  role_name        = snowflake_role.data_engineer.name
+  role_name        = snowflake_account_role.data_engineer.name
   parent_role_name = "SYSADMIN"
 }
 ```
@@ -2879,17 +2972,17 @@ CRITICAL: emit `snowflake_grant_account_role`, NOT `snowflake_role_grants` (the 
 
 ### snowflake_grant_privileges_to_account_role
 
-Grants object-level privileges (USAGE, SELECT, INSERT, MODIFY, etc.) to a role. Three target shapes:
+Grants object-level privileges (USAGE, SELECT, INSERT, MODIFY, etc.) to a role. Required: `account_role_name` (the role to grant TO). Then exactly one target shape:
 
 1. `on_account = true` — account-wide privileges (e.g. CREATE DATABASE).
 2. `on_account_object { object_type, object_name }` — privileges on a single named object (database, warehouse, integration).
-3. `on_schema { schema_name }` OR `on_schema { all_schemas_in_database }` — privileges on schemas.
-4. `on_schema_object { object_type, object_name }` OR `on_schema_object { all { object_type_plural, in_database, in_schema } }` — privileges on tables, views, sequences, etc.
+3. `on_schema { schema_name }` OR `on_schema { all_schemas_in_database }` OR `on_schema { future_schemas_in_database }` — privileges on schemas.
+4. `on_schema_object { object_type, object_name }` OR `on_schema_object { all { object_type_plural, in_database, in_schema } }` OR `on_schema_object { future { object_type_plural, in_database, in_schema } }` — privileges on tables, views, sequences, etc.
 
 Worked example (USAGE on database + SELECT on all tables in a schema):
 ```hcl
 resource "snowflake_grant_privileges_to_account_role" "data_engineer_db_usage" {
-  account_role_name  = snowflake_role.data_engineer.name
+  account_role_name  = snowflake_account_role.data_engineer.name
   privileges         = ["USAGE"]
 
   on_account_object {
@@ -2899,7 +2992,7 @@ resource "snowflake_grant_privileges_to_account_role" "data_engineer_db_usage" {
 }
 
 resource "snowflake_grant_privileges_to_account_role" "data_engineer_select_public" {
-  account_role_name  = snowflake_role.data_engineer.name
+  account_role_name  = snowflake_account_role.data_engineer.name
   privileges         = ["SELECT"]
 
   on_schema_object {
@@ -2915,24 +3008,36 @@ CRITICAL: emit `snowflake_grant_privileges_to_account_role`, NOT `snowflake_acco
 
 ### snowflake_resource_monitor
 
-Required: `name`, `credit_quota` (number; monthly default). Optional: `frequency` (DAILY/WEEKLY/MONTHLY/YEARLY/NEVER, default MONTHLY), `start_timestamp`, `end_timestamp`, `notify_users` (list of usernames), `notify_triggers` (list of percentages, e.g. [80, 100]), `suspend_trigger` (int, %), `suspend_immediate_trigger` (int, %), `warehouses` (list of warehouse names to monitor).
+Required: `name`. Optional: `credit_quota` (number; monthly default), `frequency` (DAILY/WEEKLY/MONTHLY/YEARLY/NEVER, default MONTHLY), `start_timestamp`, `end_timestamp`, `notify_users` (set of usernames), `notify_triggers` (set of percentages, e.g. [80, 100]), `suspend_trigger` (int, %), `suspend_immediate_trigger` (int, %).
 
-Worked example (100 credits/month, alert at 80, suspend at 100):
+V2 NOTES:
+- The `warehouses` attribute does NOT exist on `snowflake_resource_monitor` in v2. To bind a warehouse to a monitor, set the `resource_monitor` field on the `snowflake_warehouse` resource itself (string field, name of the monitor).
+- The `comment` attribute does NOT exist on `snowflake_resource_monitor` in v2 either. Do NOT emit `comment = "..."`; it will fail `terraform validate` with "Unsupported argument". Use a `# ...` comment line above the resource if you want to document intent.
+- `frequency` and `start_timestamp` are PAIRED: if you set one, you MUST set the other. The simplest reliable approach is to OMIT both (default is MONTHLY starting now). If you really need a non-default frequency, also emit `start_timestamp = "2026-01-01 00:00 GMT"` (ISO-like string) alongside.
+
+Worked example (100 credits/month, alert at 80, suspend at 100; warehouse bound via the warehouse resource):
 ```hcl
 resource "snowflake_resource_monitor" "bi_budget" {
   name              = "BI_BUDGET"
   credit_quota      = 100
-  frequency         = "MONTHLY"
-  warehouses        = [snowflake_warehouse.etl_wh.name]
+  # Omit `frequency` (defaults to MONTHLY) to avoid the paired
+  # `frequency,start_timestamp` constraint; set both only if you need a
+  # non-default frequency.
   notify_triggers   = [80]
   suspend_trigger   = 100
   notify_users      = [snowflake_user.airflow_runner.name]
+}
+
+resource "snowflake_warehouse" "bi_wh" {
+  name              = "BI_WH"
+  warehouse_size    = "SMALL"
+  resource_monitor  = snowflake_resource_monitor.bi_budget.name
 }
 ```
 
 ### snowflake_network_policy
 
-Required: `name`. Optional: `allowed_ip_list` (list of CIDR strings), `blocked_ip_list`, `allowed_network_rule_list`, `blocked_network_rule_list`, `comment`.
+Required: `name`. Optional: `allowed_ip_list` (set of CIDR strings), `blocked_ip_list`, `allowed_network_rule_list`, `blocked_network_rule_list`, `comment`.
 
 Worked example (office IP allowlist):
 ```hcl
@@ -2947,27 +3052,31 @@ NOTE: the network policy itself doesn't bind to users in the Terraform provider;
 
 ### snowflake_scim_integration
 
-Required: `name`, `scim_client` (OKTA, AZURE, CUSTOM), `run_as_role` (must be the Snowflake provisioner role; for Okta this is `OKTA_PROVISIONER`).
-Optional: `enabled` (bool, default true), `comment`, `sync_password` (bool, default false; should stay false because Snowflake forces key-pair).
+Required: `name`, `enabled` (bool; v2 made this REQUIRED), `scim_client` (OKTA, AZURE, CUSTOM), `run_as_role` (must be the Snowflake provisioner role; for Okta this is `OKTA_PROVISIONER`).
+Optional: `sync_password` (STRING "true" / "false"; v2 changed the type from bool to string), `network_policy`, `comment`.
+
+V2 NOTES:
+- `enabled` is REQUIRED in v2 (was optional in older docs). Always emit it.
+- `sync_password` is a STRING in v2. Use `sync_password = "false"` (quoted), NOT `sync_password = false` (bare bool). The bool form fails `terraform validate` with "expected type 'string', got 'bool'".
 
 Worked example (Okta SCIM):
 ```hcl
-resource "snowflake_role" "okta_provisioner" {
+resource "snowflake_account_role" "okta_provisioner" {
   name     = "OKTA_PROVISIONER"
   comment  = "Provisioner role used by Okta SCIM integration to create / update / disable Snowflake users."
 }
 
 resource "snowflake_grant_account_role" "okta_provisioner_to_accountadmin" {
-  role_name        = snowflake_role.okta_provisioner.name
+  role_name        = snowflake_account_role.okta_provisioner.name
   parent_role_name = "ACCOUNTADMIN"
 }
 
 resource "snowflake_scim_integration" "okta" {
   name           = "OKTA_SCIM"
-  scim_client    = "OKTA"
-  run_as_role    = snowflake_role.okta_provisioner.name
   enabled        = true
-  sync_password  = false
+  scim_client    = "OKTA"
+  run_as_role    = snowflake_account_role.okta_provisioner.name
+  sync_password  = "false"
   comment        = "Accept SCIM provisioning from Okta. Bearer token is generated by Snowflake on apply; paste it into the Okta SCIM config."
 }
 
@@ -2982,10 +3091,10 @@ resource "snowflake_scim_integration" "okta" {
 
 When `output_mode` is `Okta + Snowflake` and the prompt mentions SCIM / "sync Okta users to Snowflake" / "Okta SCIM into Snowflake":
 
-- `terraform_okta_hcl` emits an `okta_app_oauth` configured for SCIM provisioning (or `okta_app_saml` if SAML SSO is also requested), with `app_settings_json` pointing at the Snowflake SCIM endpoint URL pattern `https://<SNOWFLAKE_ACCOUNT>.snowflakecomputing.com/scim/v2/` and a NOTE comment explaining that the bearer token from Snowflake side must be set manually on the Okta side after apply.
-- `terraform_snowflake_hcl` emits the three resources shown in the snowflake_scim_integration example above: provisioner role, grant of ACCOUNTADMIN to that role, and the snowflake_scim_integration itself.
+- `terraform_okta_hcl` emits an `okta_app_oauth` configured for SCIM provisioning (or `okta_app_saml` if SAML SSO is also requested). The SCIM endpoint URL value MUST come from a Terraform variable like `var.snowflake_scim_endpoint`, interpolated into `app_settings_json`. The variable description MUST be exactly this string (verbatim, no `e.g.` clause): `"Snowflake SCIM endpoint URL. Set in terraform.tfvars."` and no concrete example URL anywhere in the file. The secret-shape scanner WILL flag any string matching `[a-z]{2}\\d{5}\\.[a-z0-9.-]+` (the Snowflake account locator shape) and fail the generation. Follow the resource block with a `# NOTE:` comment explaining that (a) the bearer token must be pasted into the Okta Admin Console Provisioning tab manually after apply, and (b) the endpoint URL value goes in `terraform.tfvars` next to the other secrets.
+- `terraform_snowflake_hcl` emits the three resources shown in the snowflake_scim_integration example above: provisioner role, grant of ACCOUNTADMIN to that role, and the snowflake_scim_integration itself. The file MUST start with the standard `# SNOWFLAKE APPLY RUNBOOK` header block defined at the top of SECTION K (this is mandatory for every terraform_snowflake_hcl output, composite mode included; do not skip it just because the file also pairs with an Okta-side file). Include the `# NOTE:` comment block about `SYSTEM$GENERATE_SCIM_ACCESS_TOKEN` and pasting the result into the Okta Admin Console Provisioning tab.
 
-The two files do not cross-reference each other; the user is responsible for the manual bearer-token transfer step. Document this clearly in both files as `# NOTE` comments.
+The two files do not cross-reference each other; the user is responsible for the manual bearer-token transfer step. Document this clearly in both files as `# NOTE` comments that reference the Okta Admin Console Provisioning tab.
 
 ### PARSER OVERRIDE — Snowflake edition
 
@@ -2993,13 +3102,19 @@ Identical to other sections: `intent.attributes.account`, `intent.attributes.rol
 
 ### Common mistakes (Snowflake specific)
 
+- Emitting a concrete-looking Snowflake account identifier (any string of the shape `[a-z]{2}\\d{5}\\.[a-z0-9.-]+`, e.g. `xy12345.us-east-1`) anywhere in generated HCL, including variable descriptions, comments, or worked examples. The Phase 18 secret-shape scanner flags this as a leaked credential and fails the generation. Use generic placeholders like "YOUR-ACCOUNT-ID" or omit the example entirely; the variable description should describe what the value is, not what it looks like.
+- Emitting `snowflake_role` (REMOVED in v2). Use `snowflake_account_role` everywhere, including references like `snowflake_account_role.<label>.name`.
 - Using the old `Snowflake-Labs/snowflake` source. The provider moved to `snowflakedb/snowflake` in 2025; emit only the new name.
-- Emitting `version = "~> 1.0"` (the v1 -> v2 migration changed several resource shapes including grants). Pin to `~> 2.0`.
+- Emitting `version = "~> 1.0"` (the v1 -> v2 migration renamed `snowflake_role` to `snowflake_account_role`, removed the `warehouses` field from `snowflake_resource_monitor`, made `snowflake_scim_integration.enabled` required, and shifted `snowflake_user.disabled` / `must_change_password` / `disable_mfa` from bool to string). Pin to `~> 2.0`.
 - Emitting `password` on `snowflake_user`. Snowflake forces key-pair auth as of Nov 2025; password-bound users cannot log in. Use `rsa_public_key` exclusively.
+- Emitting `disabled = true` (bool) on `snowflake_user`. The v2 schema expects a STRING; emit `disabled = "true"` (quoted) instead. Same rule for `must_change_password` and `disable_mfa`.
+- Emitting `warehouses = [...]` on `snowflake_resource_monitor`. The attribute does not exist in v2. Set `resource_monitor = snowflake_resource_monitor.<label>.name` on the `snowflake_warehouse` resource instead.
+- Emitting `comment = "..."` on `snowflake_resource_monitor`. The attribute does not exist in v2. Use a `# ...` line above the resource if you want to document intent.
+- Emitting `sync_password = false` (bare bool) on `snowflake_scim_integration`. The v2 schema expects a STRING; emit `sync_password = "false"` (quoted). Setting it to "true" is also wrong because Snowflake's forced key-pair auth makes synced passwords moot.
+- Omitting `enabled` from `snowflake_scim_integration`. It is REQUIRED in v2; the resource will fail `terraform validate` without it.
 - Emitting `snowflake_role_grants` (deprecated). Use `snowflake_grant_account_role`.
 - Emitting `snowflake_account_grant` or `snowflake_schema_grant` (both deprecated). Use `snowflake_grant_privileges_to_account_role`.
 - Forgetting that role and user names are case-sensitive but Snowflake stores them UPPER by default. Quoting `"DATA_ENGINEER"` vs `DATA_ENGINEER` matters; the convention is UPPERCASE unquoted strings everywhere.
-- Setting `sync_password = true` on `snowflake_scim_integration`. The default is false and that is correct; Snowflake's forced key-pair auth makes synced passwords moot.
 - Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
 """
 

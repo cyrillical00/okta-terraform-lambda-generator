@@ -166,31 +166,43 @@ def render_env_pills(env_context: dict) -> None:
         n_pol = len(fleet.get("policies", []))
         n_q = len(fleet.get("queries", []))
         n_t = len(fleet.get("teams", []))
+        team_policies = fleet.get("team_policies", {}) or {}
+        n_tp = sum(len(v) for v in team_policies.values())
         partial = fleet.get("partial_errors") or []
-        tooltip = f"{n_lab} labels, {n_pol} policies, {n_q} queries, {n_t} teams"
+        if n_tp:
+            tooltip = (
+                f"{n_lab} labels, {n_pol} global policies, "
+                f"{n_tp} team policies, {n_q} queries, {n_t} teams"
+            )
+        else:
+            tooltip = (
+                f"{n_lab} labels, {n_pol} global policies, "
+                f"{n_q} queries, {n_t} teams"
+            )
         state = "warn" if partial else "on"
         if partial:
             tooltip += f" ({len(partial)} endpoints unavailable)"
-        pills.append(pill(f"Fleet ({n_lab + n_pol + n_q + n_t})", state, tooltip))
+        total = n_lab + n_pol + n_tp + n_q + n_t
+        pills.append(pill(f"Fleet ({total})", state, tooltip))
     else:
         pills.append(pill("Fleet", "off", fleet.get("error", "Not configured")))
 
-    # Snowflake (Phase 15 ships pill in `off` state; Phase 15.5 will add the
-    # live-context fetcher and flip it to `on` when SNOWFLAKE_* secrets are set).
+    # Snowflake (Phase 19c lit the live-context fetcher; pill flips to `on`
+    # when SNOWFLAKE_* secrets are configured and the key-pair auth succeeds).
     snowflake = (env_context or {}).get("snowflake", {})
     if snowflake.get("connected"):
         n_wh = len(snowflake.get("warehouses", []))
         n_db = len(snowflake.get("databases", []))
         n_role = len(snowflake.get("roles", []))
+        n_user = len(snowflake.get("users", []))
         partial = snowflake.get("partial_errors") or []
-        tooltip = f"{n_wh} warehouses, {n_db} databases, {n_role} roles"
+        tooltip = f"{n_wh} warehouses, {n_db} databases, {n_role} roles, {n_user} users"
         state = "warn" if partial else "on"
         if partial:
             tooltip += f" ({len(partial)} endpoints unavailable)"
-        pills.append(pill(f"Snowflake ({n_wh + n_db + n_role})", state, tooltip))
+        pills.append(pill(f"Snowflake ({n_wh + n_db + n_role + n_user})", state, tooltip))
     else:
-        # Default tooltip until Phase 15.5 wires the live-context fetcher.
-        pills.append(pill("Snowflake", "off", snowflake.get("error", "Not configured (live context lands in Phase 15.5)")))
+        pills.append(pill("Snowflake", "off", snowflake.get("error", "Not configured")))
 
     st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 

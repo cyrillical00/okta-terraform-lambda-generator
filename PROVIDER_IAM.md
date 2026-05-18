@@ -383,11 +383,11 @@ Provider docs:
 
 ## 6. Snowflake
 
-Note: TF Tool currently does **not** ship a Snowflake env-context fetcher (no `snowflake_client.py`). The `SNOWFLAKE_*` env vars exist only so the Snowflake Terraform provider can authenticate during apply. The env-context column below describes the role you should configure **if you build a Snowflake env-context fetcher** (Phase 16+); the apply column is what the generator's output currently requires.
+Phase 19c lit up the Snowflake env-context fetcher (`snowflake_client.py` + `env_context.fetch_snowflake_context`). The `SNOWFLAKE_*` env vars now drive both the apply-time provider authentication AND the read-only `SHOW WAREHOUSES`, `SHOW DATABASES`, `SHOW ROLES`, and `SHOW USERS` calls the env-context layer issues on session load. The two columns below describe the live recipe.
 
-### env-context role (read-only, forward-looking)
+### env-context role (read-only)
 
-A future Snowflake env-context fetcher would `SHOW WAREHOUSES`, `SHOW DATABASES`, `SHOW SCHEMAS`, `SHOW ROLES`, and `SHOW USERS`. The role needs USAGE on the warehouse (to run the SHOW statements at all) and on each database / schema the env-context lists.
+The env-context fetcher uses key-pair JWT auth to connect, then runs the four `SHOW` statements above. The `MONITOR USAGE ON ACCOUNT` grant is what lets a non-admin role see warehouses and roles account-wide; without it the role can only see objects it owns.
 
 ```sql
 USE ROLE SECURITYADMIN;
@@ -399,10 +399,20 @@ GRANT USAGE ON DATABASE ANALYTICS TO ROLE TF_TOOL_READER;
 GRANT USAGE ON ALL SCHEMAS IN DATABASE ANALYTICS TO ROLE TF_TOOL_READER;
 GRANT USAGE ON FUTURE SCHEMAS IN DATABASE ANALYTICS TO ROLE TF_TOOL_READER;
 
+-- Account-level SHOW statements need MONITOR USAGE; without it the fetcher
+-- still returns connected=True but every SHOW returns an empty list.
+GRANT MONITOR USAGE ON ACCOUNT TO ROLE TF_TOOL_READER;
+
+-- SHOW USERS requires a higher privilege; on a read-only service role this
+-- typically returns "Insufficient privileges to operate on USERS" and the
+-- fetcher downgrades the single error to a partial_errors entry. Grant
+-- MANAGE GRANTS only if your env-context needs the user list.
+-- GRANT MANAGE GRANTS ON ACCOUNT TO ROLE TF_TOOL_READER;
+
 GRANT ROLE TF_TOOL_READER TO USER TF_TOOL_SERVICE;
 ```
 
-Replace `COMPUTE_WH`, `ANALYTICS`, and `TF_TOOL_SERVICE` with your actual warehouse, database, and service-user names. `SHOW` statements that operate at the account level (e.g. `SHOW WAREHOUSES`, `SHOW ROLES`) require additional privileges; add `GRANT MONITOR USAGE ON ACCOUNT TO ROLE TF_TOOL_READER` if your env-context fetcher needs them.
+Replace `COMPUTE_WH`, `ANALYTICS`, and `TF_TOOL_SERVICE` with your actual warehouse, database, and service-user names.
 
 Service-user setup (key-pair auth, since Snowflake deprecated password auth Nov 2025):
 
@@ -431,7 +441,7 @@ The generator emits resources documented in `generator/prompts.py` SECTION K (li
 | Apply scope | Role |
 |---|---|
 | Non-security resources only: `snowflake_warehouse`, `snowflake_database`, `snowflake_schema`, `snowflake_table`, `snowflake_view`, `snowflake_function`, `snowflake_procedure` | `SYSADMIN` |
-| Anything in the SCIM / authentication / network-policy / OAuth space: `snowflake_scim_integration`, `snowflake_oauth_integration`, `snowflake_saml_integration`, `snowflake_network_policy`, `snowflake_user`, `snowflake_role`, `snowflake_grant_*` | `SECURITYADMIN` |
+| Anything in the SCIM / authentication / network-policy / OAuth space: `snowflake_scim_integration`, `snowflake_oauth_integration`, `snowflake_saml_integration`, `snowflake_network_policy`, `snowflake_user`, `snowflake_account_role`, `snowflake_grant_*` | `SECURITYADMIN` |
 | Composite Okta + Snowflake mode (SCIM provisioning, see SECTION K composite-mode subsection) | `SECURITYADMIN` (the `snowflake_scim_integration` resource of type `OKTA` requires it) |
 
 For applies that span both classes, use `SECURITYADMIN` and accept the wider blast radius, or split the apply into two Terraform states each scoped to its minimum role.

@@ -147,6 +147,12 @@ def build_env_context(
     jamf_client_secret: str = "",
     fleet_url: str = "",
     fleet_api_token: str = "",
+    snowflake_account: str = "",
+    snowflake_user: str = "",
+    snowflake_private_key: str = "",
+    snowflake_role: str = "",
+    snowflake_warehouse: str = "",
+    snowflake_passphrase: str = "",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
@@ -154,6 +160,14 @@ def build_env_context(
         "gcp": fetch_gcp_context(gcp_project_id, gcp_sa_json, gcp_region or "us-central1"),
         "jamf": fetch_jamf_context(jamf_fqdn, jamf_client_id, jamf_client_secret),
         "fleet": fetch_fleet_context(fleet_url, fleet_api_token),
+        "snowflake": fetch_snowflake_context(
+            snowflake_account,
+            snowflake_user,
+            snowflake_private_key,
+            snowflake_role,
+            snowflake_warehouse,
+            snowflake_passphrase or None,
+        ),
     }
 
 
@@ -167,9 +181,16 @@ def fetch_fleet_context(url: str, api_token: str) -> dict:
 
     Per-endpoint failures are non-fatal and append a one-line summary to
     `partial_errors`, matching the JAMF pattern.
+
+    Secret name precedence (resolved by the caller in app.py:_load_env_context):
+      url:       FLEET_URL  -> FLEETDM_URL
+      api_token: FLEET_API_TOKEN -> FLEETDM_API_TOKEN
+    The legacy `FLEET_*` names land first so Phase 14 deployments keep working
+    without secret rotation; the `FLEETDM_*` names match the upstream provider
+    (l-teles/fleetdm v0.5.4) docs and are the recommended choice for new users.
     """
     if not url or not api_token:
-        return {"connected": False, "error": "Not configured, add FLEET_URL and FLEET_API_TOKEN to secrets."}
+        return {"connected": False, "error": "Not configured, add FLEET_URL and FLEET_API_TOKEN (or FLEETDM_URL and FLEETDM_API_TOKEN) to secrets."}
     try:
         from fleet_client import FleetClient, FleetError
     except ImportError as e:
@@ -191,13 +212,121 @@ def fetch_fleet_context(url: str, api_token: str) -> dict:
             return []
 
     canonical_url = url.rstrip("/")
+    labels = _safe("labels", client.list_labels)
+    policies = _safe("policies", client.list_policies)
+    queries = _safe("queries", client.list_queries)
+    teams = _safe("teams", client.list_teams)
+
+    # Per-team policy fan-out. Best-effort: a single team's 404 or auth error
+    # appends to partial_errors but does not abort. Mirrors the JAMF pattern.
+    team_policies: dict[int, list[dict]] = {}
+    for team in teams:
+        team_id = team.get("id")
+        if team_id is None:
+            continue
+        try:
+            tp = client.list_team_policies(team_id) or []
+            if tp:
+                team_policies[team_id] = tp
+        except FleetError as exc:
+            team_name = team.get("name", f"id={team_id}")
+            partial_errors.append(f"team_policies[{team_name}]: {exc}")
+
     return {
         "connected": True,
         "url": canonical_url,
-        "labels": _safe("labels", client.list_labels),
-        "policies": _safe("policies", client.list_policies),
-        "queries": _safe("queries", client.list_queries),
-        "teams": _safe("teams", client.list_teams),
+        "labels": labels,
+        "policies": policies,
+        "team_policies": team_policies,
+        "queries": queries,
+        "teams": teams,
+        "error": None,
+        "partial_errors": partial_errors,
+    }
+
+
+def fetch_snowflake_context(
+    account: str,
+    user: str,
+    private_key: str,
+    role: str,
+    warehouse: str,
+    passphrase: str | None = None,
+) -> dict:
+    """Best-effort fetch of live Snowflake warehouses / databases / roles /
+    users.
+
+    Returns the canonical env-context shape used by render_env_pills and
+    the sidebar status block: `{connected, account, warehouses, databases,
+    roles, users, error, partial_errors}`. When any required credential is
+    missing, short-circuits to the disconnected shape without contacting
+    the network.
+
+    Per-SHOW failures are non-fatal and append a one-line summary to
+    `partial_errors`, matching the JAMF / Fleet pattern. A read-only
+    service role typically cannot SHOW USERS; that single failure should
+    not abort the whole context fetch.
+
+    Secret expectations (resolved by the caller in app.py:_load_env_context):
+      account:     SNOWFLAKE_ACCOUNT
+      user:        SNOWFLAKE_USER
+      private_key: SNOWFLAKE_PRIVATE_KEY  (PEM string, BEGIN/END markers included)
+      role:        SNOWFLAKE_ROLE
+      warehouse:   SNOWFLAKE_WAREHOUSE
+      passphrase:  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE  (optional, encrypted keys only)
+    """
+    if not account or not user or not private_key or not role or not warehouse:
+        return {
+            "connected": False,
+            "error": (
+                "Not configured, add SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, "
+                "SNOWFLAKE_PRIVATE_KEY, SNOWFLAKE_ROLE, and SNOWFLAKE_WAREHOUSE "
+                "to secrets."
+            ),
+        }
+    try:
+        from snowflake_client import SnowflakeClient, SnowflakeError
+    except ImportError as e:
+        return {"connected": False, "error": f"Snowflake client unavailable: {e}"}
+
+    try:
+        client = SnowflakeClient(
+            account=account,
+            user=user,
+            private_key=private_key,
+            role=role,
+            warehouse=warehouse,
+            passphrase=passphrase or None,
+        )
+    except SnowflakeError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except SnowflakeError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    try:
+        warehouses = _safe("warehouses", client.list_warehouses)
+        databases = _safe("databases", client.list_databases)
+        roles = _safe("roles", client.list_roles)
+        users = _safe("users", client.list_users)
+    finally:
+        client.close()
+
+    return {
+        "connected": True,
+        "account": account,
+        "warehouses": warehouses,
+        "databases": databases,
+        "roles": roles,
+        "users": users,
         "error": None,
         "partial_errors": partial_errors,
     }
@@ -210,6 +339,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     gcp = env_context.get("gcp", {})
     jamf = env_context.get("jamf", {})
     fleet = env_context.get("fleet", {})
+    snowflake = env_context.get("snowflake", {})
     sections = []
 
     if okta.get("connected"):
@@ -315,23 +445,80 @@ def format_context_for_prompt(env_context: dict) -> str:
         labels = fleet.get("labels", [])
         if labels:
             lines.append('**Labels** (reference by name in YAML labels_include_any, or by id in Terraform):')
-            for l in labels[:40]:
+            for l in labels[:100]:
                 lines.append(f'  - name: "{l.get("name", "")}"  id: {l.get("id", "")}')
+            if len(labels) > 100:
+                lines.append(f'  ({len(labels)} total, showing 100)')
         policies = fleet.get("policies", [])
         if policies:
-            lines.append('**Policies** (existing policy names; do not duplicate):')
-            for p in policies[:40]:
+            lines.append('**Policies** (global; existing policy names, do not duplicate):')
+            for p in policies[:100]:
                 lines.append(f'  - name: "{p.get("name", "")}"  id: {p.get("id", "")}')
+            if len(policies) > 100:
+                lines.append(f'  ({len(policies)} total, showing 100)')
         queries = fleet.get("queries", [])
         if queries:
             lines.append('**Queries** (existing saved query names; do not duplicate):')
-            for q in queries[:40]:
+            for q in queries[:100]:
                 lines.append(f'  - name: "{q.get("name", "")}"  id: {q.get("id", "")}')
+            if len(queries) > 100:
+                lines.append(f'  ({len(queries)} total, showing 100)')
         teams = fleet.get("teams", [])
         if teams:
             lines.append('**Teams** (use team_id when scoping a fleetdm_fleet resource):')
-            for t in teams[:40]:
+            for t in teams[:100]:
                 lines.append(f'  - name: "{t.get("name", "")}"  id: {t.get("id", "")}')
+            if len(teams) > 100:
+                lines.append(f'  ({len(teams)} total, showing 100)')
+        team_policies = fleet.get("team_policies", {}) or {}
+        if team_policies:
+            # Build a lookup so we can render the team's display name alongside its id.
+            team_name_by_id = {t.get("id"): t.get("name", "") for t in teams}
+            for team_id, tp_list in team_policies.items():
+                if not tp_list:
+                    continue
+                team_name = team_name_by_id.get(team_id, "")
+                lines.append(f'**Team "{team_name}" (id={team_id}) policies** (do not duplicate):')
+                for p in tp_list[:100]:
+                    lines.append(f'  - name: "{p.get("name", "")}"  id: {p.get("id", "")}')
+                if len(tp_list) > 100:
+                    lines.append(f'  ({len(tp_list)} total, showing 100)')
+        sections.append("\n".join(lines))
+
+    if snowflake.get("connected"):
+        lines = ["### Snowflake live resources"]
+        account = snowflake.get("account", "")
+        if account:
+            lines.append("**Snowflake account metadata** (use this account identifier in the provider block):")
+            lines.append(f'  - account: "{account}"')
+        warehouses = snowflake.get("warehouses", [])
+        if warehouses:
+            lines.append('**Warehouses** (reference by name in snowflake_warehouse or as default_warehouse):')
+            for w in warehouses[:50]:
+                lines.append(f'  - name: "{w.get("name", "")}"  size: {w.get("size", "")}  state: {w.get("state", "")}')
+            if len(warehouses) > 50:
+                lines.append(f'  ({len(warehouses)} total, showing 50)')
+        databases = snowflake.get("databases", [])
+        if databases:
+            lines.append('**Databases** (existing database names; do not duplicate):')
+            for d in databases[:50]:
+                lines.append(f'  - name: "{d.get("name", "")}"  owner: {d.get("owner", "")}')
+            if len(databases) > 50:
+                lines.append(f'  ({len(databases)} total, showing 50)')
+        roles = snowflake.get("roles", [])
+        if roles:
+            lines.append('**Roles** (existing role names; do not duplicate, reference via snowflake_account_role):')
+            for r in roles[:50]:
+                lines.append(f'  - name: "{r.get("name", "")}"  owner: {r.get("owner", "")}')
+            if len(roles) > 50:
+                lines.append(f'  ({len(roles)} total, showing 50)')
+        users = snowflake.get("users", [])
+        if users:
+            lines.append('**Users** (existing usernames; do not duplicate, reference via snowflake_user):')
+            for u in users[:50]:
+                lines.append(f'  - name: "{u.get("name", "")}"  default_role: {u.get("default_role", "")}')
+            if len(users) > 50:
+                lines.append(f'  ({len(users)} total, showing 50)')
         sections.append("\n".join(lines))
 
     if not sections:

@@ -465,7 +465,7 @@ def _load_env_context() -> None:
     """
     if st.session_state.env_context is not None:
         return
-    with st.status("Connecting to Okta, AWS, GCP, JAMF, Fleet...", expanded=False) as status:
+    with st.status("Connecting to Okta, AWS, GCP, JAMF, Fleet, Snowflake...", expanded=False) as status:
         st.session_state.env_context = build_env_context(
             okta_org_url=_get_secret("OKTA_ORG_URL"),
             okta_api_token=_get_secret("OKTA_API_TOKEN"),
@@ -478,15 +478,28 @@ def _load_env_context() -> None:
             jamf_fqdn=_get_secret("JAMF_INSTANCE_FQDN") or _get_secret("JAMF_FQDN"),
             jamf_client_id=_get_secret("JAMF_CLIENT_ID"),
             jamf_client_secret=_get_secret("JAMF_CLIENT_SECRET"),
-            fleet_url=_get_secret("FLEET_URL"),
-            fleet_api_token=_get_secret("FLEET_API_TOKEN"),
+            # Precedence: legacy Phase 14 secret names first (FLEET_URL /
+            # FLEET_API_TOKEN), then upstream provider names (FLEETDM_URL /
+            # FLEETDM_API_TOKEN) as a fallback. Existing deployments keep
+            # working untouched; new deployments can use either set.
+            fleet_url=_get_secret("FLEET_URL") or _get_secret("FLEETDM_URL"),
+            fleet_api_token=_get_secret("FLEET_API_TOKEN") or _get_secret("FLEETDM_API_TOKEN"),
+            # Snowflake (Phase 19c). Key-pair JWT auth; password is rejected
+            # by Snowflake at apply time as of Nov 2025. The PEM passphrase
+            # is optional and only needed for encrypted private keys.
+            snowflake_account=_get_secret("SNOWFLAKE_ACCOUNT"),
+            snowflake_user=_get_secret("SNOWFLAKE_USER"),
+            snowflake_private_key=_get_secret("SNOWFLAKE_PRIVATE_KEY"),
+            snowflake_role=_get_secret("SNOWFLAKE_ROLE"),
+            snowflake_warehouse=_get_secret("SNOWFLAKE_WAREHOUSE"),
+            snowflake_passphrase=_get_secret("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
         )
         ctx = st.session_state.env_context or {}
         connected = sum(
-            1 for k in ("okta", "aws", "gcp", "jamf", "fleet") if ctx.get(k, {}).get("connected")
+            1 for k in ("okta", "aws", "gcp", "jamf", "fleet", "snowflake") if ctx.get(k, {}).get("connected")
         )
         status.update(
-            label=f"Live context ready: {connected} of 5 providers connected",
+            label=f"Live context ready: {connected} of 6 providers connected",
             state="complete",
         )
 
@@ -502,6 +515,7 @@ def _render_env_sidebar() -> None:
     gcp = ctx.get("gcp", {})
     jamf = ctx.get("jamf", {})
     fleet = ctx.get("fleet", {})
+    snowflake = ctx.get("snowflake", {})
 
     st.markdown("**Environment**")
 
@@ -558,7 +572,20 @@ def _render_env_sidebar() -> None:
         n_pol = len(fleet.get("policies", []))
         n_q = len(fleet.get("queries", []))
         n_t = len(fleet.get("teams", []))
-        st.success(f"Fleet: {n_lab} labels · {n_pol} policies · {n_q} queries · {n_t} teams")
+        team_policies = fleet.get("team_policies", {}) or {}
+        n_tp = sum(len(v) for v in team_policies.values())
+        n_tp_teams = sum(1 for v in team_policies.values() if v)
+        if n_tp:
+            st.success(
+                f"Fleet: {n_lab} labels · {n_pol} global policies · "
+                f"{n_tp} team policies across {n_tp_teams} teams · "
+                f"{n_q} queries · {n_t} teams"
+            )
+        else:
+            st.success(
+                f"Fleet: {n_lab} labels · {n_pol} global policies · "
+                f"{n_q} queries · {n_t} teams"
+            )
         partial = fleet.get("partial_errors") or []
         if partial:
             st.caption(f"Fleet partial: {len(partial)} endpoint(s) unavailable")
@@ -567,6 +594,24 @@ def _render_env_sidebar() -> None:
     else:
         err = fleet.get("error", "Not configured")
         st.caption(f"Fleet: {err}")
+
+    if snowflake.get("connected"):
+        n_wh = len(snowflake.get("warehouses", []))
+        n_db = len(snowflake.get("databases", []))
+        n_role = len(snowflake.get("roles", []))
+        n_user = len(snowflake.get("users", []))
+        st.success(
+            f"Snowflake: {n_wh} warehouses, {n_db} databases, "
+            f"{n_role} roles, {n_user} users"
+        )
+        partial = snowflake.get("partial_errors") or []
+        if partial:
+            st.caption(f"Snowflake partial: {len(partial)} endpoint(s) unavailable")
+            for p in partial:
+                st.caption(f"- {p[:140]}")
+    else:
+        err = snowflake.get("error", "Not configured")
+        st.caption(f"Snowflake: {err}")
 
     if st.button("Refresh environment", use_container_width=True):
         _audit.log(st.user.email, "env_refresh")

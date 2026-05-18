@@ -56,9 +56,14 @@ VAR_DEFAULTS: dict[str, str] = {
     "jamfpro_auth_method":      '"oauth2"',
     # Fleet TF (l-teles/fleetdm 0.5.4 experimental provider). Validate sweep
     # does not auth against a real Fleet server, so any syntactically valid
-    # URL + token works for `terraform init && terraform validate`.
-    "fleet_url":                '"https://fleet.example.com"',
-    "fleet_api_token":          '"placeholder-token-for-validate-only"',
+    # URL + token works for `terraform init && terraform validate`. Variable
+    # names mirror the provider's actual attribute names (`server_address`,
+    # `api_key`); the legacy `fleet_url` / `fleet_api_token` entries below
+    # preserve backwards compatibility with any older HCL still in flight.
+    "fleetdm_url":              '"https://fleet.invalid.example"',
+    "fleetdm_api_key":          '"FAKE-API-KEY-FOR-VALIDATE-ONLY"',
+    "fleet_url":                '"https://fleet.invalid.example"',
+    "fleet_api_token":          '"FAKE-API-KEY-FOR-VALIDATE-ONLY"',
     # Snowflake (snowflakedb/snowflake ~> 2.0). Provider validates the auth
     # shape but does not connect during `terraform validate`; placeholders
     # that look syntactically valid let the validate sweep succeed.

@@ -1079,16 +1079,215 @@ TEST_CASES = [
              ],
              notes="Composite Okta + Fleet GitOps: both terraform_okta_hcl and fleet_gitops_yaml populated."),
 
-    # ── Fleet Terraform HCL (Phase 13 Half B) ─────────────────────────────────
-    # FT01-FT12 deferred to Phase 14: live verification showed the l-teles/fleetdm
-    # v0.5.4 provider schema differs from this tool's SECTION J guesses (multiple
-    # "Unsupported argument" failures on terraform validate). The plumbing,
-    # parser routing, output mode dispatch, SECTION J prompt, fleet_tf_types
-    # TestCase fields, and run_checks Fleet TF block all SHIP in Phase 13 so the
-    # capability is wired and CLI/HTTP users can generate Fleet TF outputs today.
-    # The regression test class is deferred until the SECTION J schemas are
-    # re-grounded against the actual provider source code rather than a
-    # summarised registry fetch. See plan file warm-tumbling-puppy.md.
+    # ── Fleet Terraform HCL (Phase 19a) ───────────────────────────────────────
+    # FT01-FT12 mirror the FG01-FG12 prompts above but route through the
+    # `Fleet TF only` / `Okta + Fleet TF` output modes via fleet_tf_types.
+    # Assertions are grounded in the cached l-teles/fleetdm v0.5.4 BINARY
+    # schema (terraform providers schema -json), NOT the bundled README, which
+    # documents several attributes the binary does not accept. Forbidden
+    # strings explicitly reject the pre-Phase-19a SECTION J vocabulary
+    # (`url = `, `api_token = `, `fleetdm_query`, `fleetdm_team`) AND the
+    # binary-incompatible vocabulary from the README itself (string `platform`,
+    # `agent_options_json`, `fleet_maintained_app_slug`, `macos_updates` block,
+    # `label_membership_type`, `path = ` on fleetdm_script).
+    TestCase("FT01",
+             "Create a Fleet policy via Terraform that checks if FileVault is enabled on Macs.",
+             fleet_tf_types=["fleet_policy"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_policy"',
+                 "FileVault",
+                 'platform',
+                 '"darwin"',
+                 "query",
+                 'server_address = var.fleetdm_url',
+                 'api_key        = var.fleetdm_api_key',
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'url       = var.fleet_url',
+                 'api_token = var.fleet_api_token',
+             ],
+             notes="Single fleetdm_policy with darwin platform (binary needs list, NOT string) + osquery SQL."),
+    TestCase("FT02",
+             'Create a dynamic Fleet label via Terraform for hosts on Arm64 architecture. Name the label exactly "Arm64".',
+             fleet_tf_types=["fleet_label"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_label"',
+                 "Arm64",
+                 "query",
+             ],
+             must_not_contain_fleet_tf=[
+                 'label_membership_type',
+                 'hosts ',
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'api_token = var.fleet_api_token',
+             ],
+             notes="Dynamic fleetdm_label with osquery membership query; binary has no label_membership_type or hosts attrs."),
+    TestCase("FT03",
+             "Create a Fleet label via Terraform called C-Suite that matches the executive roster by hardware_serial. The hardware serials are IR7M6ZGQJM and JMFWY8VZ09. The v0.5.4 binary only supports dynamic labels, so render this as a dynamic label whose query matches by hardware_serial IN (...).",
+             fleet_tf_types=["fleet_label"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_label"',
+                 "C-Suite",
+                 "query",
+                 "IR7M6ZGQJM",
+                 "hardware_serial",
+             ],
+             must_not_contain_fleet_tf=[
+                 'label_membership_type',
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+             ],
+             notes="Dynamic label workaround for manual-roster intent; binary does not expose manual labels."),
+    TestCase("FT04",
+             "Create a Fleet saved query via Terraform that lists installed Chrome extensions, running daily.",
+             fleet_tf_types=["fleet_query"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_report"',
+                 "chrome_extensions",
+                 "interval",
+                 "86400",
+                 'logging',
+                 '"snapshot"',
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_query"',
+                 'resource "fleetdm_team"',
+                 'url       = var.fleet_url',
+             ],
+             notes="fleetdm_report (canonical replacement for deprecated fleetdm_query) with 86400-second interval."),
+    TestCase("FT05",
+             "Push a corporate Wi-Fi configuration profile to all Macs in Fleet via Terraform. The profile XML payload is short and well-known; inline it as a heredoc string in profile_content (do NOT use file() as the attribute value; the regression workspace evaluates validate at parse time and cannot read external files). The attribute MUST be assigned a heredoc, not a function call.",
+             fleet_tf_types=["fleet_configuration_profile"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_configuration_profile"',
+                 "# PREMIUM",
+                 "profile_content",
+                 "EOT",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'api_token = var.fleet_api_token',
+                 'path = "',
+                 'mobileconfig =',
+                 'profile_content = file(',
+             ],
+             notes="fleetdm_configuration_profile (Premium) with inline heredoc profile_content for validate-time correctness."),
+    TestCase("FT06",
+             "Deploy a Fleet script via Terraform that clears DNS cache on macOS. The script content is `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`. Inline a fleetdm_fleet \"default\" resource for the team_id. Inline the script body as a quoted string assigned to `content` (do NOT use file() as the attribute value; the regression workspace evaluates validate at parse time and cannot read external files).",
+             fleet_tf_types=["fleet_script"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_script"',
+                 'resource "fleetdm_fleet"',
+                 "team_id",
+                 "name",
+                 "content",
+                 "dscacheutil",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'path = "',
+                 'content = file(',
+             ],
+             notes="fleetdm_script with binary-required team_id + inline content string (no path attribute on the binary)."),
+    TestCase("FT07",
+             "Deploy Slack via Fleet using the fleet-maintained apps catalog via Terraform. Use the numeric fleet_maintained_app_id form. Use 12 as a placeholder app id with a comment that the real id should be resolved via the Fleet UI.",
+             fleet_tf_types=["fleet_software_package"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_software_package"',
+                 "# PREMIUM",
+                 "fleet_maintained_app_id",
+                 "self_service",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'fleet_maintained_app_slug',
+                 'categories =',
+             ],
+             notes="fleetdm_software_package (Premium) using binary-required fleet_maintained_app_id (number, not slug)."),
+    TestCase("FT08",
+             'Configure Fleet agent options via Terraform to set distributed_interval to 30 seconds. The org_name is "Example Corp".',
+             fleet_tf_types=["fleet_agent_options"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_configuration"',
+                 "org_name",
+                 "agent_options",
+                 "distributed_interval",
+                 "30",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'agent_options_json',
+                 'url       = var.fleet_url',
+             ],
+             notes="fleetdm_configuration with binary-required org_name + agent_options (string, NOT agent_options_json)."),
+    TestCase("FT09",
+             "Set up a Fleet team via Terraform called Engineering. The user wants macOS update enforcement to require macOS 14.5 by 2026-05-24, but the v0.5.4 binary does not expose a macos_updates block on fleetdm_fleet, so emit a fleetdm_fleet with just name + description and add a # NOTE comment explaining the limitation.",
+             fleet_tf_types=["fleet_team_settings"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_fleet"',
+                 "Engineering",
+                 "# NOTE",
+                 "14.5",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 "macos_updates {",
+                 "windows_updates {",
+             ],
+             notes="fleetdm_fleet without macos_updates block (binary does not accept it); NOTE preserves intent."),
+    TestCase("FT10",
+             "Create three Fleet policies via Terraform: FileVault enabled, Gatekeeper enabled, and SIP enabled. All darwin platform.",
+             fleet_tf_types=["fleet_policy"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_policy"',
+                 "FileVault",
+                 "Gatekeeper",
+                 "SIP",
+                 '"darwin"',
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+             ],
+             must_contain_count={"fleetdm_policy": 3},
+             notes="Multi-object: 3 distinct fleetdm_policy blocks, all with platform as a list."),
+    TestCase("FT11",
+             "Create a Fleet policy via Terraform that runs only on hosts matching a dynamic 'Production' label.",
+             fleet_tf_types=["fleet_policy", "fleet_label"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_policy"',
+                 'resource "fleetdm_label"',
+                 "Production",
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+                 'api_token = var.fleet_api_token',
+                 'label_membership_type',
+             ],
+             notes="Policy + label compound; both resource types in one terraform_fleet_hcl."),
+    TestCase("FT12",
+             "Create an Okta group called Fleet Admins AND a Fleet policy via Terraform that runs on Macs in that group.",
+             okta_types=["okta_group"],
+             fleet_tf_types=["fleet_policy"],
+             must_contain=["okta_group"],
+             must_contain_fleet_tf=[
+                 'resource "fleetdm_policy"',
+                 'server_address = var.fleetdm_url',
+             ],
+             must_not_contain_fleet_tf=[
+                 'resource "fleetdm_team"',
+                 'resource "fleetdm_query"',
+             ],
+             notes="Composite Okta + Fleet TF: both terraform_okta_hcl and terraform_fleet_hcl populated."),
 
     # ── Snowflake Terraform via snowflakedb/snowflake ~> 2.0 (Phase 15) ───────
     TestCase("SF01",
@@ -1116,10 +1315,19 @@ TEST_CASES = [
              ],
              must_contain_count={"snowflake_schema": 3},
              notes="Database + 3 schemas; multi-object count check on schemas."),
-    # SF03 (snowflake_role) deferred to Phase 15.5: provider v2 renamed
-    # snowflake_role to snowflake_account_role; SECTION K needs re-grounding
-    # against the actual v2 source before this test class is added back.
-    # Same deferral pattern as Fleet TF FT01-FT12.
+    # SF03 (Phase 19c) re-enabled. v2 renamed snowflake_role -> snowflake_account_role.
+    TestCase("SF03",
+             "Create a Snowflake role called DATA_ENGINEER with a descriptive comment.",
+             snowflake_types=["snowflake_account_role"],
+             must_contain_snowflake=[
+                 'resource "snowflake_account_role"',
+                 "DATA_ENGINEER",
+                 "comment",
+             ],
+             must_not_contain_snowflake=[
+                 'resource "snowflake_role"',
+             ],
+             notes="v2 rename: snowflake_account_role replaces snowflake_role. Phase 19c re-enabled."),
     TestCase("SF04",
              "Create a Snowflake user called airflow_runner with RSA public key authentication.",
              snowflake_types=["snowflake_user"],
@@ -1138,8 +1346,11 @@ TEST_CASES = [
                  "role_name",
                  "DATA_ENGINEER",
              ],
-             must_not_contain_snowflake=['resource "snowflake_role_grants"'],
-             notes="Use snowflake_grant_account_role (not deprecated snowflake_role_grants)."),
+             must_not_contain_snowflake=[
+                 'resource "snowflake_role_grants"',
+                 'resource "snowflake_role"',
+             ],
+             notes="Use snowflake_grant_account_role (not deprecated snowflake_role_grants); v2 references must point at snowflake_account_role."),
     TestCase("SF06",
              "Grant USAGE on database Analytics and SELECT on all tables in schema Analytics.PUBLIC to the DATA_ENGINEER role.",
              snowflake_types=["snowflake_grant_privileges_to_account_role"],
@@ -1148,12 +1359,35 @@ TEST_CASES = [
                  "USAGE",
                  "SELECT",
              ],
-             must_not_contain_snowflake=['resource "snowflake_account_grant"', 'resource "snowflake_schema_grant"'],
-             notes="Privilege grant (not deprecated account_grant / schema_grant)."),
-    # SF07 (snowflake_resource_monitor) deferred to Phase 15.5: an attribute
-    # name diverged between SECTION K and the actual v2 provider schema
-    # (Unsupported argument on terraform validate). Re-ground SECTION K
-    # against the v2 source before re-enabling.
+             must_not_contain_snowflake=[
+                 'resource "snowflake_account_grant"',
+                 'resource "snowflake_schema_grant"',
+                 'resource "snowflake_role"',
+             ],
+             notes="Privilege grant (not deprecated account_grant / schema_grant); v2 references must point at snowflake_account_role."),
+    # SF07 (Phase 19c) re-enabled. v2 dropped the `warehouses` attribute on
+    # snowflake_resource_monitor; warehouse-to-monitor binding now flows
+    # through `resource_monitor` on the warehouse resource.
+    TestCase("SF07",
+             "Create a single Snowflake resource monitor named BI_BUDGET. Set credit_quota to 100 and suspend_trigger to 100. Set notify_triggers to a list containing 80.",
+             snowflake_types=["snowflake_resource_monitor"],
+             must_contain_snowflake=[
+                 'resource "snowflake_resource_monitor"',
+                 "BI_BUDGET",
+                 "credit_quota",
+                 "100",
+                 "notify_triggers",
+                 "suspend_trigger",
+             ],
+             must_not_contain_snowflake=[
+                 # v2 schema does not accept `warehouses = [...]` on the monitor.
+                 # The cached provider rejects it with "Unsupported argument".
+                 "warehouses =",
+                 "warehouses  =",
+                 "warehouses   =",
+                 "warehouses    =",
+             ],
+             notes="v2 resource_monitor: credit_quota + notify_triggers + suspend_trigger; no warehouses attribute. Phase 19c re-enabled."),
     TestCase("SF08",
              "Create a Snowflake network policy that allows only office IP range 203.0.113.0/24.",
              snowflake_types=["snowflake_network_policy"],
@@ -1163,9 +1397,29 @@ TEST_CASES = [
                  "203.0.113.0/24",
              ],
              notes="Network policy with allowed_ip_list."),
-    # SF09 (snowflake_scim_integration composite) deferred to Phase 15.5:
-    # the v2 SCIM integration resource shape differs from SECTION K's
-    # guess. Composite SCIM wiring is high-value but needs schema work.
+    # SF09 (Phase 19c) re-enabled. v2 made `enabled` REQUIRED and changed
+    # `sync_password` from bool to string.
+    TestCase("SF09",
+             "Create a Snowflake SCIM integration for Okta provisioning called OKTA_SCIM, running as the OKTA_PROVISIONER role.",
+             snowflake_types=["snowflake_scim_integration"],
+             must_contain_snowflake=[
+                 'resource "snowflake_scim_integration"',
+                 "OKTA_SCIM",
+                 'scim_client',
+                 "OKTA",
+                 "run_as_role",
+                 "OKTA_PROVISIONER",
+                 # v2 requires enabled.
+                 "enabled",
+             ],
+             must_not_contain_snowflake=[
+                 # v2 schema: sync_password is STRING, so the bare-bool form is wrong.
+                 'sync_password = false',
+                 'sync_password = true',
+                 'sync_password  = false',
+                 'sync_password  = true',
+             ],
+             notes="v2 scim_integration: enabled required, sync_password is STRING (\"false\"). Phase 19c re-enabled."),
     TestCase("SF10",
              "Create three Snowflake warehouses: REPORTING_WH, ETL_WH, and AD_HOC_WH, all XSMALL with 60s auto-suspend.",
              snowflake_types=["snowflake_warehouse"],
@@ -1178,13 +1432,62 @@ TEST_CASES = [
              ],
              must_contain_count={"snowflake_warehouse": 3},
              notes="Multi-object: 3 distinct warehouse resources."),
-    # SF11 (role + privilege-grant compound) and SF12 (composite Okta SCIM)
-    # deferred to Phase 15.5 alongside SF03/SF09: both depend on the v2
-    # snowflake_role / snowflake_scim_integration schemas that SECTION K
-    # got wrong. The plumbing, parser routing, output modes, SECTION K
-    # prompt, and run_checks Snowflake block all SHIP in Phase 15 so the
-    # capability is wired end-to-end for CLI/HTTP users; the regression
-    # test class deferral matches the FT pattern from Phase 13.
+    # SF11 (Phase 19c) compound: role + privilege grant. Three resource types
+    # in one prompt; exercises the v2 rename + privilege block in one apply.
+    TestCase("SF11",
+             "Create a Snowflake role called ANALYST and grant it USAGE on database REPORTS and SELECT on all tables in schema REPORTS.PUBLIC.",
+             snowflake_types=[
+                 "snowflake_account_role",
+                 "snowflake_grant_privileges_to_account_role",
+             ],
+             must_contain_snowflake=[
+                 'resource "snowflake_account_role"',
+                 "ANALYST",
+                 'resource "snowflake_grant_privileges_to_account_role"',
+                 "USAGE",
+                 "SELECT",
+                 "REPORTS",
+             ],
+             must_contain_count={
+                 "snowflake_account_role": 1,
+                 "snowflake_grant_privileges_to_account_role": 2,
+             },
+             must_not_contain_snowflake=[
+                 'resource "snowflake_role"',
+                 'resource "snowflake_role_grants"',
+             ],
+             notes="Compound: account_role + 2 privilege grants. Phase 19c."),
+    # SF12 (Phase 19c) composite Okta + Snowflake SCIM. Both terraform_okta_hcl
+    # and terraform_snowflake_hcl populated.
+    TestCase("SF12",
+             "Wire SCIM provisioning from Okta into Snowflake: create an okta_app_oauth pointing at the Snowflake SCIM endpoint, and on the Snowflake side create the OKTA_PROVISIONER role and a snowflake_scim_integration called OKTA_SCIM.",
+             okta_types=["okta_app_oauth"],
+             snowflake_types=[
+                 "snowflake_account_role",
+                 "snowflake_scim_integration",
+             ],
+             must_contain=[
+                 "okta_app_oauth",
+             ],
+             must_contain_snowflake=[
+                 'resource "snowflake_account_role"',
+                 "OKTA_PROVISIONER",
+                 'resource "snowflake_scim_integration"',
+                 "OKTA_SCIM",
+                 "enabled",
+                 "run_as_role",
+                 # The hand-off note about retrieving the SCIM bearer token must
+                 # appear in the snowflake HCL so apply-time operators see it.
+                 "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN",
+             ],
+             must_not_contain_snowflake=[
+                 'resource "snowflake_role"',
+                 'sync_password = false',
+                 'sync_password = true',
+                 'sync_password  = false',
+                 'sync_password  = true',
+             ],
+             notes="Composite Okta + Snowflake SCIM: app_oauth + account_role + scim_integration; bearer-token hand-off note required."),
 ]
 
 
@@ -1722,16 +2025,31 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
                 issues.append("terraform_fleet_hcl missing `# EXPERIMENTAL FLEET PROVIDER WARNING` block")
             if "# FLEET TF APPLY RUNBOOK" not in fleet_hcl:
                 issues.append("terraform_fleet_hcl missing `# FLEET TF APPLY RUNBOOK` block")
-            # Exact provider version pin (no `~>` allowed).
-            if 'source  = "l-teles/fleetdm"' not in fleet_hcl and 'source = "l-teles/fleetdm"' not in fleet_hcl:
-                issues.append("terraform_fleet_hcl missing `source = \"l-teles/fleetdm\"` provider declaration")
-            if 'version = "0.5.4"' not in fleet_hcl:
-                issues.append("terraform_fleet_hcl must pin `version = \"0.5.4\"` exactly (no `~>` range)")
-            if "~> 0.5" in fleet_hcl:
-                issues.append("terraform_fleet_hcl uses `~> 0.5` range; provider is preview, must pin to 0.5.4 exact")
-            # Deprecated alias check.
+            # In composite mode (`Okta + Fleet TF`) the merged required_providers
+            # block lives in okta.tf, so the source string + version pin can
+            # legitimately live there rather than in fleet.tf. Treat both files
+            # as the workspace (mirrors the JF11 / Snowflake composite pattern).
+            _fleet_scope = fleet_hcl + "\n" + (outputs.get("terraform_okta_hcl", "") or "")
+            # Exact provider source declaration.
+            if 'source  = "l-teles/fleetdm"' not in _fleet_scope and 'source = "l-teles/fleetdm"' not in _fleet_scope:
+                issues.append("terraform_fleet_hcl (or companion okta.tf in composite mode) missing `source = \"l-teles/fleetdm\"` provider declaration")
+            # Exact version pin: only `version = "0.5.4"` is acceptable, range
+            # constraints rejected because the provider is in preview.
+            if 'version = "0.5.4"' not in _fleet_scope:
+                issues.append("workspace must pin `version = \"0.5.4\"` exactly (provider is preview; range constraints rejected)")
+            # Reject any range constraint pointing at the 0.5 series. Match the
+            # whole declaration form to avoid colliding with prose mentions of
+            # the same character sequence (the prior implementation matched the
+            # bare substring and tripped on its own warning comment).
+            import re as _re_fleet
+            if _re_fleet.search(r'version\s*=\s*"~>\s*0\.5"', _fleet_scope):
+                issues.append("workspace uses range version `~> 0.5` for l-teles/fleetdm; provider is preview, must pin to 0.5.4 exact")
+            # Deprecated alias checks (cached README: fleetdm_team -> fleetdm_fleet,
+            # fleetdm_query -> fleetdm_report).
             if 'resource "fleetdm_team"' in fleet_hcl:
                 issues.append("terraform_fleet_hcl uses deprecated `fleetdm_team`; emit `fleetdm_fleet` instead")
+            if 'resource "fleetdm_query"' in fleet_hcl:
+                issues.append("terraform_fleet_hcl uses deprecated `fleetdm_query`; emit `fleetdm_report` instead")
         for needle in tc.must_contain_fleet_tf:
             if needle not in fleet_hcl:
                 issues.append(f"Expected '{needle}' in terraform_fleet_hcl")

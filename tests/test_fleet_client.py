@@ -61,7 +61,7 @@ def test_list_labels_success():
         labels = client.list_labels()
         # Confirm bearer header and the correct URL.
         called_url, called_kwargs = mock_get.call_args.args[0], mock_get.call_args.kwargs
-        assert called_url == "https://fleet.example.com/api/v1/fleet/labels"
+        assert called_url == "https://fleet.example.com/api/v1/fleet/labels?page=0&per_page=100"
         assert called_kwargs["headers"]["Authorization"] == "Bearer secret-token"
     assert labels == payload["labels"]
 
@@ -118,6 +118,102 @@ def test_empty_list_response():
         assert client.list_labels() == []
 
 
+# ---------------------------------------------------------------------------
+# Phase 19b: pagination + per-team policies
+# Test fixtures use synthetic low-entropy tokens to avoid tripping gitleaks /
+# GitHub push-protection scanners while still matching the redact regex.
+# ---------------------------------------------------------------------------
+
+_FAKE_TOKEN = "FLEET-TOKEN-EXAMPLE-" + "a" * 32
+
+
+def test_pagination_happy_path():
+    """3 pages of labels: 100 + 100 + 50 = 250 total, 3 HTTP calls."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    page_full_a = {"labels": [{"id": i, "name": f"label-{i}"} for i in range(100)]}
+    page_full_b = {"labels": [{"id": 100 + i, "name": f"label-{100 + i}"} for i in range(100)]}
+    page_partial = {"labels": [{"id": 200 + i, "name": f"label-{200 + i}"} for i in range(50)]}
+    responses = [
+        _mock_response(200, page_full_a),
+        _mock_response(200, page_full_b),
+        _mock_response(200, page_partial),
+    ]
+    with patch.object(client.session, "get", side_effect=responses) as mock_get:
+        labels = client.list_labels()
+    assert len(labels) == 250
+    assert mock_get.call_count == 3
+    # First call should request page=0; last call should request page=2.
+    first_url = mock_get.call_args_list[0].args[0]
+    last_url = mock_get.call_args_list[2].args[0]
+    assert "page=0" in first_url and "per_page=100" in first_url
+    assert "page=2" in last_url and "per_page=100" in last_url
+
+
+def test_pagination_empty_page_termination():
+    """A first page that is shorter than per_page terminates after 1 HTTP call."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    payload = {"labels": [{"id": i, "name": f"l-{i}"} for i in range(50)]}
+    with patch.object(client.session, "get", return_value=_mock_response(200, payload)) as mock_get:
+        labels = client.list_labels()
+    assert len(labels) == 50
+    assert mock_get.call_count == 1
+
+
+def test_pagination_safety_cap():
+    """100 pages of 100 items each would loop forever; the safety cap must
+    abort with FleetServerError instead."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    full_page = {"labels": [{"id": i, "name": f"l-{i}"} for i in range(100)]}
+    # Infinite stream of full pages; side_effect can be a callable.
+    with patch.object(client.session, "get", return_value=_mock_response(200, full_page)) as mock_get:
+        try:
+            client.list_labels()
+        except FleetServerError as e:
+            assert "safety cap" in str(e)
+            # MAX_PAGES is 100, so exactly 100 HTTP calls should have been made
+            # before the cap fires.
+            assert mock_get.call_count == FleetClient.MAX_PAGES
+        else:
+            assert False, "expected FleetServerError when safety cap is hit"
+
+
+def test_list_team_policies_happy_path():
+    """list_team_policies(1) hits /api/v1/fleet/teams/1/policies?page=0&per_page=100."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    payload = {"policies": [{"id": 7, "name": "Disk encryption required"}]}
+    with patch.object(client.session, "get", return_value=_mock_response(200, payload)) as mock_get:
+        result = client.list_team_policies(1)
+    assert result == payload["policies"]
+    called_url = mock_get.call_args.args[0]
+    assert called_url == "https://fleet.example.com/api/v1/fleet/teams/1/policies?page=0&per_page=100"
+
+
+def test_list_team_policies_404_returns_empty():
+    """Fleet Free returns 404 on the per-team endpoint. Client should
+    downgrade to an empty list, not raise, so a single team failure does not
+    abort the whole env-context fetch."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    with patch.object(client.session, "get", return_value=_mock_response(404, text="not found")):
+        result = client.list_team_policies(99)
+    assert result == []
+
+
+def test_429_raises_fleet_server_error_with_retry_after():
+    """429 with a Retry-After header should surface a FleetServerError that
+    includes the retry hint."""
+    client = FleetClient("https://fleet.example.com", _FAKE_TOKEN)
+    resp = _mock_response(429, text="too many requests")
+    resp.headers = {"Retry-After": "30"}
+    with patch.object(client.session, "get", return_value=resp):
+        try:
+            client.list_labels()
+        except FleetServerError as e:
+            assert "429" in str(e)
+            assert "Retry-After: 30" in str(e)
+        else:
+            assert False, "expected FleetServerError on 429"
+
+
 if __name__ == "__main__":
     import traceback
     failures = []
@@ -129,6 +225,12 @@ if __name__ == "__main__":
         test_timeout_raises_fleet_server_error,
         test_malformed_json_raises_fleet_parse_error,
         test_empty_list_response,
+        test_pagination_happy_path,
+        test_pagination_empty_page_termination,
+        test_pagination_safety_cap,
+        test_list_team_policies_happy_path,
+        test_list_team_policies_404_returns_empty,
+        test_429_raises_fleet_server_error_with_retry_after,
     ]
     for t in tests:
         try:

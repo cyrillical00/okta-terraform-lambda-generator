@@ -36,14 +36,15 @@ Fleet support targets the official `fleetctl` GitOps workflow. Output mode `Flee
 
 YAML validation runs in `fleet_validate.py` (pure Python, PyYAML-based) — confirms top-level keys, required fields per resource, label mutual-exclusivity (`query` XOR `hosts` XOR `criteria`), and apply runbook header presence. An optional `fleetctl apply --dry-run` second pass runs when `fleetctl` is on `PATH`.
 
-### Fleet MDM (Terraform, EXPERIMENTAL, regression deferred)
+### Fleet MDM (Terraform, EXPERIMENTAL)
 
 For shops that want Fleet declarations alongside their Okta / AWS Terraform, output modes `Fleet TF only` and `Okta + Fleet TF` emit HCL using the community-maintained `l-teles/fleetdm` provider, pinned to exactly `0.5.4`. The provider README explicitly says "USE AT YOUR OWN RISK" and notes it was "developed primarily through AI assistance". Every `terraform_fleet_hcl` output ships with a loud `# EXPERIMENTAL FLEET PROVIDER WARNING` block at the top so the risk is visible at apply time.
 
-**Phase 13 ship status — Half B (Terraform):**
-- Plumbing wired (output keys, output modes, file map, parser routing, prompt SECTION J).
-- Regression test class (FT01–FT12) **deferred to Phase 14**. Initial live verification showed the SECTION J resource schemas in this tool's prompt do not match the actual provider's attribute names (multiple `Unsupported argument` errors from `terraform validate`). The schemas were grounded in a summarised registry fetch, not the provider source. Phase 14 will re-ground SECTION J against the provider's actual `internal/provider/*` Go source files and add the FT regression class with correct attribute references.
-- Use the GitOps YAML path (`Fleet GitOps only`) for production today. The Terraform path is callable and produces output, but the output is best-effort and unverified against the real provider until Phase 14 closes.
+The GitOps YAML path (`Fleet GitOps only`) remains the recommended route for production use; the Terraform path is for IaC shops that want a single `terraform apply` driving Okta + AWS + Fleet together. The provider supports 14 resource types (12 in the active surface, plus the deprecated `fleetdm_team` / `fleetdm_query` aliases) against Fleet server 4.82.0+; Premium-only resources (`fleetdm_software_package`, `fleetdm_bootstrap_package`, `fleetdm_configuration_profile`, `fleetdm_setup_experience`) need a Fleet Premium licence at apply time and are tagged with a `# PREMIUM` marker in the generated HCL.
+
+Provider block: `server_address` + `api_key` + `verify_tls = true`, fed from `var.fleetdm_url` and `var.fleetdm_api_key`. Apply-time env: `FLEETDM_URL`, `FLEETDM_API_TOKEN`. The live-context fetcher in `app.py` accepts both the legacy `FLEET_URL` / `FLEET_API_TOKEN` secret names (Phase 14) and the new `FLEETDM_*` names, so no secret rotation is required.
+
+SECTION J of the system prompt is grounded directly in the provider's cached source (`_tftool/.terraform-plugin-cache/registry.terraform.io/l-teles/fleetdm/0.5.4/windows_amd64/README.md` + `CHANGELOG.md`), not a summarised registry fetch. The FT01-FT12 regression class in `qa_runner.py` exercises every resource type and asserts both correct attribute names and forbidden-string absence (no `fleetdm_team`, no `fleetdm_query`, no `url = ` / `api_token = ` from the pre-Phase-19a schemas).
 
 ### Snowflake (Terraform)
 
@@ -53,7 +54,9 @@ Snowflake forces key-pair authentication as of November 2025; password auth is r
 
 Composite mode `Okta + Snowflake` wires SCIM provisioning: an `okta_app_oauth` on the Okta side points at the Snowflake SCIM endpoint, and a `snowflake_scim_integration` of type `OKTA` on the Snowflake side accepts the inbound requests. A manual step is required after apply: retrieve the SCIM bearer token from Snowflake (`SELECT SYSTEM$GENERATE_SCIM_ACCESS_TOKEN('OKTA_SCIM');`) and paste it into the Okta SCIM "API token" field. The generated HCL emits a `# NOTE` comment explaining this.
 
-Live Snowflake context (warehouses, databases, roles surfaced to the parser) is **deferred to Phase 15.5**. The Snowflake pill ships in `off / Not configured` state until 15.5 wires the live-context fetcher.
+Live Snowflake context lit up in Phase 19c. The env-context fetcher uses `snowflake-connector-python` with key-pair JWT auth (the only auth mode Snowflake still accepts after the November 2025 password deprecation) to run `SHOW WAREHOUSES`, `SHOW DATABASES`, `SHOW ROLES`, and `SHOW USERS` on first session load. The four resource categories are surfaced to the parser so generated HCL references real account names instead of inventing them, and the Snowflake pill flips to `on` when the six secrets `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` (optional), `SNOWFLAKE_ROLE`, and `SNOWFLAKE_WAREHOUSE` are configured and the connector handshake succeeds. The fetcher gracefully downgrades a single missing privilege (e.g. a read-only service role that cannot `SHOW USERS`) to a `partial_errors` entry instead of aborting the whole context fetch.
+
+Phase 19c also re-grounded SECTION K of the system prompt against the cached v2.16.0 provider binary at `_tftool/.terraform-plugin-cache/registry.terraform.io/snowflakedb/snowflake/2.16.0/`. The v1 -> v2 rename of `snowflake_role` to `snowflake_account_role` is now reflected in every example, the removed `warehouses` attribute on `snowflake_resource_monitor` no longer appears (warehouse-to-monitor binding flows through the warehouse resource's `resource_monitor` field), `snowflake_scim_integration.enabled` is emitted as required, and `sync_password` is emitted as a string. Users with old generated HCL that still says `snowflake_role` will see a `terraform validate` failure on re-apply; the fix is a global `snowflake_role -> snowflake_account_role` rename in their existing files.
 
 ## Feature surface
 
