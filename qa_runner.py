@@ -2275,6 +2275,330 @@ def run_test(tc: TestCase, client, model: str, replay_mode: bool = False, passes
         }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 22b: Anthropic Message Batches API integration
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Batch mode is opt-in via `--batch` and submits one request per test to
+# the Anthropic Message Batches API. Each batch request carries the
+# parse_intent prompt (system + user message) so the LLM returns the
+# structured intent JSON. After the batch ends, the runner:
+#
+#   1. Decodes each result into an intent dict (matching the same shape
+#      that `parse_intent` returns in serial mode).
+#   2. Runs the existing post-generation pipeline serially per test;
+#      build_intent overrides, generate_all, sanitizers, run_checks,
+#      and (when validate_mode is on) terraform validate.
+#
+# The batch generation step is what gets the 50% discount; the
+# subsequent generate_all calls remain serial and are billed at standard
+# rates. Operators wanting to batch the generate_all step itself need a
+# follow-up phase that intercepts generator internals; this phase
+# delivers the API plumbing end-to-end so we can measure the parse
+# savings on a real regression and decide whether to invest further.
+#
+# Polling cadence: 30s for the first 5 minutes, 2 min after that. Hard
+# timeout at 24h. Custom IDs are test_ids so partial batch failures map
+# back to TestCases cleanly.
+
+_BATCH_USAGE_TOTALS = {
+    "calls": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+}
+
+_BATCH_POLL_INITIAL_S = 30
+_BATCH_POLL_FAST_PHASE_S = 300  # 5 min
+_BATCH_POLL_SLOW_S = 120
+_BATCH_TIMEOUT_S = 24 * 60 * 60
+
+
+def _build_batch_request_for_tc(tc: "TestCase", model: str) -> dict:
+    """Translate one TestCase into a `requests=[...]` item for
+    `client.messages.batches.create`. Mirrors parser.parse_intent's
+    message shape exactly so the batched response can be parsed by
+    parser._extract_json without modification.
+    """
+    from generator.prompts import INTENT_PARSER_SYSTEM_PROMPT, INTENT_USER_PROMPT_TEMPLATE
+
+    hint_section = ""
+    hints = tc.okta_types or []
+    if hints:
+        hint_section = (
+            f"\n\nResource types explicitly selected by the user: "
+            f"{', '.join(hints)}. Use these to inform resource_type "
+            f"selection; prefer one of these types over guessing."
+        )
+    return {
+        "custom_id": tc.id,
+        "params": {
+            "model": model,
+            "max_tokens": 4096,
+            "system": [
+                {
+                    "type": "text",
+                    "text": INTENT_PARSER_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": INTENT_USER_PROMPT_TEMPLATE.format(user_input=tc.prompt) + hint_section,
+                }
+            ],
+        },
+    }
+
+
+def _accumulate_batch_usage(usage_obj) -> None:
+    """Roll one batch result's usage into the batch-specific totals so
+    `--batch` runs can be reported separately from any serial spend."""
+    if usage_obj is None:
+        return
+    _BATCH_USAGE_TOTALS["calls"] += 1
+    _BATCH_USAGE_TOTALS["input_tokens"] += getattr(usage_obj, "input_tokens", 0) or 0
+    _BATCH_USAGE_TOTALS["output_tokens"] += getattr(usage_obj, "output_tokens", 0) or 0
+    _BATCH_USAGE_TOTALS["cache_creation_input_tokens"] += getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
+    _BATCH_USAGE_TOTALS["cache_read_input_tokens"] += getattr(usage_obj, "cache_read_input_tokens", 0) or 0
+
+
+def _print_batch_usage_totals() -> None:
+    t = _BATCH_USAGE_TOTALS
+    if t["calls"] == 0:
+        return
+    # Batch responses are billed at 50% of standard input/output rates.
+    raw_cost = (
+        t["input_tokens"] * HAIKU_4_5_RATES_PER_M["input"]
+        + t["output_tokens"] * HAIKU_4_5_RATES_PER_M["output"]
+        + t["cache_creation_input_tokens"] * HAIKU_4_5_RATES_PER_M["cache_write"]
+        + t["cache_read_input_tokens"] * HAIKU_4_5_RATES_PER_M["cache_read"]
+    ) / 1_000_000
+    discounted = raw_cost * 0.5
+    print()
+    print("  [batch-discounted usage]")
+    print(f"  API calls            : {t['calls']:,}")
+    print(f"  Input (uncached)     : {t['input_tokens']:>10,} tokens")
+    print(f"  Output               : {t['output_tokens']:>10,} tokens")
+    print(f"  Cache writes         : {t['cache_creation_input_tokens']:>10,} tokens")
+    print(f"  Cache reads          : {t['cache_read_input_tokens']:>10,} tokens")
+    print(f"  Estimated batch cost : ${discounted:.3f}  (50% off serial: serial-equivalent ${raw_cost:.3f})")
+
+
+def _decode_batch_result_to_intent(result_entry: dict, tc: "TestCase") -> dict:
+    """Apply the same intent_type extraction parse_intent does, then
+    apply build_intent's downstream overrides (output_mode, hints,
+    resource_types). Returns a fully-stamped intent dict ready for
+    generate_all.
+
+    `result_entry` is the dict yielded by `client.messages.batches.results(...)`:
+      {"custom_id": "...", "result": {"type": "succeeded", "message": <Message>}}
+    """
+    from generator.parser import _extract_json, validate_intent  # type: ignore[attr-defined]
+
+    result = result_entry.get("result") or {}
+    rtype = result.get("type")
+    if rtype != "succeeded":
+        # Errored / expired / canceled batch entries surface here.
+        raise RuntimeError(f"batch result type={rtype!r} for custom_id={result_entry.get('custom_id')!r}")
+
+    message = result.get("message")
+    if message is None:
+        raise RuntimeError(f"batch result missing message for custom_id={result_entry.get('custom_id')!r}")
+
+    _accumulate_batch_usage(getattr(message, "usage", None))
+
+    content = getattr(message, "content", None) or []
+    if not content:
+        raise RuntimeError("batch result message has empty content")
+    raw_text = getattr(content[0], "text", "") or ""
+    raw = _extract_json(raw_text)
+    try:
+        intent = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"batch result did not return JSON: {raw[:300]}") from e
+
+    # Apply build_intent's overrides so the resulting intent is the same
+    # shape generate_all expects.
+    if intent.get("operation_type") == "unknown" and (
+        tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
+        or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
+    ):
+        intent["operation_type"] = "create"
+    if tc.okta_types:
+        intent["resource_types"] = tc.okta_types
+    if tc.aws_types:
+        intent["aws_resource_types"] = tc.aws_types
+    if tc.gcp_types:
+        intent["gcp_resource_types"] = tc.gcp_types
+    if tc.jamf_types:
+        intent["jamf_resource_types"] = tc.jamf_types
+    if tc.fleet_types:
+        intent["fleet_resource_types"] = tc.fleet_types
+    if tc.fleet_tf_types:
+        intent["fleet_resource_types"] = tc.fleet_tf_types
+    if tc.snowflake_types:
+        intent["snowflake_resource_types"] = tc.snowflake_types
+    if tc.snowflake_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Snowflake"
+    elif tc.snowflake_types:
+        intent["output_mode"] = "Snowflake only"
+    elif tc.fleet_tf_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Fleet TF"
+    elif tc.fleet_tf_types:
+        intent["output_mode"] = "Fleet TF only"
+    elif tc.fleet_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Fleet GitOps"
+    elif tc.fleet_types:
+        intent["output_mode"] = "Fleet GitOps only"
+    elif tc.jamf_types and tc.okta_types:
+        intent["output_mode"] = "Okta + JAMF"
+    elif tc.jamf_types:
+        intent["output_mode"] = "JAMF only"
+    elif tc.gcp_types and tc.okta_types:
+        intent["output_mode"] = "Okta + GCP"
+    elif tc.gcp_types:
+        intent["output_mode"] = "GCP only"
+    elif tc.aws_types and tc.okta_types:
+        intent["output_mode"] = "Both"
+    elif tc.aws_types:
+        intent["output_mode"] = "Lambda only"
+    else:
+        intent["output_mode"] = "Okta Terraform only"
+    intent["answers"] = {}
+    intent["provider_version"] = "~> 4.0"
+    return intent
+
+
+def _poll_batch_until_done(client, batch_id: str, *, sleep_fn=time.sleep, now_fn=time.time) -> str:
+    """Poll batches.retrieve until processing_status leaves "in_progress"
+    / "canceling". Returns the final processing_status. Raises
+    TimeoutError on 24h timeout."""
+    start = now_fn()
+    elapsed = 0
+    next_poll = _BATCH_POLL_INITIAL_S
+    while True:
+        if elapsed >= _BATCH_TIMEOUT_S:
+            raise TimeoutError(f"batch {batch_id} did not finish within 24h")
+        b = client.messages.batches.retrieve(batch_id)
+        status = getattr(b, "processing_status", None) or "in_progress"
+        if status not in ("in_progress", "canceling"):
+            return status
+        sleep_fn(next_poll)
+        elapsed = now_fn() - start
+        next_poll = _BATCH_POLL_INITIAL_S if elapsed < _BATCH_POLL_FAST_PHASE_S else _BATCH_POLL_SLOW_S
+
+
+def run_batch(cases: list, client, model: str) -> dict[str, dict]:
+    """Submit a single batch with one request per test, poll, and return
+    a mapping of test_id -> intent dict (or an error entry).
+
+    Error shape: `{"_error": "..."}` so the per-test loop downstream can
+    surface partial-batch failures without aborting the whole run. A
+    test that returned non-JSON or hit an errored result yields one of
+    these stub dicts; the caller turns it into a FAIL/ERROR row.
+    """
+    if not cases:
+        return {}
+    requests = [_build_batch_request_for_tc(tc, model) for tc in cases]
+    print(f"  Submitting batch with {len(requests)} request(s) ...")
+    submitted = client.messages.batches.create(requests=requests)
+    batch_id = getattr(submitted, "id", None)
+    if not batch_id:
+        raise RuntimeError("batches.create returned no id")
+    print(f"  Batch id: {batch_id}")
+    final_status = _poll_batch_until_done(client, batch_id)
+    print(f"  Batch finished: processing_status={final_status}")
+
+    out: dict[str, dict] = {}
+    succeeded = errored = 0
+    for entry in client.messages.batches.results(batch_id):
+        # `entry` may be an SDK object with attribute access; coerce to
+        # dict for uniform handling.
+        if hasattr(entry, "model_dump"):
+            entry = entry.model_dump()
+        elif not isinstance(entry, dict):
+            entry = {
+                "custom_id": getattr(entry, "custom_id", None),
+                "result": getattr(entry, "result", None),
+            }
+        custom_id = entry.get("custom_id") or ""
+        tc = next((c for c in cases if c.id == custom_id), None)
+        if tc is None:
+            continue
+        try:
+            intent = _decode_batch_result_to_intent(entry, tc)
+            out[custom_id] = intent
+            succeeded += 1
+        except Exception as e:
+            out[custom_id] = {"_error": f"{type(e).__name__}: {e}"}
+            errored += 1
+    print(f"  Decoded: {succeeded} succeeded, {errored} errored")
+    return out
+
+
+def run_test_with_batched_intent(tc: "TestCase", intent_or_error: dict, client, model: str) -> dict:
+    """Mirror of run_test but the intent was produced by the batch step.
+    Skips parse_intent (already done in batch), runs the generate+refine
+    pipeline serially, and returns the same result-row shape run_test
+    emits."""
+    start = time.time()
+    if "_error" in intent_or_error:
+        return {
+            "id": tc.id,
+            "status": "ERROR",
+            "issues": [f"BatchError: {intent_or_error['_error']}"],
+            "elapsed": round(time.time() - start, 1),
+            "attempt_count": 0,
+        }
+    try:
+        intent = intent_or_error
+        from generator.parser import validate_intent
+        val_errors = validate_intent(intent)
+        if val_errors:
+            return {
+                "id": tc.id, "status": "FAIL",
+                "issues": [f"Intent validation: {e}" for e in val_errors],
+                "resource_type": intent.get("resource_type"),
+                "output_mode": intent.get("output_mode"),
+                "elapsed": round(time.time() - start, 1),
+                "attempt_count": 0,
+            }
+        outputs = generate_all(intent, extra_instructions="", client=client, model=model)
+        issues = run_checks(tc, intent, outputs)
+        _OUTPUT_CACHE[tc.id] = {
+            "outputs": outputs,
+            "intent": intent,
+            "parsed_as": intent.get("resource_type", ""),
+        }
+        return {
+            "id": tc.id,
+            "prompt": tc.prompt,
+            "status": "PASS" if not issues else "FAIL",
+            "issues": issues,
+            "resource_type": intent.get("resource_type"),
+            "output_mode": intent.get("output_mode"),
+            "elapsed": round(time.time() - start, 1),
+            "attempt_count": 1,
+        }
+    except GenerationError as e:
+        return {
+            "id": tc.id, "status": "ERROR",
+            "issues": [f"GenerationError: {e}"],
+            "elapsed": round(time.time() - start, 1),
+            "attempt_count": 0,
+        }
+    except Exception as e:
+        return {
+            "id": tc.id, "status": "ERROR",
+            "issues": [f"{type(e).__name__}: {e}"],
+            "elapsed": round(time.time() - start, 1),
+            "attempt_count": 0,
+        }
+
+
 def _read_api_key() -> str:
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if key:
@@ -2417,6 +2741,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
 def main():
     argv = sys.argv[1:]
     replay_mode = "--replay" in argv
+    batch_mode = "--batch" in argv
     # As of 2026-05-04 Both score is 123/133 with the validate guardrail
     # ON; running it by default makes every QA invocation catch real
     # provider-schema drift, not just must_contain string mismatches.
@@ -2431,7 +2756,17 @@ def main():
     )
     cases = [tc for tc in TEST_CASES if not filter_ids or tc.id.upper() in filter_ids]
 
+    if batch_mode and replay_mode:
+        print("ERROR: --batch and --replay are mutually exclusive")
+        sys.exit(2)
+    if batch_mode and passes > 1:
+        print("ERROR: --batch does not support multi-pass mode (--passes > 1)")
+        sys.exit(2)
+
     validate_label = " + terraform-validate" if validate_mode else " (validate disabled)"
+    mode_label = ""
+    if batch_mode:
+        mode_label = " (batch)"
     if replay_mode:
         client = None
         model = None
@@ -2444,16 +2779,28 @@ def main():
         client = _wrap_client_for_usage_tracking(anthropic.Anthropic(api_key=api_key))
         model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         passes_label = f" — passes: {passes}" if passes > 1 else ""
-        print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}{validate_label}")
+        print(f"QA runner — {len(cases)} tests — model: {model}{passes_label}{validate_label}{mode_label}")
     print("=" * 72)
 
     results = []
     passed = failed = errored = 0
 
+    # In batch mode, submit + poll + decode the parse_intent step for
+    # every test in one batches.create call, then run the generate +
+    # post-generation pipeline serially.
+    batched_intents: dict[str, dict] = {}
+    if batch_mode and not replay_mode:
+        batched_intents = run_batch(cases, client, model)
+        print("=" * 72)
+
     for i, tc in enumerate(cases, 1):
         label = f"[{i:02d}/{len(cases)}] {tc.id:<6} {tc.prompt[:55]:<55}"
         print(f"{label} ...", end="", flush=True)
-        r = run_test(tc, client, model, replay_mode=replay_mode, passes=passes)
+        if batch_mode and not replay_mode:
+            intent_or_err = batched_intents.get(tc.id, {"_error": "no batch result for this test_id"})
+            r = run_test_with_batched_intent(tc, intent_or_err, client, model)
+        else:
+            r = run_test(tc, client, model, replay_mode=replay_mode, passes=passes)
         results.append(r)
         elapsed = r.get("elapsed", 0)
         attempt_tag = f" [#{r.get('attempt_count', 1)}]" if passes > 1 and r["status"] == "PASS" else ""
@@ -2478,6 +2825,7 @@ def main():
     print(f"  TOTAL  : {len(cases)}")
 
     _print_usage_totals()
+    _print_batch_usage_totals()
 
     v_passed = v_failed = v_skipped = 0
     if validate_mode:

@@ -142,6 +142,7 @@ import user_prefs as _user_prefs
 import feedback as _feedback
 from ui.onboarding import render as render_onboarding_tour
 from ui.account import render_sidebar_links as render_account_links, render_dialogs as render_account_dialogs
+from ui.cost_dashboard import render_cost_dashboard
 from env_context import build_env_context
 from repo_context import fetch_terraform_files
 
@@ -916,6 +917,9 @@ with st.sidebar:
         _render_audit_sidebar(st.user.email)
         st.divider()
         _render_history_sidebar(st.user.email)
+
+    with st.expander("Cost & Usage", expanded=False):
+        render_cost_dashboard(st.session_state.get("env_context"), st.user.email)
 
     group_label = "Admin" if _is_admin else "Settings"
     with st.expander(group_label, expanded=False):

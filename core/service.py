@@ -33,6 +33,7 @@ from generator.validator import refine_outputs
 from generator.okta_group_sanitizer import sanitize_okta_group_refs
 from env_context import format_context_for_prompt
 from repo_context import format_repo_context_for_prompt
+import structured_log
 
 
 class GenerationCancelled(Exception):
@@ -126,6 +127,13 @@ def generate_from_intent(
             provider_version=provider_version,
             repo_context_section=repo_section,
         )
+        structured_log.log_info(
+            "generate_first_pass_complete",
+            resource_type=intent.get("resource_type"),
+            output_mode=output_mode,
+            provider_version=provider_version,
+            output_keys=sorted([k for k, v in outputs.items() if v]),
+        )
         outputs = refine_outputs(
             intent=intent,
             outputs=outputs,
@@ -136,12 +144,35 @@ def generate_from_intent(
             on_pass=_wrapped_on_pass,
             output_mode=output_mode,
         )
+        structured_log.log_info(
+            "generate_refined",
+            resource_type=intent.get("resource_type"),
+            output_mode=output_mode,
+            max_passes=max_passes,
+        )
         live_groups = (env_context or {}).get("okta", {}).get("groups") or []
         outputs = sanitize_okta_group_refs(outputs, live_groups)
+        structured_log.log_info(
+            "generate_complete",
+            resource_type=intent.get("resource_type"),
+            output_mode=output_mode,
+            live_groups_count=len(live_groups),
+        )
         return GenerateResult(intent=intent, outputs=outputs)
     except GenerationCancelled:
+        structured_log.log_warn(
+            "generate_cancelled",
+            resource_type=intent.get("resource_type"),
+            output_mode=output_mode,
+        )
         return GenerateResult(intent=intent, cancelled=True)
     except GenerationError as e:
+        structured_log.log_error(
+            "generate_failed",
+            resource_type=intent.get("resource_type"),
+            output_mode=output_mode,
+            error=str(e),
+        )
         return GenerateResult(
             intent=intent,
             error=str(e),
@@ -183,14 +214,26 @@ def generate(
     try:
         intent = parse_intent(prompt, client, model=model, resource_type_hints=resource_type_hints)
     except ValueError as e:
+        structured_log.log_error("generate_parse_failed", error=str(e))
         return GenerateResult(intent={}, error=str(e))
 
     errors = validate_intent(intent)
     if errors:
+        structured_log.log_warn(
+            "generate_validation_failed",
+            resource_type=intent.get("resource_type"),
+            errors=errors,
+        )
         return GenerateResult(
             intent=intent,
             error="Validation errors: " + "; ".join(errors),
         )
+    structured_log.log_info(
+        "generate_parsed",
+        resource_type=intent.get("resource_type"),
+        operation_type=intent.get("operation_type"),
+        output_mode=output_mode,
+    )
 
     _coerce_intent_resource_types(intent)
     intent["output_mode"] = output_mode

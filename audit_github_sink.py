@@ -166,11 +166,31 @@ def _canonicalize(event: dict) -> dict:
     }
 
 
+def _structured_info(event: str, **kwargs) -> None:
+    """Best-effort structured_log.info shim. Import is lazy so callers
+    that load this module before structured_log (e.g. in early Vercel
+    cold starts) don't hit an import cycle."""
+    try:
+        import structured_log
+        structured_log.log_info(event, **kwargs)
+    except Exception:
+        pass
+
+
+def _structured_warn(event: str, **kwargs) -> None:
+    try:
+        import structured_log
+        structured_log.log_warn(event, **kwargs)
+    except Exception:
+        pass
+
+
 def _notify_failure(message: str) -> None:
     """Surface a sink failure without raising.
 
-    Prefers `st.error` in a Streamlit context; falls back to a print to
-    stderr in headless contexts (CLI, HTTP, Slack, JIRA). Never raises.
+    Prefers `st.error` in a Streamlit context; falls back to a JSON
+    structured log line on stderr in headless contexts (CLI, HTTP,
+    Slack, JIRA). Never raises.
     """
     try:
         import streamlit as st  # type: ignore[import-not-found]
@@ -178,10 +198,7 @@ def _notify_failure(message: str) -> None:
         return
     except Exception:
         pass
-    try:
-        print(f"[audit_github_sink] {message}", file=sys.stderr)
-    except Exception:
-        pass
+    _structured_warn("audit_sink_user_notify", message=message)
 
 
 # ── core: append_event + flush ───────────────────────────────────────────
@@ -206,7 +223,8 @@ def _flush_to_github(events: list[dict]) -> bool:
     try:
         g = Github(token)
         repo = g.get_repo(repo_name)
-    except Exception:
+    except Exception as e:
+        _structured_warn("audit_sink_repo_unreachable", repo=repo_name, error=str(e))
         return False
 
     path = f"{_sink_path_prefix()}audit-{_current_month_key()}.jsonl"
@@ -223,6 +241,8 @@ def _flush_to_github(events: list[dict]) -> bool:
                 prev + new_lines,
                 existing.sha,
             )
+            _structured_info("audit_sink_flush_success", repo=repo_name, path=path,
+                             event_count=len(events), mode="append")
         except GithubException as e:
             status = getattr(e, "status", None)
             if status == 404:
@@ -231,10 +251,16 @@ def _flush_to_github(events: list[dict]) -> bool:
                     f"chore(audit): create monthly audit file ({len(events)} event(s))",
                     new_lines,
                 )
+                _structured_info("audit_sink_flush_success", repo=repo_name, path=path,
+                                 event_count=len(events), mode="create")
             else:
+                _structured_warn("audit_sink_flush_retry", repo=repo_name, path=path,
+                                 event_count=len(events), status=status)
                 # 429 / 5xx / other -> caller queues for retry
                 return False
-    except Exception:
+    except Exception as e:
+        _structured_warn("audit_sink_flush_failure", repo=repo_name, path=path,
+                         event_count=len(events), error=str(e))
         return False
     return True
 
@@ -271,6 +297,11 @@ def append_event(event: dict) -> None:
             dropped = len(_BUFFER)
             _BUFFER.clear()
             _FAILURE_COUNT = 0
+            _structured_warn(
+                "audit_sink_buffer_dropped",
+                dropped_event_count=dropped,
+                consecutive_failures=_MAX_FAILURES_BEFORE_DROP,
+            )
             _notify_failure(
                 f"GitHub audit sink dropped {dropped} buffered event(s) after "
                 f"{_MAX_FAILURES_BEFORE_DROP} consecutive failures. "

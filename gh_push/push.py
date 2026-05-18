@@ -1,6 +1,8 @@
 import github
 from github import Github, InputGitTreeElement, GithubException
 
+import structured_log
+
 
 def build_commit_message(intent: dict) -> str:
     resource_type = intent.get("resource_type", "resource")
@@ -14,6 +16,9 @@ def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_mes
         repo = g.get_repo(repo_name)
     except GithubException as e:
         if e.status == 404:
+            structured_log.log_error(
+                "gh_push_repo_not_found", repo=repo_name, branch=branch or "",
+            )
             raise RuntimeError(f"Repository '{repo_name}' not found. Check the repo name and your GitHub token permissions.") from e
         raise
 
@@ -50,4 +55,12 @@ def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_mes
     new_commit = repo.create_git_commit(commit_message, new_tree, [parent_commit])
     repo.get_git_ref(f"heads/{target_branch}").edit(new_commit.sha)
 
+    structured_log.log_info(
+        "gh_push_complete",
+        repo=repo_name,
+        branch=target_branch,
+        file_count=len(files),
+        sha=new_commit.sha,
+        url=new_commit.html_url,
+    )
     return new_commit.html_url

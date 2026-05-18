@@ -66,6 +66,10 @@ Phase 19c also re-grounded SECTION K of the system prompt against the cached v2.
 
 **Enterprise readiness (Phase 8 Thread A).** Google OAuth gate, role-based access control (admin / editor / contributor / viewer), per-user daily cost cap, append-only audit log, PII redaction before any prompt leaves Streamlit, 30-minute idle session timeout, secret rotation reminders. See `SECURITY.md` for the full posture.
 
+**Cost & Usage dashboard (Phase 22a).** Sidebar expander surfacing today's spend, 7-day bar chart, week-over-week trend, top 5 expensive prompts, and a session cache-savings call-out. Reads from `cost.py`'s existing per-actor daily-totals surface plus the audit log; no new dependencies, no new storage.
+
+**Structured log export (Phase 22c).** Lifecycle events on the generate pipeline (`generate_parsed`, `generate_complete`, `generate_failed`), GitHub push (`gh_push_complete`), and the audit sink (`audit_sink_flush_success`, `audit_sink_flush_retry`, `audit_sink_buffer_dropped`) are emitted as one-JSON-line records on stderr so Streamlit Community Cloud's log viewer can index and grep them by field.
+
 ## Setup
 
 ### 1. Install dependencies
@@ -259,6 +263,11 @@ python qa_runner.py --no-terraform-validate
 
 # subset by id
 python qa_runner.py PM01 PM02 GCP04
+
+# Phase 22b: submit parsing via the Anthropic Message Batches API
+# (50% discount on the batched calls). Generate + sanitize + validate
+# still run serially per test once the batch completes.
+python qa_runner.py --batch
 ```
 
 Current scores:
