@@ -7,6 +7,7 @@ from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
 from .okta_event_hook_sanitizer import sanitize_okta_event_hook_events
 from .okta_data_source_sanitizer import sanitize_okta_data_source_refs
 from .okta_variable_hygiene_sanitizer import sanitize_okta_variable_hygiene
+from .okta_auth_server_nested_rule_sanitizer import sanitize_okta_auth_server_nested_rule
 from .okta_auth_server_policy_rule_sanitizer import sanitize_okta_auth_server_policy_rule
 from .okta_auth_server_policy_sanitizer import sanitize_okta_auth_server_policy
 from .gcp_cloudfunctions2_trigger_sanitizer import sanitize_gcp_cloudfunctions2_trigger
@@ -400,6 +401,15 @@ def generate_all(
     # composite-mode merge_terraform_blocks + Phase 18b secret scan so the
     # final HCL is what ships to the UI / GitHub push.
     #
+    # AUTH05 (Phase 20.1): hoist any okta_auth_server_policy_rule nested
+    #       inside an okta_auth_server_policy block to top level. The
+    #       LLM correctly emits `policy_id = okta_auth_server_policy.X.id`
+    #       but expresses the parent-child relationship via block nesting,
+    #       which terraform validate rejects ("Unsupported block type:
+    #       Blocks of type \"resource\" are not expected here."). Must run
+    #       BEFORE the policy + policy_rule attribute sanitizers below so
+    #       those see the hoisted top-level resources.
+    result = sanitize_okta_auth_server_nested_rule(result)
     # AP02: rewrite `token_lifetime = N` -> `access_token_lifetime_minutes = N`
     #       inside okta_auth_server_policy_rule blocks.
     result = sanitize_okta_auth_server_policy_rule(result)

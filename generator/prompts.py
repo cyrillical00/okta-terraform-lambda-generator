@@ -2140,6 +2140,15 @@ Common mistake: emitting `clients = ["ALL_CLIENTS"]` instead of
 `clients` and terraform validate fails with "Unsupported argument: clients".
 The Phase 20 sanitizer rewrites this drift automatically, but the prompt
 must still emit the correct attribute name.
+Common mistake: nesting `resource "okta_auth_server_policy_rule" "..." { }`
+INSIDE the `okta_auth_server_policy` block to express the parent-child
+relationship. HCL forbids nested `resource` blocks; terraform validate
+rejects with `Unsupported block type: Blocks of type "resource" are not
+expected here.` The two resources are SIBLINGS at top level, linked via
+`policy_id = okta_auth_server_policy.<label>.id` on the rule. Emit them
+as separate top-level `resource` blocks, never nested. The Phase 20.1
+sanitizer hoists nested rules out automatically, but the prompt must
+still emit them as siblings.
 
 **okta_auth_server_policy_rule**
 Required: auth_server_id, policy_id, name, status ("ACTIVE"), priority (int),
