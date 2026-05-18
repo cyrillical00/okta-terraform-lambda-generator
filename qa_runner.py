@@ -2302,12 +2302,51 @@ def _parse_passes(argv: list[str]) -> tuple[int, set[int]]:
     return 1, set()
 
 
+def _capture_validate_diagnostics(workdir, env) -> list[dict]:
+    """Re-run `terraform validate -json` on a failed workspace to capture the
+    full diagnostic objects (file, line, summary, detail). Used by
+    `_run_terraform_validate` to enrich the failing-tests summary so the
+    log shows the actionable attribute name ("An argument named
+    'token_lifetime' is not expected here.") instead of just the truncated
+    "Unsupported argument" first-line excerpt.
+
+    Returns a list of diagnostic dicts. Each dict has keys: `severity`,
+    `summary`, `detail`, `range` (a dict with `filename`, `start`, `end`).
+    Returns [] when the JSON parse fails or terraform validate is
+    unavailable.
+    """
+    import subprocess
+    import json as _json
+    try:
+        val = subprocess.run(
+            ["terraform", "validate", "-json", "-no-color"],
+            cwd=workdir, env=env, capture_output=True, text=True, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    raw = val.stdout or ""
+    try:
+        parsed = _json.loads(raw)
+    except _json.JSONDecodeError:
+        return []
+    diags = parsed.get("diagnostics") or []
+    if not isinstance(diags, list):
+        return []
+    # Keep only `error` severity; warnings are noise for the failure
+    # summary. Limit to the first 5 to bound report size on profiles with
+    # many missing required attributes (e.g. JAMF plist generator).
+    errors = [d for d in diags if isinstance(d, dict) and d.get("severity") == "error"]
+    return errors[:5]
+
+
 def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[int, int, int]:
     """Run terraform init + validate against each test's generated HCL.
-    Mutates `results` in place: adds `terraform_validate_pass` (bool|None)
-    and `terraform_validate_error` (str|None). On a validate failure also
-    appends a "terraform validate: ..." entry to `issues` and flips status
-    to FAIL. Returns (passed, failed, skipped) counts."""
+    Mutates `results` in place: adds `terraform_validate_pass` (bool|None),
+    `terraform_validate_error` (str|None), and `terraform_validate_diagnostics`
+    (list of diagnostic dicts on failure, [] on pass, None on skip). On a
+    validate failure also appends a "terraform validate: ..." entry to
+    `issues` and flips status to FAIL. Returns (passed, failed, skipped)
+    counts."""
     from tf_validate import (
         PLUGIN_CACHE,
         WORKSPACE_ROOT,
@@ -2333,6 +2372,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         if not has_hcl:
             r["terraform_validate_pass"] = None
             r["terraform_validate_error"] = None
+            r["terraform_validate_diagnostics"] = None
             skipped += 1
             print(f"  {tid:<8} SKIP (no HCL)")
             continue
@@ -2342,11 +2382,32 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         r["terraform_validate_error"] = None if ok else msg
         if ok:
             passed += 1
+            r["terraform_validate_diagnostics"] = []
             print(f"  {tid:<8} PASS")
         else:
             failed += 1
+            # Phase 20: re-run with `-json` to capture full diagnostic
+            # objects so the failing-tests summary can show the actionable
+            # attribute name ("token_lifetime") instead of just the
+            # generic "Unsupported argument" header.
+            diags = _capture_validate_diagnostics(workdir, env)
+            r["terraform_validate_diagnostics"] = diags
             print(f"  {tid:<8} FAIL  {msg}")
             r.setdefault("issues", []).append(f"terraform validate: {msg}")
+            # Append the first 3 diagnostic detail strings to issues so the
+            # final failing-tests summary surfaces the actionable attr name.
+            for d in diags[:3]:
+                detail = (d.get("detail") or "").strip()
+                summary = (d.get("summary") or "").strip()
+                rng = d.get("range") or {}
+                start = rng.get("start") or {}
+                where = ""
+                if rng.get("filename"):
+                    where = f" [{rng['filename']}:{start.get('line', '?')}]"
+                if detail:
+                    r["issues"].append(f"  diag: {summary}: {detail}{where}")
+                elif summary:
+                    r["issues"].append(f"  diag: {summary}{where}")
             if r.get("status") == "PASS":
                 r["status"] = "FAIL"
     print("=" * 72)

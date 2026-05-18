@@ -7,6 +7,10 @@ from .okta_app_scim_sanitizer import sanitize_okta_app_scim_refs
 from .okta_event_hook_sanitizer import sanitize_okta_event_hook_events
 from .okta_data_source_sanitizer import sanitize_okta_data_source_refs
 from .okta_variable_hygiene_sanitizer import sanitize_okta_variable_hygiene
+from .okta_auth_server_policy_rule_sanitizer import sanitize_okta_auth_server_policy_rule
+from .okta_auth_server_policy_sanitizer import sanitize_okta_auth_server_policy
+from .gcp_cloudfunctions2_trigger_sanitizer import sanitize_gcp_cloudfunctions2_trigger
+from .jamf_config_profile_generator_sanitizer import sanitize_jamf_config_profile_generator
 from .multi_object_sanitizer import sanitize_multi_object
 from .hcl_utils import merge_terraform_blocks, dedupe_variable_blocks
 from .output_scanner import scan_outputs_for_secrets
@@ -389,6 +393,28 @@ def generate_all(
     # template block once per missing instance. Runs last so it sees the
     # final block shape after all earlier sanitizers.
     result = sanitize_multi_object(result, intent)
+
+    # Phase 20: stabilize the 4 sampling-drift validation failures
+    # (AP02, AUTH05, GCP02, JF04). These run AFTER the existing sanitizer
+    # chain so they see post-existing-sanitizer output, and BEFORE the
+    # composite-mode merge_terraform_blocks + Phase 18b secret scan so the
+    # final HCL is what ships to the UI / GitHub push.
+    #
+    # AP02: rewrite `token_lifetime = N` -> `access_token_lifetime_minutes = N`
+    #       inside okta_auth_server_policy_rule blocks.
+    result = sanitize_okta_auth_server_policy_rule(result)
+    # AUTH05: rewrite `clients = [...]` -> `client_whitelist = [...]` inside
+    #         okta_auth_server_policy blocks.
+    result = sanitize_okta_auth_server_policy(result)
+    # GCP02: rewrite bare `trigger {}` -> `event_trigger {}` and
+    #        `topic_name` -> `pubsub_topic` inside
+    #        google_cloudfunctions2_function blocks; auto-fill
+    #        trigger_region + retry_policy on Pub/Sub triggers.
+    result = sanitize_gcp_cloudfunctions2_trigger(result)
+    # JF04: auto-fill the 5 required payload header attrs and the
+    #       payload_content sub-block when missing inside
+    #       jamfpro_macos_configuration_profile_plist_generator blocks.
+    result = sanitize_jamf_config_profile_generator(result)
 
     # Composite-mode duplicate-providers fix. terraform_okta_hcl always emits
     # its own `terraform { required_providers {} }` block; the lambda and gcp

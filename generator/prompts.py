@@ -654,6 +654,41 @@ resource "google_cloudfunctions2_function" "handler" {
 
 For Pub/Sub triggers, add an `event_trigger { trigger_region, event_type = "google.cloud.pubsub.topic.v1.messagePublished", pubsub_topic, retry_policy = "RETRY_POLICY_RETRY" }` block. The Cloud Function entry_point handler signature changes accordingly — see SECTION C.
 
+DISAMBIGUATOR (Pub/Sub event trigger). On google_cloudfunctions2_function:
+- The block name is `event_trigger`, NOT `trigger`. Emitting bare
+  `trigger { ... }` fails terraform validate with "Unsupported block type:
+  trigger". The Phase 20 sanitizer rewrites this drift, but the prompt
+  must emit the correct block name.
+- Inside `event_trigger`, the topic reference attribute is `pubsub_topic`,
+  NOT `topic_name`. Use `pubsub_topic = google_pubsub_topic.handler.id`
+  (full Terraform reference, not the bare topic name string).
+- Required attrs inside `event_trigger {}` for a Pub/Sub source:
+  `event_type = "google.cloud.pubsub.topic.v1.messagePublished"`,
+  `pubsub_topic = google_pubsub_topic.handler.id`,
+  `trigger_region = var.gcp_region`,
+  `retry_policy = "RETRY_POLICY_RETRY"`.
+
+Worked example (Pub/Sub-triggered function):
+```hcl
+resource "google_pubsub_topic" "handler" {
+  name = var.topic_name
+}
+
+resource "google_cloudfunctions2_function" "handler" {
+  name     = var.function_name
+  location = var.gcp_region
+
+  event_trigger {
+    trigger_region = var.gcp_region
+    event_type     = "google.cloud.pubsub.topic.v1.messagePublished"
+    pubsub_topic   = google_pubsub_topic.handler.id
+    retry_policy   = "RETRY_POLICY_RETRY"
+  }
+
+  # build_config and service_config follow the standard Gen2 stack.
+}
+```
+
 ### Additional GCP resources (add only when listed in "GCP resources to include")
 
 **google_pubsub_topic**:
@@ -1409,13 +1444,22 @@ plist variant when the user has a .mobileconfig file already.
 
 Common mistakes:
 - Omitting any of the five `payload_*_header` args inside `payloads {}`.
-  All five are required by the v0.37 provider schema.
+  All five are required by the v0.37 provider schema and terraform validate
+  fails with "Missing required argument" for each one missing. The full set
+  is: `payload_description_header`, `payload_enabled_header`,
+  `payload_organization_header`, `payload_type_header`,
+  `payload_version_header`. Even a "minimal" Wi-Fi profile MUST emit all
+  five; there are no defaults at the schema level. The Phase 20 sanitizer
+  auto-fills any missing header with a sensible default, but the prompt
+  must still emit them so the generated HCL reads cleanly without sanitizer
+  intervention.
 - Omitting the `payload_content {}` sub-block. The v0.37 schema requires
   exactly one (min=1, max=1) inside `payloads {}`, with four required
   fields: `payload_enabled` (bool), `payload_organization` (string),
   `payload_type` (string, the macOS payload domain like
   `com.apple.wifi.managed` / `com.apple.dnsSettings.managed`), and
-  `payload_version` (number).
+  `payload_version` (number). The Phase 20 sanitizer auto-inserts the
+  sub-block when missing, but the prompt must still emit it.
 - Putting payload-type sub-blocks (`payload_wifi`, `payload_dns`) inside
   `payloads {}`. The v0.37 schema does not accept those at that level;
   the type-specific data goes via the `payload_type` string inside
@@ -2091,6 +2135,11 @@ resource "okta_auth_server_claim" "department" {
 Required: auth_server_id, name, status ("ACTIVE"), description, priority (int),
   client_whitelist (list — use ["ALL_CLIENTS"] to match all clients)
 FORBIDDEN: policy_id, clients
+Common mistake: emitting `clients = ["ALL_CLIENTS"]` instead of
+`client_whitelist = ["ALL_CLIENTS"]`. The v4.x provider does NOT accept
+`clients` and terraform validate fails with "Unsupported argument: clients".
+The Phase 20 sanitizer rewrites this drift automatically, but the prompt
+must still emit the correct attribute name.
 
 **okta_auth_server_policy_rule**
 Required: auth_server_id, policy_id, name, status ("ACTIVE"), priority (int),
@@ -2099,6 +2148,12 @@ Required: auth_server_id, policy_id, name, status ("ACTIVE"), priority (int),
 Optional: access_token_lifetime_minutes (int), refresh_token_lifetime_minutes (int),
   refresh_token_window_minutes (int), inline_hook_id
 FORBIDDEN: rule_id, token_lifetime, allowed_clients
+Common mistake: emitting `token_lifetime = 60` (or `token_lifetime = "1h"`)
+on a policy rule. That attribute does NOT exist in the v4.x schema. Use
+`access_token_lifetime_minutes = 60` for "1 hour" prompts and
+`refresh_token_lifetime_minutes = N` for refresh-token configuration. The
+Phase 20 sanitizer rewrites `token_lifetime` to `access_token_lifetime_minutes`
+automatically, but the prompt must still emit the correct attribute name.
 
 **okta_factor** (okta/okta v4.x, locked at 4.20.0)
 Required: provider_id (string, lowercase canonical name; allowed values:
