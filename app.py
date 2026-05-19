@@ -385,10 +385,17 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
     st.session_state["cancel_requested"] = False
 
     result = None
-    with st.status("Generating...", expanded=True) as status:
-        st.write("Pass 0/3: drafting initial output...")
-        progress = st.progress(0.0, text="Pass 0/3 · drafting")
+    with st.status("Generating Terraform...", expanded=True) as status:
+        progress = st.progress(0.0, text="Pass 0/3 (drafting)")
+        pass_label = st.empty()
+        pass_label.caption("Drafting HCL (Pass 0/3) - Claude Haiku 4.5")
+        pass_box = st.empty()
+        stream_state = {"text": ""}
         first_pass = {"done": False}
+
+        def _on_text_delta(chunk):
+            stream_state["text"] += chunk
+            pass_box.code(stream_state["text"], language="json")
 
         def _on_pass(pass_num, validation, has_issues):
             # First time we hit a pass callback, the initial draft has
@@ -397,6 +404,11 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
             if not first_pass["done"]:
                 first_pass["done"] = True
             progress.progress(pass_num / 3.0, text=f"Pass {pass_num}/3")
+            # Reset the streamed-text accumulator and clear the code box so the
+            # next phase (validate or fix) starts from a clean placeholder
+            # instead of appending its JSON onto the previous one.
+            stream_state["text"] = ""
+            pass_box.empty()
             if has_issues:
                 n_tf = len(validation.get("terraform_issues", []))
                 n_lam = len(validation.get("lambda_issues", []))
@@ -406,9 +418,9 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
                 if n_lam:
                     parts.append(f"{n_lam} lambda")
                 detail = " + ".join(parts) if parts else f"{n_tf + n_lam} issue(s)"
-                st.write(f"Pass {pass_num}/3 · refining ({detail})")
+                pass_label.caption(f"Refining Pass {pass_num}/3 ({detail})")
             else:
-                st.write(f"Pass {pass_num}/3 · clean")
+                pass_label.caption(f"Pass {pass_num}/3 clean")
 
         def _cancel_check():
             return bool(st.session_state.get("cancel_requested"))
@@ -425,6 +437,7 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
             extra_instructions=extra_instructions,
             on_pass=_on_pass,
             cancel_check=_cancel_check,
+            on_text_delta=_on_text_delta,
         )
 
         if result.cancelled:
@@ -1035,9 +1048,19 @@ if parse_clicked and user_input.strip():
     st.session_state.last_user_input = cleaned_input  # store the redacted version going forward
     client = _get_client()
     model = _get_model("claude-haiku-4-5-20251001")
-    with st.spinner("Parsing intent..."):
+    with st.status("Parsing your intent...", expanded=True) as parse_status:
+        st.caption("Calling Claude Haiku 4.5")
+        _parse_box = st.empty()
+        _parse_streamed = {"text": ""}
+        def _on_parse_delta(chunk):
+            _parse_streamed["text"] += chunk
+            _parse_box.code(_parse_streamed["text"], language="json")
         try:
-            intent = parse_intent(cleaned_input, client, model=model, resource_type_hints=okta_types)
+            intent = parse_intent(
+                cleaned_input, client, model=model,
+                resource_type_hints=okta_types,
+                on_text_delta=_on_parse_delta,
+            )
             # Friendly rejection: parser returned 'unknown' and the user gave no UI hints to override.
             if intent.get("resource_type") == "unknown" and not okta_types:
                 notes = intent.get("notes") or []
@@ -1086,6 +1109,11 @@ if parse_clicked and user_input.strip():
                     )
         except ValueError as e:
             st.session_state.parse_error = str(e)
+
+        if st.session_state.parse_error:
+            parse_status.update(label="Parse failed", state="error")
+        else:
+            parse_status.update(label="Intent parsed", state="complete", expanded=False)
 
 if st.session_state.parse_error:
     render_error_panel(

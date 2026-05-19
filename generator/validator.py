@@ -152,6 +152,7 @@ def validate_outputs(
     client: anthropic.Anthropic,
     model: str,
     output_mode: str = "Both",
+    on_text_delta: callable = None,
 ) -> dict:
     user_content = VALIDATOR_USER_TEMPLATE.format(
         user_input=user_input,
@@ -164,7 +165,10 @@ def validate_outputs(
         output_mode_instruction=_OUTPUT_MODE_INSTRUCTIONS.get(output_mode, _OUTPUT_MODE_INSTRUCTIONS["Both"]),
     )
 
-    response = client.messages.create(
+    from ._stream import streamed_create
+    response = streamed_create(
+        client,
+        on_text_delta=on_text_delta,
         model=model,
         max_tokens=4096,
         system=[
@@ -202,10 +206,14 @@ def refine_outputs(
     max_passes: int = 3,
     on_pass: callable = None,
     output_mode: str = "Both",
+    on_text_delta: callable = None,
 ) -> dict:
     """Validate and auto-fix outputs up to max_passes times. Returns best-effort result."""
     for pass_num in range(1, max_passes + 1):
-        result = validate_outputs(user_input, intent, outputs, client, model, output_mode=output_mode)
+        result = validate_outputs(
+            user_input, intent, outputs, client, model,
+            output_mode=output_mode, on_text_delta=on_text_delta,
+        )
         has_issues = bool(result.get("terraform_issues") or result.get("lambda_issues"))
         if on_pass:
             on_pass(pass_num, result, has_issues)
@@ -218,7 +226,7 @@ def refine_outputs(
             gcp_hcl = outputs.get("terraform_gcp_hcl", "")
             cf_py = outputs.get("cloud_function_python", "")
             cf_reqs = outputs.get("cloud_function_requirements", "")
-            outputs = fix_outputs(intent, outputs, result, client, model)
+            outputs = fix_outputs(intent, outputs, result, client, model, on_text_delta=on_text_delta)
             if optional_tf and not outputs.get("optional_tf"):
                 outputs["optional_tf"] = optional_tf
             if tfvars and not outputs.get("terraform_tfvars_example"):
@@ -393,6 +401,7 @@ def fix_outputs(
     validation_result: dict,
     client: anthropic.Anthropic,
     model: str,
+    on_text_delta: callable = None,
 ) -> dict:
     tf_issues = validation_result.get("terraform_issues", [])
     lambda_issues = validation_result.get("lambda_issues", [])
@@ -412,7 +421,10 @@ def fix_outputs(
 
     messages = [{"role": "user", "content": user_content}]
 
-    response = client.messages.create(
+    from ._stream import streamed_create
+    response = streamed_create(
+        client,
+        on_text_delta=on_text_delta,
         model=model,
         max_tokens=8192,
         system=[
@@ -432,7 +444,9 @@ def fix_outputs(
         # One retry with assistant-turn injection
         messages.append({"role": "assistant", "content": response.content[0].text})
         messages.append({"role": "user", "content": "Your response was not valid JSON. Return only the JSON object with the four required keys, no other text."})
-        retry = client.messages.create(
+        retry = streamed_create(
+            client,
+            on_text_delta=on_text_delta,
             model=model,
             max_tokens=8192,
             system=[

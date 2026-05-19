@@ -102,6 +102,7 @@ def generate_all(
     env_context_section: str = "",
     provider_version: str = "~> 4.0",
     repo_context_section: str = "",
+    on_text_delta: callable = None,
 ) -> dict:
     answers = intent.get("answers", {})
     output_mode = intent.get("output_mode", "Both")
@@ -171,7 +172,10 @@ def generate_all(
     # in prompts.py is correct; the model just doesn't follow it
     # consistently at temperature=1.0. Parser + validator stay at default
     # to preserve interpretation creativity and review independence.
-    response = client.messages.create(
+    from ._stream import streamed_create
+    response = streamed_create(
+        client,
+        on_text_delta=on_text_delta,
         model=model,
         max_tokens=8192,
         temperature=0.2,
@@ -196,7 +200,9 @@ def generate_all(
                 "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, terraform_kandji_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
             },
         ]
-        retry_response = client.messages.create(
+        retry_response = streamed_create(
+            client,
+            on_text_delta=on_text_delta,
             model=model,
             max_tokens=8192,
             temperature=0.2,

@@ -85,6 +85,7 @@ def generate_from_intent(
     max_passes: int = 3,
     on_pass: Callable[[int, dict, bool], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
 ) -> GenerateResult:
     """Run the generate -> refine -> sanitize tail of the pipeline against
     a pre-parsed intent dict.
@@ -126,6 +127,7 @@ def generate_from_intent(
             env_context_section=env_section,
             provider_version=provider_version,
             repo_context_section=repo_section,
+            on_text_delta=on_text_delta,
         )
         structured_log.log_info(
             "generate_first_pass_complete",
@@ -143,6 +145,7 @@ def generate_from_intent(
             max_passes=max_passes,
             on_pass=_wrapped_on_pass,
             output_mode=output_mode,
+            on_text_delta=on_text_delta,
         )
         structured_log.log_info(
             "generate_refined",
