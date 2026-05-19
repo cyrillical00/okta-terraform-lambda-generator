@@ -460,13 +460,14 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
 
 
 def _load_env_context() -> None:
-    """Fetch live environment context (Okta / AWS / GCP / JAMF / Fleet) once per
-    session. Skips if already loaded. Wraps the live-context fetch in st.status
-    so the user sees activity when any provider is slow to respond.
+    """Fetch live environment context (Okta / AWS / GCP / JAMF / Fleet /
+    Snowflake / Kandji) once per session. Skips if already loaded. Wraps the
+    live-context fetch in st.status so the user sees activity when any provider
+    is slow to respond.
     """
     if st.session_state.env_context is not None:
         return
-    with st.status("Connecting to Okta, AWS, GCP, JAMF, Fleet, Snowflake...", expanded=False) as status:
+    with st.status("Connecting to Okta, AWS, GCP, JAMF, Fleet, Snowflake, Kandji...", expanded=False) as status:
         st.session_state.env_context = build_env_context(
             okta_org_url=_get_secret("OKTA_ORG_URL"),
             okta_api_token=_get_secret("OKTA_API_TOKEN"),
@@ -494,13 +495,19 @@ def _load_env_context() -> None:
             snowflake_role=_get_secret("SNOWFLAKE_ROLE"),
             snowflake_warehouse=_get_secret("SNOWFLAKE_WAREHOUSE"),
             snowflake_passphrase=_get_secret("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
+            # Kandji / Iru (Phase 23). Tenant bearer token; mint from
+            # Settings -> Access -> Add API Token. Read-only role is enough
+            # for env-context fetching.
+            kandji_base_url=_get_secret("KANDJI_BASE_URL"),
+            kandji_api_token=_get_secret("KANDJI_API_TOKEN"),
         )
         ctx = st.session_state.env_context or {}
         connected = sum(
-            1 for k in ("okta", "aws", "gcp", "jamf", "fleet", "snowflake") if ctx.get(k, {}).get("connected")
+            1 for k in ("okta", "aws", "gcp", "jamf", "fleet", "snowflake", "kandji")
+            if ctx.get(k, {}).get("connected")
         )
         status.update(
-            label=f"Live context ready: {connected} of 6 providers connected",
+            label=f"Live context ready: {connected} of 7 providers connected",
             state="complete",
         )
 
@@ -517,6 +524,7 @@ def _render_env_sidebar() -> None:
     jamf = ctx.get("jamf", {})
     fleet = ctx.get("fleet", {})
     snowflake = ctx.get("snowflake", {})
+    kandji = ctx.get("kandji", {})
 
     st.markdown("**Environment**")
 
@@ -613,6 +621,22 @@ def _render_env_sidebar() -> None:
     else:
         err = snowflake.get("error", "Not configured")
         st.caption(f"Snowflake: {err}")
+
+    if kandji.get("connected"):
+        n_bp = len(kandji.get("blueprints", []))
+        n_li = len(kandji.get("library_items", []))
+        n_tg = len(kandji.get("tags", []))
+        st.success(
+            f"Kandji: {n_bp} blueprints, {n_li} library items, {n_tg} tags"
+        )
+        partial = kandji.get("partial_errors") or []
+        if partial:
+            st.caption(f"Kandji partial: {len(partial)} endpoint(s) unavailable")
+            for p in partial:
+                st.caption(f"- {p[:140]}")
+    else:
+        err = kandji.get("error", "Not configured")
+        st.caption(f"Kandji: {err}")
 
     if st.button("Refresh environment", use_container_width=True):
         _audit.log(st.user.email, "env_refresh")

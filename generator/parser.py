@@ -51,6 +51,17 @@ ALLOWED_RESOURCE_TYPES = {
     "snowflake_resource_monitor",
     "snowflake_network_policy",
     "snowflake_scim_integration",
+    "iru_blueprint",
+    "iru_blueprint_routing",
+    "iru_blueprint_library_item",
+    "iru_custom_script",
+    "iru_custom_profile",
+    "iru_custom_app",
+    "iru_in_house_app",
+    "iru_tag",
+    "iru_device_note",
+    "iru_ade_integration",
+    "iru_ade_device",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}

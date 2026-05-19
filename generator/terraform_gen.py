@@ -25,6 +25,7 @@ OPTIONAL_OUTPUT_KEYS_WITH_DEFAULTS = {
     "fleet_gitops_yaml": "",
     "terraform_fleet_hcl": "",
     "terraform_snowflake_hcl": "",
+    "terraform_kandji_hcl": "",
 }
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -138,6 +139,16 @@ def generate_all(
         )
     else:
         jamf_resource_section = ""
+    kandji_types = intent.get("kandji_resource_types", [])
+    if kandji_types:
+        kandji_resource_section = (
+            "Kandji (iru) resources to include in terraform_kandji_hcl (in addition to the "
+            f"`iru` provider block + KANDJI APPLY RUNBOOK header): {', '.join(kandji_types)}. "
+            "Follow the rules for each in SECTION L. These resources MUST live in "
+            "terraform_kandji_hcl, NOT in terraform_okta_hcl."
+        )
+    else:
+        kandji_resource_section = ""
     user_content = GENERATOR_USER_PROMPT_TEMPLATE.format(
         intent_json=json.dumps({k: v for k, v in intent.items() if k not in ("answers", "output_mode", "provider_version")}, indent=2),
         output_mode=output_mode,
@@ -151,6 +162,7 @@ def generate_all(
         aws_resource_section=aws_resource_section,
         gcp_resource_section=gcp_resource_section,
         jamf_resource_section=jamf_resource_section,
+        kandji_resource_section=kandji_resource_section,
     )
     messages = [{"role": "user", "content": user_content}]
 
@@ -181,7 +193,7 @@ def generate_all(
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
-                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
+                "content": "Your response was not valid JSON. Return only the JSON object with the required keys (terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, terraform_kandji_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, terraform_tfvars_example), no other text.",
             },
         ]
         retry_response = client.messages.create(
@@ -217,6 +229,7 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -229,6 +242,7 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
         result["optional_tf"] = ""
@@ -239,6 +253,7 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["optional_tf"] = ""
@@ -248,15 +263,17 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
     elif output_mode == "Both":
-        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF, NOT Fleet, NOT Snowflake
+        # "Both" means Okta + AWS Lambda; explicitly NOT GCP, NOT JAMF, NOT Fleet, NOT Snowflake, NOT Kandji
         result["terraform_gcp_hcl"] = ""
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["cloud_function_python"] = ""
         result["cloud_function_requirements"] = ""
     elif output_mode == "JAMF only":
@@ -266,6 +283,7 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -277,6 +295,7 @@ def generate_all(
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -289,6 +308,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -303,6 +323,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["terraform_fleet_hcl"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -316,6 +337,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -331,6 +353,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_snowflake_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -344,6 +367,7 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -359,6 +383,37 @@ def generate_all(
         result["terraform_jamf_hcl"] = ""
         result["fleet_gitops_yaml"] = ""
         result["terraform_fleet_hcl"] = ""
+        result["terraform_kandji_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+    elif output_mode == "Kandji only":
+        # Kandji (Iru) Terraform HCL alone via MScottBlake/iru ~> 0.0.
+        # Zero every other output key.
+        result["terraform_okta_hcl"] = ""
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
+        result["lambda_python"] = ""
+        result["lambda_requirements"] = ""
+        result["cloud_function_python"] = ""
+        result["cloud_function_requirements"] = ""
+        result["optional_tf"] = ""
+    elif output_mode == "Okta + Kandji":
+        # Composite: Okta Terraform + Kandji Terraform. Both files declare a
+        # `terraform { required_providers {} }` block, so the composite-mode
+        # merge_terraform_blocks + dedupe_variable_blocks at the end of this
+        # function IS needed (same pattern as Okta + JAMF and Okta + Snowflake).
+        result["terraform_lambda_hcl"] = ""
+        result["terraform_gcp_hcl"] = ""
+        result["terraform_jamf_hcl"] = ""
+        result["fleet_gitops_yaml"] = ""
+        result["terraform_fleet_hcl"] = ""
+        result["terraform_snowflake_hcl"] = ""
         result["lambda_python"] = ""
         result["lambda_requirements"] = ""
         result["cloud_function_python"] = ""
@@ -482,6 +537,18 @@ def generate_all(
         merged_okta, merged_snowflake = dedupe_variable_blocks(merged_okta, merged_snowflake)
         result["terraform_okta_hcl"] = merged_okta
         result["terraform_snowflake_hcl"] = merged_snowflake
+    elif output_mode == "Okta + Kandji":
+        # Both Okta and Kandji Terraform declare a `terraform { required_providers {} }`
+        # block. Same dedupe pattern as Okta + JAMF and Okta + Snowflake: merge
+        # the Kandji provider entry into okta.tf, strip the secondary terraform
+        # block from kandji.tf, and dedupe shared variable declarations.
+        merged_okta, merged_kandji = merge_terraform_blocks(
+            result.get("terraform_okta_hcl", ""),
+            result.get("terraform_kandji_hcl", ""),
+        )
+        merged_okta, merged_kandji = dedupe_variable_blocks(merged_okta, merged_kandji)
+        result["terraform_okta_hcl"] = merged_okta
+        result["terraform_kandji_hcl"] = merged_kandji
 
     # Phase 18b: post-generation secret-shape scan. Runs after every
     # sanitizer and the composite-mode block-merge step so it sees the

@@ -102,9 +102,9 @@ def render_hero_starters() -> None:
 
 
 def render_env_pills(env_context: dict) -> None:
-    """Render a horizontal row of Okta / AWS / GCP / JAMF / Fleet status pills
-    at the top of the main panel. Tooltip exposes resource counts. Pure
-    presentation."""
+    """Render a horizontal row of Okta / AWS / GCP / JAMF / Fleet / Snowflake /
+    Kandji status pills at the top of the main panel. Tooltip exposes resource
+    counts. Pure presentation."""
     okta = (env_context or {}).get("okta", {})
     aws = (env_context or {}).get("aws", {})
     gcp = (env_context or {}).get("gcp", {})
@@ -203,6 +203,22 @@ def render_env_pills(env_context: dict) -> None:
         pills.append(pill(f"Snowflake ({n_wh + n_db + n_role + n_user})", state, tooltip))
     else:
         pills.append(pill("Snowflake", "off", snowflake.get("error", "Not configured")))
+
+    # Kandji / Iru (Phase 23 added the live-context fetcher; pill flips to `on`
+    # when KANDJI_* secrets are configured and the bearer-auth succeeds).
+    kandji = (env_context or {}).get("kandji", {})
+    if kandji.get("connected"):
+        n_bp = len(kandji.get("blueprints", []))
+        n_li = len(kandji.get("library_items", []))
+        n_tg = len(kandji.get("tags", []))
+        partial = kandji.get("partial_errors") or []
+        tooltip = f"{n_bp} blueprints, {n_li} library items, {n_tg} tags"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} endpoints unavailable)"
+        pills.append(pill(f"Kandji ({n_bp + n_li + n_tg})", state, tooltip))
+    else:
+        pills.append(pill("Kandji", "off", kandji.get("error", "Not configured")))
 
     st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 
@@ -307,6 +323,20 @@ _SNOWFLAKE_RESOURCE_LABEL_TO_TF = {
     "Resource Monitor": "snowflake_resource_monitor",
     "Network Policy": "snowflake_network_policy",
     "SCIM": "snowflake_scim_integration",
+}
+
+_KANDJI_RESOURCE_LABEL_TO_TF = {
+    "Blueprint": "iru_blueprint",
+    "Routing": "iru_blueprint_routing",
+    "Library Attach": "iru_blueprint_library_item",
+    "Custom Script": "iru_custom_script",
+    "Custom Profile": "iru_custom_profile",
+    "Custom App": "iru_custom_app",
+    "In-house App": "iru_in_house_app",
+    "Tag": "iru_tag",
+    "Device Note": "iru_device_note",
+    "ADE Integration": "iru_ade_integration",
+    "ADE Device": "iru_ade_device",
 }
 
 

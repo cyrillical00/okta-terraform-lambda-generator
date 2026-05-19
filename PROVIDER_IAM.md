@@ -457,6 +457,45 @@ Provider docs: https://registry.terraform.io/providers/snowflakedb/snowflake/lat
 
 ---
 
+## 8. Kandji
+
+Phase 23 lit up the Kandji env-context fetcher (`kandji_client.py` + `env_context.fetch_kandji_context`). The `KANDJI_*` env vars drive both apply-time provider authentication AND the read-only `GET /api/v1/blueprints`, `/api/v1/library/library-items`, and `/api/v1/tags` calls the env-context layer issues on session load. Kandji rebranded to Iru in late 2025 and the Terraform provider source moved to `MScottBlake/iru`, but the REST API hosts kept the legacy `kandji.io` domain.
+
+### env-context token (read-only)
+
+The env-context fetcher uses a tenant-scoped bearer token to list blueprints, library items, and tags. Tokens are minted from Settings -> Access -> Add API Token in the Kandji web console. Each token has a permission matrix; the read-only roles needed by the env-context fetcher are:
+
+| Permission | Why |
+|---|---|
+| Blueprints: Read | populates the blueprints list in the prompt context |
+| Library Items: Read | populates the library items list |
+| Tags: Read | populates the tags list |
+
+Set Streamlit Cloud secrets:
+- `KANDJI_BASE_URL` = `https://<your-subdomain>.api.kandji.io` (US region) or `https://<your-subdomain>.clients.eu.kandji.io` (EU region)
+- `KANDJI_API_TOKEN` = (tenant bearer token; treat as sensitive)
+
+The API caps at 10,000 requests per hour per customer. The fetcher walks pagination at 300 items per page with a hard safety cap of 100 pages (30,000 items) per endpoint. A 429 response surfaces the `Retry-After` header in the partial-errors trail.
+
+### apply token (write)
+
+The generator emits resources documented in `generator/prompts.py` SECTION L. Write scopes required for `terraform apply` depend on what your prompts touch:
+
+| Apply scope | Required Kandji token permissions |
+|---|---|
+| Blueprints + routing: `iru_blueprint`, `iru_blueprint_routing`, `iru_blueprint_library_item` | Blueprints: Read/Write |
+| Library items: `iru_custom_script`, `iru_custom_profile`, `iru_custom_app`, `iru_in_house_app` | Library Items: Read/Write |
+| Device-level: `iru_tag`, `iru_device_note` | Devices: Read/Write |
+| Apple Business Manager integration: `iru_ade_integration`, `iru_ade_device` | ADE: Read/Write + Blueprints: Read/Write |
+
+For applies that span all four classes, mint a single apply token with the four Read/Write permissions and accept the wider blast radius, or split the apply into multiple Terraform states each scoped to its minimum permission set.
+
+Use a separate token for env-context (read-only) and apply (write); rotating one without disturbing the other is the whole reason to split them.
+
+Provider docs: https://registry.terraform.io/providers/MScottBlake/iru/latest/docs (pinned to `~> 0.0`; current published version 0.0.10).
+
+---
+
 ## 7. GitHub
 
 GitHub is **push-target only** for TF Tool. There is no env-context fetcher; the tool does not list repos, branches, or PRs before generating. The `GITHUB_TOKEN` secret is used exclusively by `gh_push/` to commit the generated files to a repo and (optionally) open a PR.

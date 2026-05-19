@@ -67,6 +67,17 @@ Allowed values for resource_type and every item in resource_types:
 - jamfpro_computer_extension_attribute (custom inventory attribute reported by Macs)
 - jamfpro_restricted_software (block or kill a process on managed Macs)
 - jamfpro_computer_prestage_enrollment (Automated Device Enrollment / DEP prestage)
+- iru_blueprint (Kandji blueprint: top-level device assignment container)
+- iru_blueprint_routing (Kandji tenant-singleton routing config for enrollment-code based blueprint assignment)
+- iru_blueprint_library_item (join: attach a library item to a blueprint)
+- iru_custom_script (Kandji custom script library item)
+- iru_custom_profile (Kandji custom .mobileconfig profile library item)
+- iru_custom_app (Kandji custom macOS app library item)
+- iru_in_house_app (Kandji in-house iOS/iPadOS/tvOS app library item)
+- iru_tag (Kandji device tag)
+- iru_device_note (Kandji per-device note)
+- iru_ade_integration (Kandji Apple Automated Device Enrollment integration)
+- iru_ade_device (Kandji ADE-assigned device adoption)
 - unknown (use when the request cannot be mapped to a known resource)
 
 JAMF disambiguators (route to terraform_jamf_hcl, never to terraform_okta_hcl):
@@ -105,6 +116,21 @@ Snowflake disambiguators (route to terraform_snowflake_hcl via the snowflakedb/s
 - "Snowflake resource monitor" / "credit quota" / "Snowflake budget alert" -> snowflake_resource_monitor
 - "Snowflake network policy" / "IP allowlist for Snowflake" / "restrict Snowflake to office IPs" -> snowflake_network_policy
 - "SCIM provisioning to Snowflake" / "Okta SCIM into Snowflake" / "sync Okta users to Snowflake" -> snowflake_scim_integration (composite mode "Okta + Snowflake" also emits the okta_app_oauth side)
+
+Kandji (Iru) disambiguators (route to terraform_kandji_hcl via the MScottBlake/iru provider, NEVER to terraform_okta_hcl or terraform_jamf_hcl):
+- "Kandji blueprint" / "create a blueprint" / "Iru blueprint" -> iru_blueprint
+- "blueprint routing" / "enrollment-code routing" (Kandji context) -> iru_blueprint_routing
+- "attach library item to blueprint" / "add to blueprint" (Kandji context) -> iru_blueprint_library_item
+- "Kandji custom script" / "audit script" / "remediation script" (Kandji context) -> iru_custom_script
+- "Kandji custom profile" / "mobileconfig via Kandji" / "Kandji configuration profile" -> iru_custom_profile
+- "Kandji custom app" / "deploy macOS app via Kandji" / "package install in Kandji" -> iru_custom_app
+- "Kandji in-house app" / "internal iOS app via Kandji" / "Kandji iPad app distribution" -> iru_in_house_app
+- "Kandji tag" / "tag a Mac in Kandji" -> iru_tag
+- "device note" + (Kandji|Iru) -> iru_device_note
+- "Kandji ADE" / "Apple Business Manager + Kandji" / "ABM token in Kandji" -> iru_ade_integration
+- "Kandji ADE device" / "adopt ADE device into Kandji" / "assign blueprint to ADE device" -> iru_ade_device
+
+If a prompt names both Kandji and JAMF without picking one, return resource_type = unknown and ask in `ambiguities` which MDM the user wants; the two MDMs do not translate one-to-one (a JAMF policy is not a Kandji blueprint).
 
 ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
 - "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
@@ -233,6 +259,16 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 - Generate complete terraform_snowflake_hcl with Snowflake resources following SECTION K below.
 - Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
 - Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe. When the prompt mentions SCIM or Okta -> Snowflake provisioning, emit the SCIM wiring per SECTION K's composite-mode subsection (okta_app_oauth on the Okta side + snowflake_scim_integration on the Snowflake side).
+
+**OUTPUT MODE: Kandji only**
+- Generate complete terraform_kandji_hcl with the Kandji apply runbook header, provider block pinned to `MScottBlake/iru ~> 0.0`, and requested iru_* resources following SECTION L below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+
+**OUTPUT MODE: Okta + Kandji**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_kandji_hcl with Kandji resources following SECTION L below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe. Kandji is a device-management plane, not an identity plane; do NOT cross-wire Okta variables into the iru provider block or vice versa.
 
 ---
 
@@ -3180,6 +3216,335 @@ Identical to other sections: `intent.attributes.account`, `intent.attributes.rol
 - Emitting `snowflake_account_grant` or `snowflake_schema_grant` (both deprecated). Use `snowflake_grant_privileges_to_account_role`.
 - Forgetting that role and user names are case-sensitive but Snowflake stores them UPPER by default. Quoting `"DATA_ENGINEER"` vs `DATA_ENGINEER` matters; the convention is UPPERCASE unquoted strings everywhere.
 - Wrapping the HCL in triple-backtick fences. The JSON output dict must contain the raw HCL text, not a fenced code block.
+
+---
+
+## SECTION L — Kandji (Iru) Terraform (terraform_kandji_hcl)
+
+BINARY SCHEMA REALITY CHECK (Phase 23 grounded SECTION L against the cached
+MScottBlake/iru v0.0.10 provider binary at
+`_tftool/.terraform-plugin-cache/registry.terraform.io/mscottblake/iru/0.0.10/windows_amd64/`;
+schema dumped via `terraform providers schema -json` on 2026-05-18 and stored
+at `_tftool/iru_schema.json`).
+
+Rebrand: Kandji is the product name; the company rebranded to Iru in late 2025
+and the Terraform provider was renamed `MScottBlake/iru`. The resource prefix
+is `iru_*`, NOT `kandji_*`. The REST API hosts kept the legacy `kandji.io`
+domain (`https://<subdomain>.api.kandji.io`) for backwards compatibility.
+
+README-vs-binary divergences observed and the binary is authoritative on
+all of them:
+  - The Registry README example for `iru_blueprint_routing` does not mention
+    that `enrollment_code_active` is REQUIRED, but the binary schema marks it
+    `required = true`. Emit it explicitly in every routing resource.
+  - The README does not explicitly state that `iru_custom_app` requires
+    `file_key`, `install_enforcement`, `install_type`, and `name`. The binary
+    confirms all four are required. Do NOT omit any.
+  - The README documents the provider attribute as `api_url`, not `base_url`.
+    The binary confirms `api_url` is the canonical name. Do NOT emit
+    `base_url` in the provider block.
+
+### Apply runbook header (MANDATORY, first lines of terraform_kandji_hcl)
+
+Every terraform_kandji_hcl output MUST begin with this comment block exactly
+as written, with no leading blank line:
+
+```
+# KANDJI APPLY RUNBOOK
+# 1. terraform init
+# 2. terraform plan -out tfplan
+# 3. terraform apply tfplan
+# Provider: MScottBlake/iru v0.0.10 (resource prefix iru_*).
+# Auth: bearer token via KANDJI_API_TOKEN; tokens are tenant-scoped and
+#   minted from Settings -> Access -> Add API Token. Use a read-only token
+#   role for non-write workflows. Write workflows need an admin-scoped token.
+# Rate limit: 10,000 requests per hour per customer; large applies may pause.
+```
+
+### Provider block (always include in terraform_kandji_hcl)
+
+```
+terraform {
+  required_version = ">= 1.14.0"
+  required_providers {
+    iru = {
+      source  = "MScottBlake/iru"
+      version = "~> 0.0"
+    }
+  }
+}
+
+provider "iru" {
+  api_url   = var.kandji_base_url
+  api_token = var.kandji_api_token
+}
+
+variable "kandji_base_url" {
+  type        = string
+  description = "Kandji tenant API base URL, e.g. https://example.api.kandji.io"
+}
+
+variable "kandji_api_token" {
+  type        = string
+  description = "Kandji bearer API token; mint from Settings -> Access."
+  sensitive   = true
+}
+```
+
+### Canonical resource attribute table (verbatim from the v0.0.10 binary schema)
+
+The full attribute lists below come from
+`terraform providers schema -json` against the cached binary. Required
+attributes MUST appear; optional attributes are emitted only when the intent
+asks for them; computed attributes (`id`, `enrollment_code`, `mdm_identifier`,
+etc.) are NEVER emitted (Terraform fills them in).
+
+**iru_blueprint**
+  - REQUIRED: name (string)
+  - OPTIONAL: color (string), description (string), enrollment_code_active (bool),
+    icon (string), source_id (string), source_type (string), type (string)
+  - COMPUTED:  id, enrollment_code
+
+**iru_blueprint_routing**
+  - REQUIRED: enrollment_code_active (bool)
+  - COMPUTED: id, enrollment_code
+  - This is a tenant-singleton resource: there is exactly one routing
+    configuration per Kandji tenant. Do NOT emit more than one
+    iru_blueprint_routing block.
+
+**iru_blueprint_library_item**
+  - REQUIRED: blueprint_id (string), library_item_id (string)
+  - OPTIONAL: assignment_node_id (string)
+  - COMPUTED: id
+  - The join table that attaches a library item to a blueprint. The
+    library_item_id refers to an existing item (custom app, custom profile,
+    custom script, in-house app, etc.). For newly-created items, reference
+    the resource: `library_item_id = iru_custom_script.example.id`.
+
+**iru_custom_script**
+  - REQUIRED: name (string), execution_frequency (string), script (string)
+  - OPTIONAL: active (bool), remediation_script (string), restart (bool),
+    show_in_self_service (bool)
+  - COMPUTED: id
+  - `execution_frequency` accepts one of: "once", "every_15_min",
+    "every_hour", "every_day", "no_enforcement". Use a heredoc (`script = <<-EOT ... EOT`)
+    for multi-line shell bodies.
+
+**iru_custom_profile**
+  - REQUIRED: name (string), profile_file (string)
+  - OPTIONAL: active (bool), runs_on_ipad (bool), runs_on_iphone (bool),
+    runs_on_mac (bool), runs_on_tv (bool), runs_on_vision (bool)
+  - COMPUTED: id, mdm_identifier
+  - `profile_file` is an opaque file key referencing a .mobileconfig file
+    pre-uploaded to Kandji's storage. Treat it as a string variable; do NOT
+    attempt to base64-encode an inline profile body.
+
+**iru_custom_app**
+  - REQUIRED: name (string), file_key (string), install_enforcement (string),
+    install_type (string)
+  - OPTIONAL: active (bool), audit_script (string), postinstall_script (string),
+    preinstall_script (string), restart (bool), self_service_category_id (string),
+    self_service_recommended (bool), show_in_self_service (bool),
+    unzip_location (string)
+  - COMPUTED: id
+  - `install_enforcement` accepts "install_once", "continuously_enforce",
+    "no_enforcement". `install_type` accepts "package", "zip", "image".
+
+**iru_in_house_app**
+  - REQUIRED: name (string), file_key (string)
+  - OPTIONAL: active (bool), runs_on_ipad (bool), runs_on_iphone (bool),
+    runs_on_tv (bool)
+  - COMPUTED: id
+  - For internal iOS/iPadOS/tvOS apps distributed via Kandji rather than
+    the App Store. macOS apps go through `iru_custom_app`, NOT this one.
+
+**iru_tag**
+  - REQUIRED: name (string)
+  - COMPUTED: id
+
+**iru_device_note**
+  - REQUIRED: content (string), device_id (string)
+  - COMPUTED: id, author, created_at, updated_at
+
+**iru_ade_integration**
+  - REQUIRED: email (string), phone (string), mdm_server_token_file (string, SENSITIVE)
+  - OPTIONAL: blueprint_id (string), use_blueprint_routing (bool)
+  - COMPUTED: id, org_name, server_name, server_uuid, status,
+    stoken_file_name, admin_id, days_left, access_token_expiry
+  - Apple Automated Device Enrollment integration. The
+    `mdm_server_token_file` is the .p7m token downloaded from Apple Business
+    Manager; treat it as a sensitive string variable.
+
+**iru_ade_device**
+  - REQUIRED: (none directly; the device must already exist in ABM)
+  - OPTIONAL: asset_tag (string), blueprint_id (string),
+    use_blueprint_routing (bool), user_id (string)
+  - COMPUTED: id, serial_number, model, os, device_family,
+    description, color, dep_account, is_enrolled, profile_status
+  - This resource adopts an existing ADE-assigned device and lets you
+    set its blueprint / asset tag / assigned user.
+
+### Worked example: a blueprint with two library items and a routing rule
+
+```
+# KANDJI APPLY RUNBOOK
+# 1. terraform init
+# 2. terraform plan -out tfplan
+# 3. terraform apply tfplan
+# Provider: MScottBlake/iru v0.0.10 (resource prefix iru_*).
+# Auth: bearer token via KANDJI_API_TOKEN; tokens are tenant-scoped and
+#   minted from Settings -> Access -> Add API Token. Use a read-only token
+#   role for non-write workflows. Write workflows need an admin-scoped token.
+# Rate limit: 10,000 requests per hour per customer; large applies may pause.
+
+terraform {
+  required_version = ">= 1.14.0"
+  required_providers {
+    iru = {
+      source  = "MScottBlake/iru"
+      version = "~> 0.0"
+    }
+  }
+}
+
+provider "iru" {
+  api_url   = var.kandji_base_url
+  api_token = var.kandji_api_token
+}
+
+variable "kandji_base_url" {
+  type        = string
+  description = "Kandji tenant API base URL, e.g. https://example.api.kandji.io"
+}
+
+variable "kandji_api_token" {
+  type        = string
+  description = "Kandji bearer API token."
+  sensitive   = true
+}
+
+resource "iru_blueprint" "engineering" {
+  name        = "Engineering Mac"
+  description = "Standard Mac config for engineering laptops."
+  color       = "blue"
+  icon        = "laptop"
+}
+
+resource "iru_custom_script" "disk_encryption_audit" {
+  name                = "Disk encryption audit"
+  execution_frequency = "every_day"
+  active              = true
+  show_in_self_service = false
+  script              = <<-EOT
+    #!/bin/zsh
+    fdesetup status | grep -q "FileVault is On."
+  EOT
+}
+
+resource "iru_blueprint_library_item" "engineering_disk_audit" {
+  blueprint_id    = iru_blueprint.engineering.id
+  library_item_id = iru_custom_script.disk_encryption_audit.id
+}
+
+resource "iru_blueprint_routing" "default" {
+  enrollment_code_active = true
+}
+```
+
+### Worked example: a tag plus a device note
+
+```
+resource "iru_tag" "executives" {
+  name = "executives"
+}
+
+resource "iru_device_note" "ceo_macbook" {
+  device_id = var.ceo_device_id
+  content   = "CEO MacBook Pro; do not auto-wipe on stale enrollment."
+}
+
+variable "ceo_device_id" {
+  type        = string
+  description = "Kandji device id (Iru UUID) for the CEO's MacBook."
+}
+```
+
+### Composite-mode notes (Okta + Kandji)
+
+When the output mode is `Okta + Kandji`, terraform_kandji_hcl and
+terraform_okta_hcl are emitted independently. They share no variables and no
+provider blocks; the composite-mode merge in `tf_validate.py` deduplicates
+`terraform { required_providers {} }` blocks but otherwise leaves the two
+files alone. Do NOT cross-wire Okta variables into the iru provider or vice
+versa; Kandji is a device-management plane and Okta is an identity plane and
+the two planes do not exchange credentials in this output mode.
+
+If the user asks for SCIM provisioning from Okta INTO Kandji, note that
+Kandji does not expose a SCIM endpoint that the Okta provider can drive via
+`okta_app_oauth` + `okta_scim_*`. Emit a top-of-file comment instead:
+
+```
+# NOTE: Kandji does not expose an Okta-compatible SCIM endpoint as of
+# 2026-05; user provisioning into Kandji is typically driven by ADE
+# assignment + Kandji's API. This file therefore models Kandji-side
+# resources only; the Okta side handles SSO / SAML federation separately.
+```
+
+### PARSER OVERRIDE / DISAMBIGUATOR
+
+When the user prompt mentions any of these Kandji-specific terms, the intent
+parser MUST route the resource_type to the matching `iru_*` entry, NOT to a
+generic JAMF or Okta resource:
+
+  - "blueprint" -> iru_blueprint (or iru_blueprint_routing for "routing", or
+    iru_blueprint_library_item for "attach to blueprint")
+  - "library item" -> iru_blueprint_library_item (when context is an
+    attachment) or the underlying iru_custom_* resource (when context is
+    creation of the item itself)
+  - "custom profile" / ".mobileconfig" -> iru_custom_profile
+  - "custom script" / "audit script" -> iru_custom_script
+  - "custom app" / "package install" -> iru_custom_app
+  - "in-house app" / "iOS app distribution" -> iru_in_house_app
+  - "ADE" / "Automated Device Enrollment" / "ABM" / "Apple Business Manager"
+    -> iru_ade_integration (for the upload) or iru_ade_device (for the
+    per-device adoption)
+  - "tag" in a Kandji context -> iru_tag (note: in a JAMF context, "tag" is
+    not a resource; ambiguity is resolved by the surrounding provider hint)
+  - "device note" -> iru_device_note
+
+If both Kandji and JAMF are mentioned in the same prompt and the user does
+not explicitly pick one, ASK rather than guessing; the two MDMs have
+overlapping concepts (blueprint vs configuration profile) that do not
+translate one-to-one.
+
+### Common mistakes (do not commit any of these)
+
+- Emitting `source = "kandji-inc/kandji"` or `source = "grossi-co/kandji"`.
+  Neither path exists on the Terraform Registry. The canonical source is
+  `MScottBlake/iru` (lowercase `mscottblake` in the cache directory tree;
+  Terraform's source field is case-insensitive).
+- Emitting resources prefixed `kandji_*`. The provider's resource prefix is
+  `iru_*`. `kandji_blueprint` will fail `terraform init` with "unknown
+  resource type".
+- Emitting `base_url = ...` in the provider block. The canonical attribute is
+  `api_url`. The binary schema does NOT have a `base_url` attribute.
+- Emitting `iru_blueprint` without `name`. It is REQUIRED.
+- Emitting `iru_blueprint_routing` without `enrollment_code_active`. It is
+  REQUIRED and the resource will fail `terraform validate` without it.
+- Emitting `iru_blueprint_routing` more than once per tenant. There is
+  exactly one routing configuration per Kandji tenant.
+- Emitting `iru_custom_app` without one of `file_key`, `install_enforcement`,
+  `install_type`, `name`. All four are REQUIRED per the binary schema.
+- Emitting `iru_custom_script` without `execution_frequency`. It is REQUIRED.
+- Emitting a free-text `execution_frequency = "daily"`. The accepted values
+  are "once", "every_15_min", "every_hour", "every_day", "no_enforcement".
+- Inventing a `password` or `client_id` attribute on the iru provider block.
+  The only provider attributes per the binary are `api_url` and `api_token`.
+- Pinning version = "0.1.x" or "1.0.x". The current published version is
+  0.0.10; pin `~> 0.0` so 0.0.x patch updates flow through but 0.1+ requires
+  a manual bump.
+- Wrapping the HCL in triple-backtick fences. The JSON output dict must
+  contain the raw HCL text, not a fenced code block.
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:
@@ -3195,6 +3560,7 @@ OUTPUT MODE: {output_mode}
 {aws_resource_section}
 {gcp_resource_section}
 {jamf_resource_section}
+{kandji_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}

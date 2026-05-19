@@ -58,6 +58,18 @@ Live Snowflake context lit up in Phase 19c. The env-context fetcher uses `snowfl
 
 Phase 19c also re-grounded SECTION K of the system prompt against the cached v2.16.0 provider binary at `_tftool/.terraform-plugin-cache/registry.terraform.io/snowflakedb/snowflake/2.16.0/`. The v1 -> v2 rename of `snowflake_role` to `snowflake_account_role` is now reflected in every example, the removed `warehouses` attribute on `snowflake_resource_monitor` no longer appears (warehouse-to-monitor binding flows through the warehouse resource's `resource_monitor` field), `snowflake_scim_integration.enabled` is emitted as required, and `sync_password` is emitted as a string. Users with old generated HCL that still says `snowflake_role` will see a `terraform validate` failure on re-apply; the fix is a global `snowflake_role -> snowflake_account_role` rename in their existing files.
 
+### Kandji (Terraform)
+
+Kandji is the Apple-first MDM that rebranded to Iru in late 2025. The Terraform provider source is `MScottBlake/iru` (community-maintained); the resource prefix is `iru_*` rather than `kandji_*`. Pinned to `~> 0.0` (current published version 0.0.10). Covers 11 resources: blueprint, blueprint_routing, blueprint_library_item, custom_script, custom_profile, custom_app, in_house_app, tag, device_note, ade_integration, ade_device.
+
+Auth is a tenant-scoped bearer token. Output modes `Kandji only` and `Okta + Kandji` use two env vars: `KANDJI_BASE_URL` (e.g. `https://example.api.kandji.io`) and `KANDJI_API_TOKEN`. Tokens are minted from Settings -> Access -> Add API Token in the Kandji console; a read-only role is sufficient for the env-context fetcher, a write role is needed for applying generated HCL. The Kandji API caps at 10,000 requests per hour per customer; large applies may pause.
+
+Live Kandji context lit up in Phase 23. The env-context fetcher uses bearer auth against `/api/v1/blueprints`, `/api/v1/library/library-items`, and `/api/v1/tags` (offset/limit pagination, 300 items/page, hard safety cap of 100 pages per endpoint). The three resource categories are surfaced to the parser so generated HCL references real blueprint and library-item ids instead of inventing them, and the Kandji pill flips to `on` when the two secrets are configured and the first list call returns a 2xx.
+
+SECTION L of the system prompt is grounded directly in the cached v0.0.10 provider binary at `_tftool/.terraform-plugin-cache/registry.terraform.io/mscottblake/iru/0.0.10/windows_amd64/` (schema dumped via `terraform providers schema -json` and stored at `_tftool/iru_schema.json`). The README-vs-binary divergences uncovered during grounding are documented in SECTION L's BINARY SCHEMA REALITY CHECK preamble. KD01-KD10 in `qa_runner.py` exercise the core resource set plus one Okta + Kandji composite test.
+
+Composite mode `Okta + Kandji` keeps the two providers' resources independent: Kandji is a device-management plane and Okta is an identity plane, and there is no SCIM-style cross-wiring available from Okta into Kandji as of 2026-05 (Kandji does not expose an Okta-compatible SCIM endpoint). The generator emits a top-of-file note in the composite output making this explicit.
+
 ## Feature surface
 
 **Generation pipeline.** Anthropic Haiku 4.5 with prompt caching (system prompts wrapped in `cache_control: ephemeral`); intent parser, generator, and validator/refiner each run as a discrete pass. Live env context from Okta / AWS / GCP resolves real group, app, function, and project IDs into the parsed intent before generation.

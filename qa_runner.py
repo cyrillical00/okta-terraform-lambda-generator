@@ -132,6 +132,13 @@ class TestCase:
     snowflake_types: list = field(default_factory=list)
     must_contain_snowflake: list = field(default_factory=list)
     must_not_contain_snowflake: list = field(default_factory=list)
+    # Kandji (Iru) Terraform HCL test fields (Kandji only / Okta + Kandji).
+    # When kandji_types is set, build_intent routes the test to the Kandji
+    # output path via MScottBlake/iru ~> 0.0; run_checks reads
+    # terraform_kandji_hcl and composes with tf_validate.run_terraform.
+    kandji_types: list = field(default_factory=list)
+    must_contain_kandji: list = field(default_factory=list)
+    must_not_contain_kandji: list = field(default_factory=list)
     # Multi-object reliability check: {resource_type: required_min_count} across
     # all HCL keys. Asserts the generator emitted N distinct `resource "X" "label"`
     # blocks of each named type. Closes the JF10/COMP02 class of failure where
@@ -1488,6 +1495,128 @@ TEST_CASES = [
                  'sync_password  = true',
              ],
              notes="Composite Okta + Snowflake SCIM: app_oauth + account_role + scim_integration; bearer-token hand-off note required."),
+
+    # ── Kandji (Iru) Terraform via MScottBlake/iru ~> 0.0 (Phase 23) ──────────
+    TestCase("KD01",
+             "Create a Kandji blueprint called Engineering Mac with a description and the color blue.",
+             kandji_types=["iru_blueprint"],
+             must_contain_kandji=[
+                 'resource "iru_blueprint"',
+                 "Engineering Mac",
+                 "description",
+                 "color",
+                 'MScottBlake/iru',
+             ],
+             must_not_contain_kandji=[
+                 'resource "kandji_blueprint"',
+                 'kandji-inc/kandji',
+             ],
+             notes="iru_blueprint top-level container with name + description + color."),
+    TestCase("KD02",
+             "Create a Kandji custom script library item called Disk Encryption Audit that runs daily and checks FileVault status.",
+             kandji_types=["iru_custom_script"],
+             must_contain_kandji=[
+                 'resource "iru_custom_script"',
+                 "execution_frequency",
+                 "every_day",
+                 "script",
+             ],
+             must_not_contain_kandji=[
+                 'execution_frequency = "daily"',
+             ],
+             notes="iru_custom_script with execution_frequency canonical value 'every_day' (not 'daily')."),
+    TestCase("KD03",
+             "Create a Kandji custom profile called WiFi Corporate using an uploaded mobileconfig file that runs on Macs and iPads.",
+             kandji_types=["iru_custom_profile"],
+             must_contain_kandji=[
+                 'resource "iru_custom_profile"',
+                 "WiFi Corporate",
+                 "profile_file",
+                 "runs_on_mac",
+                 "runs_on_ipad",
+             ],
+             notes="iru_custom_profile with profile_file + per-platform runs_on flags."),
+    TestCase("KD04",
+             "Create a Kandji custom app library item called Slack Desktop that installs once via package, with a postinstall script.",
+             kandji_types=["iru_custom_app"],
+             must_contain_kandji=[
+                 'resource "iru_custom_app"',
+                 "Slack Desktop",
+                 "file_key",
+                 "install_enforcement",
+                 "install_once",
+                 "install_type",
+                 "package",
+                 "postinstall_script",
+             ],
+             notes="iru_custom_app requires all four of file_key + install_enforcement + install_type + name."),
+    TestCase("KD05",
+             "Create a Kandji tag called executives.",
+             kandji_types=["iru_tag"],
+             must_contain_kandji=[
+                 'resource "iru_tag"',
+                 "executives",
+             ],
+             notes="iru_tag minimal resource: name only."),
+    TestCase("KD06",
+             "Create a Kandji blueprint called Sales Mac and attach an existing custom script library item with id var.script_item_id to it.",
+             kandji_types=["iru_blueprint", "iru_blueprint_library_item"],
+             must_contain_kandji=[
+                 'resource "iru_blueprint"',
+                 'resource "iru_blueprint_library_item"',
+                 "blueprint_id",
+                 "library_item_id",
+             ],
+             notes="Blueprint + library-item attachment (the join resource)."),
+    TestCase("KD07",
+             "Configure Kandji blueprint routing so enrollment codes are active for the whole tenant.",
+             kandji_types=["iru_blueprint_routing"],
+             must_contain_kandji=[
+                 'resource "iru_blueprint_routing"',
+                 "enrollment_code_active",
+                 "true",
+             ],
+             must_contain_count={"iru_blueprint_routing": 1},
+             notes="iru_blueprint_routing is a tenant-singleton; exactly one block."),
+    TestCase("KD08",
+             "Create three Kandji blueprints for Engineering, Sales, and Support teams, all with the laptop icon and the same description.",
+             kandji_types=["iru_blueprint"],
+             must_contain_kandji=[
+                 'resource "iru_blueprint"',
+                 "Engineering",
+                 "Sales",
+                 "Support",
+                 "icon",
+             ],
+             must_contain_count={"iru_blueprint": 3},
+             notes="Multi-object: 3 distinct iru_blueprint resources."),
+    TestCase("KD09",
+             "Create a Kandji ADE integration using an Apple Business Manager token file referenced by var.ade_token_file. Set the admin email to admin@example.com and phone to +14155551212. Enable blueprint routing.",
+             kandji_types=["iru_ade_integration"],
+             must_contain_kandji=[
+                 'resource "iru_ade_integration"',
+                 "mdm_server_token_file",
+                 "email",
+                 "admin@example.com",
+                 "phone",
+                 "use_blueprint_routing",
+                 "true",
+             ],
+             notes="iru_ade_integration: required email + phone + mdm_server_token_file; sensitive token attribute."),
+    TestCase("KD10",
+             "Set up SAML SSO for Kandji in Okta as an okta_app_saml app, and on the Kandji side create a tag called sso_users and a blueprint called SSO Users Mac.",
+             okta_types=["okta_app_saml"],
+             kandji_types=["iru_blueprint", "iru_tag"],
+             must_contain=[
+                 "okta_app_saml",
+             ],
+             must_contain_kandji=[
+                 'resource "iru_blueprint"',
+                 'resource "iru_tag"',
+                 "SSO Users Mac",
+                 "sso_users",
+             ],
+             notes="Composite Okta + Kandji: SAML app on Okta side + blueprint + tag on Kandji side."),
 ]
 
 
@@ -1768,6 +1897,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             + "\n" + (outputs.get("terraform_jamf_hcl", "") or "")
             + "\n" + (outputs.get("terraform_fleet_hcl", "") or "")
             + "\n" + (outputs.get("terraform_snowflake_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_kandji_hcl", "") or "")
         )
         for rtype, min_count in tc.must_contain_count.items():
             actual = len(re.findall(rf'resource\s+"{re.escape(rtype)}"\s+"', full_hcl))
@@ -2100,6 +2230,37 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             if needle in snowflake_hcl:
                 issues.append(f"Forbidden string '{needle}' in terraform_snowflake_hcl")
 
+    # ── 19b. Kandji (Iru) Terraform HCL checks (Kandji only / Okta + Kandji) ──
+    kandji_hcl = outputs.get("terraform_kandji_hcl", "") or ""
+    if output_mode in ("Kandji only", "Okta + Kandji"):
+        if not kandji_hcl.strip():
+            issues.append(f"terraform_kandji_hcl empty in {output_mode} mode")
+        else:
+            if "# KANDJI APPLY RUNBOOK" not in kandji_hcl:
+                issues.append("terraform_kandji_hcl missing `# KANDJI APPLY RUNBOOK` header")
+            # In composite `Okta + Kandji` the merged required_providers block
+            # lives in okta.tf, so the source string can legitimately live
+            # there rather than kandji.tf. Treat both files as the workspace.
+            _kandji_scope = kandji_hcl + "\n" + (outputs.get("terraform_okta_hcl", "") or "")
+            if 'MScottBlake/iru' not in _kandji_scope:
+                issues.append("terraform_kandji_hcl (or companion okta.tf in composite mode) missing required source `MScottBlake/iru`")
+            # Old / wrong source paths must not appear.
+            if 'kandji-inc/kandji' in _kandji_scope or 'grossi-co/kandji' in _kandji_scope:
+                issues.append("workspace uses non-canonical Kandji provider source; use `MScottBlake/iru` (post-rebrand canonical path)")
+            # Kandji-prefix resources are wrong; resource prefix is iru_*.
+            import re as _re_kj
+            if _re_kj.search(r'^\s*resource\s+"kandji_', kandji_hcl, _re_kj.MULTILINE):
+                issues.append("terraform_kandji_hcl emits `kandji_*` resources; provider prefix is `iru_*`")
+            # Provider attribute name: api_url (binary), NOT base_url.
+            if _re_kj.search(r'provider\s+"iru"\s*\{[^}]*base_url\s*=', kandji_hcl, _re_kj.DOTALL):
+                issues.append("terraform_kandji_hcl provider block uses `base_url`; the iru provider expects `api_url`")
+        for needle in tc.must_contain_kandji:
+            if needle not in kandji_hcl:
+                issues.append(f"Expected '{needle}' in terraform_kandji_hcl")
+        for needle in tc.must_not_contain_kandji:
+            if needle in kandji_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_kandji_hcl")
+
     # ── 20. Universal post-check: Phase 18b secret-shape scanner ──
     # generator.terraform_gen.generate_all attaches its scanner findings
     # under the private `_secret_scan_findings` key. Any non-empty list
@@ -2128,6 +2289,7 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     if intent.get("operation_type") == "unknown" and (
         tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
         or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
+        or tc.kandji_types
     ):
         intent["operation_type"] = "create"
     if tc.okta_types:
@@ -2144,14 +2306,21 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["fleet_resource_types"] = tc.fleet_tf_types  # same parser routing; mode decides format
     if tc.snowflake_types:
         intent["snowflake_resource_types"] = tc.snowflake_types
+    if tc.kandji_types:
+        intent["kandji_resource_types"] = tc.kandji_types
     # Mode mapping mirrors app.py:Stage 1 (after-parse):
+    # kandji+okta -> "Okta + Kandji", kandji alone -> "Kandji only",
     # snowflake+okta -> "Okta + Snowflake", snowflake alone -> "Snowflake only",
     # fleet_tf+okta -> "Okta + Fleet TF", fleet_tf alone -> "Fleet TF only",
     # fleet+okta -> "Okta + Fleet GitOps", fleet alone -> "Fleet GitOps only",
     # jamf+okta -> "Okta + JAMF", jamf alone -> "JAMF only",
     # gcp+okta -> "Okta + GCP", gcp alone -> "GCP only", aws+okta -> "Both",
     # okta alone -> "Okta Terraform only", aws alone (rare) -> "Lambda only".
-    if tc.snowflake_types and tc.okta_types:
+    if tc.kandji_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Kandji"
+    elif tc.kandji_types:
+        intent["output_mode"] = "Kandji only"
+    elif tc.snowflake_types and tc.okta_types:
         intent["output_mode"] = "Okta + Snowflake"
     elif tc.snowflake_types:
         intent["output_mode"] = "Snowflake only"
@@ -2425,6 +2594,7 @@ def _decode_batch_result_to_intent(result_entry: dict, tc: "TestCase") -> dict:
     if intent.get("operation_type") == "unknown" and (
         tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
         or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
+        or tc.kandji_types
     ):
         intent["operation_type"] = "create"
     if tc.okta_types:
@@ -2691,7 +2861,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         outputs = outputs_by_id.get(tid)
         has_hcl = outputs and any(
             (outputs.get(k) or "").strip()
-            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl", "terraform_snowflake_hcl")
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl", "terraform_snowflake_hcl", "terraform_kandji_hcl")
         )
         if not has_hcl:
             r["terraform_validate_pass"] = None

@@ -153,6 +153,8 @@ def build_env_context(
     snowflake_role: str = "",
     snowflake_warehouse: str = "",
     snowflake_passphrase: str = "",
+    kandji_base_url: str = "",
+    kandji_api_token: str = "",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
@@ -168,6 +170,7 @@ def build_env_context(
             snowflake_warehouse,
             snowflake_passphrase or None,
         ),
+        "kandji": fetch_kandji_context(kandji_base_url, kandji_api_token),
     }
 
 
@@ -332,6 +335,67 @@ def fetch_snowflake_context(
     }
 
 
+def fetch_kandji_context(base_url: str, api_token: str) -> dict:
+    """Best-effort fetch of live Kandji blueprints / library items / tags.
+
+    Returns the canonical env-context shape used by render_env_pills and the
+    sidebar status block: `{connected, base_url, blueprints, library_items,
+    tags, error, partial_errors}`. When `base_url` or `api_token` is empty,
+    short-circuits to the disconnected shape without contacting the network.
+
+    Per-endpoint failures are non-fatal and append a one-line summary to
+    `partial_errors`, matching the JAMF / Fleet pattern.
+
+    Secret expectations (resolved by the caller in app.py:_load_env_context):
+      base_url:  KANDJI_BASE_URL    (e.g. https://example.api.kandji.io)
+      api_token: KANDJI_API_TOKEN   (bearer token; read-only scope is enough)
+
+    NOTE: Kandji rebranded to Iru in late 2025 and the Terraform provider
+    moved to MScottBlake/iru, but the REST API hosts kept the `kandji.io`
+    domain and `/api/v1/...` paths for backwards compatibility as of the
+    schema dump date (2026-05-18).
+    """
+    if not base_url or not api_token:
+        return {
+            "connected": False,
+            "error": "Not configured, add KANDJI_BASE_URL and KANDJI_API_TOKEN to secrets.",
+        }
+    try:
+        from kandji_client import KandjiClient, KandjiError
+    except ImportError as e:
+        return {"connected": False, "error": f"Kandji client unavailable: {e}"}
+    try:
+        client = KandjiClient(base_url, api_token)
+    except KandjiError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except KandjiError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    canonical_url = base_url.rstrip("/")
+    blueprints = _safe("blueprints", client.list_blueprints)
+    library_items = _safe("library_items", client.list_library_items)
+    tags = _safe("tags", client.list_tags)
+
+    return {
+        "connected": True,
+        "base_url": canonical_url,
+        "blueprints": blueprints,
+        "library_items": library_items,
+        "tags": tags,
+        "error": None,
+        "partial_errors": partial_errors,
+    }
+
+
 def format_context_for_prompt(env_context: dict) -> str:
     """Returns a formatted string for injection into the generation prompt. Empty string if nothing connected."""
     okta = env_context.get("okta", {})
@@ -340,6 +404,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     jamf = env_context.get("jamf", {})
     fleet = env_context.get("fleet", {})
     snowflake = env_context.get("snowflake", {})
+    kandji = env_context.get("kandji", {})
     sections = []
 
     if okta.get("connected"):
@@ -519,6 +584,35 @@ def format_context_for_prompt(env_context: dict) -> str:
                 lines.append(f'  - name: "{u.get("name", "")}"  default_role: {u.get("default_role", "")}')
             if len(users) > 50:
                 lines.append(f'  ({len(users)} total, showing 50)')
+        sections.append("\n".join(lines))
+
+    if kandji.get("connected"):
+        lines = ["### Kandji (Iru) live resources"]
+        kbase = kandji.get("base_url", "")
+        if kbase:
+            lines.append("**Kandji instance metadata** (use this URL in the iru provider block):")
+            lines.append(f'  - api_url: "{kbase}"')
+        blueprints = kandji.get("blueprints", [])
+        if blueprints:
+            lines.append('**Blueprints** (reference by name or id in iru_blueprint_routing / iru_blueprint_library_item):')
+            for b in blueprints[:50]:
+                lines.append(f'  - name: "{b.get("name", "")}"  id: {b.get("id", "")}')
+            if len(blueprints) > 50:
+                lines.append(f'  ({len(blueprints)} total, showing 50)')
+        library_items = kandji.get("library_items", [])
+        if library_items:
+            lines.append('**Library items** (existing item names; do not duplicate):')
+            for li in library_items[:50]:
+                lines.append(f'  - name: "{li.get("name", "")}"  id: {li.get("id", "")}  type: {li.get("type", "")}')
+            if len(library_items) > 50:
+                lines.append(f'  ({len(library_items)} total, showing 50)')
+        tags = kandji.get("tags", [])
+        if tags:
+            lines.append('**Tags** (existing tag names; reference via iru_tag):')
+            for t in tags[:50]:
+                lines.append(f'  - name: "{t.get("name", "")}"  id: {t.get("id", "")}')
+            if len(tags) > 50:
+                lines.append(f'  ({len(tags)} total, showing 50)')
         sections.append("\n".join(lines))
 
     if not sections:
