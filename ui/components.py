@@ -35,14 +35,20 @@ def _infer_mode(
     jamf_types: list[str] | None = None,
     fleet_types: list[str] | None = None,
     snowflake_types: list[str] | None = None,
+    kandji_types: list[str] | None = None,
 ) -> str:
     """Mirror app.py's mode-inference logic so the read-only chip stays in sync.
 
-    Order: Snowflake -> Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
+    Order: Kandji -> Snowflake -> Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
     Fleet TF stays CLI/HTTP-only, so the UI never infers a Fleet TF mode."""
     jamf_types = jamf_types or []
     fleet_types = fleet_types or []
     snowflake_types = snowflake_types or []
+    kandji_types = kandji_types or []
+    if kandji_types and okta_types:
+        return "Okta + Kandji"
+    if kandji_types:
+        return "Kandji only"
     if snowflake_types and okta_types:
         return "Okta + Snowflake"
     if snowflake_types:
@@ -386,24 +392,25 @@ def _render_okta_tab() -> list[str]:
     return selected
 
 
-def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
     """Provider-tabbed resource-type selector. Returns (okta_types, aws_types,
-    gcp_types, jamf_types, fleet_types, snowflake_types).
+    gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types).
 
     Phase 16 redesign: replaced the six horizontally-stacked rows (~50 checkboxes
     visible at once) with `st.tabs` so only the active provider's checkboxes
     render. Tab switches are cheap because Streamlit's session state retains all
     checkbox values regardless of which tab body is currently visible, so the
-    6-tuple return always reflects the user's full selection across every
+    7-tuple return always reflects the user's full selection across every
     provider.
 
     Provider routing is unchanged:
       - JAMF -> terraform_jamf_hcl
       - Fleet -> fleet_gitops_yaml (Fleet TF stays CLI/HTTP-only)
       - Snowflake -> terraform_snowflake_hcl via snowflakedb/snowflake ~> 2.0
+      - Kandji -> terraform_kandji_hcl via MScottBlake/iru ~> 0.0
     """
-    okta_tab, aws_tab, gcp_tab, jamf_tab, fleet_tab, snowflake_tab = st.tabs(
-        ["Okta", "AWS", "GCP", "JAMF", "Fleet", "Snowflake"]
+    okta_tab, aws_tab, gcp_tab, jamf_tab, fleet_tab, snowflake_tab, kandji_tab = st.tabs(
+        ["Okta", "AWS", "GCP", "JAMF", "Fleet", "Snowflake", "Kandji"]
     )
 
     with okta_tab:
@@ -444,7 +451,14 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str], li
             key_prefix="snowflake",
         )
 
-    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected
+    with kandji_tab:
+        kandji_selected = _render_checkbox_grid(
+            list(_KANDJI_RESOURCE_LABEL_TO_TF.keys()),
+            _KANDJI_RESOURCE_LABEL_TO_TF,
+            key_prefix="kandji",
+        )
+
+    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected, kandji_selected
 
 
 _AUTO_LABEL = "Auto (inferred from selection)"
@@ -464,6 +478,8 @@ _ALL_OUTPUT_MODES = [
     "Okta + Fleet TF",
     "Snowflake only",
     "Okta + Snowflake",
+    "Kandji only",
+    "Okta + Kandji",
 ]
 
 

@@ -984,8 +984,8 @@ st.caption("Describe an operation in plain English and get production-ready Terr
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types = render_resource_type_selector()
-    _inferred_mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types)
+    okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types = render_resource_type_selector()
+    _inferred_mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types)
     _resolved_output_mode = render_output_mode_picker(_inferred_mode)
     user_input = st.text_area(
         "Describe the operation",
