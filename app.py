@@ -396,6 +396,12 @@ def _generate_and_refine(intent: dict, extra_instructions: str, client, model: s
         def _on_text_delta(chunk):
             stream_state["text"] += chunk
             pass_box.code(stream_state["text"], language="json")
+            # Yield the GIL so Tornado's WebSocket worker can flush the update
+            # to the browser before the script thread spins back into the
+            # next Anthropic delta. Without this, Streamlit Cloud buffers the
+            # placeholder updates until the script yields, and the user sees
+            # the streamed text appear all at once at the end.
+            _time.sleep(0.01)
 
         def _on_pass(pass_num, validation, has_issues):
             # First time we hit a pass callback, the initial draft has
@@ -1055,6 +1061,10 @@ if parse_clicked and user_input.strip():
         def _on_parse_delta(chunk):
             _parse_streamed["text"] += chunk
             _parse_box.code(_parse_streamed["text"], language="json")
+            # Yield the GIL so Streamlit Cloud can flush each placeholder
+            # update to the browser instead of buffering until the stream
+            # completes. See Phase 24.1 commit for the diagnosis.
+            _time.sleep(0.01)
         try:
             intent = parse_intent(
                 cleaned_input, client, model=model,
