@@ -181,20 +181,32 @@ def _cache_hit_rate(email: str) -> float | None:
 # ── render ───────────────────────────────────────────────────────────────
 
 
-def render_cost_dashboard(env_context: dict | None, user_email: str) -> None:
+def render_cost_dashboard(
+    env_context: dict | None,
+    user_email: str,
+    *,
+    today_usd: float | None = None,
+    daily_totals: dict[str, float] | None = None,
+    audit_entries: list[dict] | None = None,
+) -> None:
     """Streamlit-side renderer. Container-agnostic: writes flow into
     whichever container the caller is `with`-ing (typically a sidebar
     expander).
+
+    The three GitHub-backed reads (today's spend, daily totals, recent
+    audit) can be injected by the caller. app.py passes cached values so
+    the dashboard does not re-hit GitHub on every rerun; when omitted (the
+    test path and any direct caller) the dashboard fetches them itself.
     """
     import streamlit as st
 
     email = (user_email or "").strip() or "anonymous"
 
-    today_usd = 0.0
-    try:
-        today_usd = float(_cost.today_usd(email) or 0.0)
-    except Exception:
-        today_usd = 0.0
+    if today_usd is None:
+        try:
+            today_usd = float(_cost.today_usd(email) or 0.0)
+        except Exception:
+            today_usd = 0.0
 
     session = _cost.total_session(email) or {}
     prompt_count = int(session.get("calls", 0) or 0)
@@ -212,7 +224,7 @@ def render_cost_dashboard(env_context: dict | None, user_email: str) -> None:
             "n/a" if cache_hit is None else f"{cache_hit:.1f}%",
         )
 
-    daily = _read_daily_totals(email)
+    daily = daily_totals if daily_totals is not None else _read_daily_totals(email)
     window7 = _build_window(daily, 7)
     has_any_spend = any(v > 0 for _, v in window7)
 
@@ -243,7 +255,8 @@ def render_cost_dashboard(env_context: dict | None, user_email: str) -> None:
 
     # Top 5 most expensive prompts in the last 7 days. Audit entries are
     # the source of truth here; cost.py only tracks per-day totals.
-    audit_entries = _recent_audit_entries(email, _AUDIT_PULL_LIMIT)
+    if audit_entries is None:
+        audit_entries = _recent_audit_entries(email, _AUDIT_PULL_LIMIT)
     top = _top_prompts(audit_entries, days=7, k=_TOP_PROMPT_LIMIT)
     if top:
         st.caption("Top prompts by cost (last 7 days)")

@@ -146,6 +146,55 @@ from ui.cost_dashboard import render_cost_dashboard
 from env_context import build_env_context
 from repo_context import fetch_terraform_files
 
+
+# ── sidebar read cache ────────────────────────────────────────────────────
+# The sidebar re-reads cost / audit / history / prefs from GitHub on every
+# rerun, and Streamlit runs the body of collapsed expanders too, so a single
+# no-op interaction (clicking a sample prompt, toggling a checkbox) used to
+# fan out into serial GitHub round-trips and stall the UI for 3-4s. These
+# wrappers cache each read keyed by email + a session "data version" that
+# bumps only after a real write (parse / generate / push), so the panels stay
+# fresh where it matters but every intermediate rerun hits the cache. The
+# `version` arg is unused inside each body; it exists solely to key the cache
+# so a bump forces a refetch.
+def _sidebar_data_version() -> int:
+    return int(st.session_state.get("_sidebar_data_version", 0))
+
+
+def _bump_sidebar_data_version() -> None:
+    st.session_state["_sidebar_data_version"] = _sidebar_data_version() + 1
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_user_prefs(email: str, version: int) -> dict:
+    return _user_prefs.load(email)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_cost_daily(email: str, version: int) -> dict:
+    from ui.cost_dashboard import _read_daily_totals
+    return _read_daily_totals(email)
+
+
+def _cached_today_usd(email: str, version: int) -> float:
+    # cost.today_usd reads the same _tftool/usage/<hash>.json file that
+    # _cached_cost_daily already fetched, so derive today's spend from that
+    # cached dict instead of issuing a second identical GitHub read.
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return float(_cached_cost_daily(email, version).get(today, 0.0) or 0.0)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_audit_recent(email: str, limit: int, version: int) -> list[dict]:
+    return _audit.recent(email, limit=limit)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_history(email: str, version: int) -> list[dict]:
+    return get_entries(email)
+
+
 _OKTA_RESOURCE_TYPES = {
     "okta_app_saml", "okta_app_oauth", "okta_group", "okta_group_rule",
     "okta_event_hook", "okta_user_profile_mapping", "okta_auth_server",
@@ -725,7 +774,7 @@ def _render_audit_sidebar(email: str) -> None:
     """Show the user's last 10 privileged actions plus a CSV export button.
     Renders into the current container; caller wraps in an outer expander."""
     st.markdown("**Audit log**")
-    entries = _audit.recent(email, limit=10)
+    entries = _cached_audit_recent(email, 10, _sidebar_data_version())
     if not entries:
         st.caption("No actions logged yet.")
         return
@@ -755,7 +804,7 @@ def _render_audit_sidebar(email: str) -> None:
 
 def _render_history_sidebar(email: str) -> None:
     """Show the last 30 prompts with reuse buttons. Container-agnostic."""
-    entries = get_entries(email)
+    entries = _cached_history(email, _sidebar_data_version())
     st.markdown("**Command History**")
     if not entries:
         st.caption("No history yet. Generate something to start building your library.")
@@ -868,7 +917,7 @@ def _render_identity_strip(email: str) -> None:
     calls this from inside `with st.sidebar:` so writes flow into the
     sidebar directly (no expander wrap)."""
     role = _roles.get_role(email)
-    spent = _cost.today_usd(email)
+    spent = _cached_today_usd(email, _sidebar_data_version())
     cap = _roles.daily_quota_usd(email)
     st.markdown(f'<span class="tf-sidebar-role">Role <b>{role}</b></span>', unsafe_allow_html=True)
     if cap == 0:
@@ -927,7 +976,7 @@ inject_keyboard_shortcuts()
 # matching data-theme attribute. Defaults to dark for any user without
 # a saved preference. The toggle UI lives in the Account modal.
 try:
-    _saved_theme = _user_prefs.load(st.user.email).get("theme", "dark")
+    _saved_theme = _cached_user_prefs(st.user.email, _sidebar_data_version()).get("theme", "dark")
 except Exception:
     _saved_theme = "dark"
 inject_theme(_saved_theme)
@@ -962,7 +1011,16 @@ with st.sidebar:
         _render_history_sidebar(st.user.email)
 
     with st.expander("Cost & Usage", expanded=False):
-        render_cost_dashboard(st.session_state.get("env_context"), st.user.email)
+        from ui.cost_dashboard import _AUDIT_PULL_LIMIT
+        _cost_ver = _sidebar_data_version()
+        _cost_email = st.user.email
+        render_cost_dashboard(
+            st.session_state.get("env_context"),
+            _cost_email,
+            today_usd=_cached_today_usd(_cost_email, _cost_ver),
+            daily_totals=_cached_cost_daily(_cost_email, _cost_ver),
+            audit_entries=_cached_audit_recent(_cost_email, _AUDIT_PULL_LIMIT, _cost_ver),
+        )
 
     group_label = "Admin" if _is_admin else "Settings"
     with st.expander(group_label, expanded=False):
@@ -1117,6 +1175,7 @@ if parse_clicked and user_input.strip():
                         output_mode=intent.get("output_mode", ""),
                         redacted_input_preview=cleaned_input,
                     )
+                    _bump_sidebar_data_version()
         except ValueError as e:
             st.session_state.parse_error = str(e)
 
@@ -1167,6 +1226,7 @@ if st.session_state.generation_triggered:
             output_mode=st.session_state.intent.get("output_mode", ""),
             redacted_input_preview=st.session_state.last_user_input,
         )
+        _bump_sidebar_data_version()
 
 if st.session_state.gen_error:
     render_error_panel(
@@ -1362,6 +1422,7 @@ if st.session_state.outputs:
                 redacted_input_preview=st.session_state.last_user_input,
                 extra={"extra_instructions": (extra_instructions or "")[:200]},
             )
+            _bump_sidebar_data_version()
             st.rerun()
 
     # GitHub push
@@ -1407,6 +1468,7 @@ if st.session_state.outputs:
                         commit_url=commit_url,
                         extra={"repo": repo_override, "branch": branch_override or "default", "file_count": len(files)},
                     )
+                    _bump_sidebar_data_version()
                 except RuntimeError as e:
                     render_error_panel(
                         "GitHub push failed",
