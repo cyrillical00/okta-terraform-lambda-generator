@@ -3,7 +3,7 @@
 Pinned API endpoints (Fleet server >= 4.82.0):
 
   Labels:        GET /api/v1/fleet/labels                    (JSON, paginated)
-  Policies:      GET /api/v1/fleet/policies                  (JSON, global only, paginated)
+  Policies:      GET /api/v1/fleet/global/policies           (JSON, global only, paginated)
   Team policies: GET /api/v1/fleet/teams/<id>/policies       (JSON, paginated; 404 on Fleet Free)
   Queries:       GET /api/v1/fleet/queries                   (JSON, paginated)
   Teams:         GET /api/v1/fleet/teams                     (JSON, paginated; empty on Fleet Free)
@@ -158,7 +158,10 @@ class FleetClient:
         return self._request_paginated("/api/v1/fleet/labels", "labels")
 
     def list_policies(self) -> list[dict]:
-        return self._request_paginated("/api/v1/fleet/policies", "policies")
+        # Global policies live at /global/policies. Fleet removed the bare
+        # /api/v1/fleet/policies route by 4.85 (it 404s), so pin the documented
+        # global path here. Per-team policies use /teams/<id>/policies below.
+        return self._request_paginated("/api/v1/fleet/global/policies", "policies")
 
     def list_queries(self) -> list[dict]:
         return self._request_paginated("/api/v1/fleet/queries", "queries")
