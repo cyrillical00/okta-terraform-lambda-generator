@@ -108,6 +108,10 @@ _PATTERNS = [
     # body is `xox[bpars]-` followed by 50+ chars of digits, letters,
     # and dashes.
     ("slack_token",       re.compile(r"\bxox[bparso]-[0-9A-Za-z-]{20,}\b"), "<REDACTED_SLACK_TOKEN>"),
+    # Lumos personal access token: `lsk_` prefix followed by an opaque body.
+    # The published Lumos format is `lsk_<32+ base64url-ish chars>`; we match
+    # any `lsk_` prefix + 24+ token chars to also catch synthetic dev tokens.
+    ("lumos_token",       re.compile(r"\blsk_[A-Za-z0-9_\-]{24,}\b"), "<REDACTED_LUMOS_TOKEN>"),
     # Snowflake account identifier: 2 lowercase letters + 5 digits,
     # dot, region/cloud segment. Common shapes:
     #   xy12345.us-east-1
@@ -282,6 +286,7 @@ _LABEL_DISPLAY = {
     "aws_secret_access_key": "AWS secret",
     "slack_token": "Slack token",
     "snowflake_account": "Snowflake account",
+    "lumos_token": "Lumos PAT",
     # Generic credentials
     "jwt": "JWT",
     "bearer_token": "Bearer token",

@@ -78,6 +78,11 @@ Allowed values for resource_type and every item in resource_types:
 - iru_device_note (Kandji per-device note)
 - iru_ade_integration (Kandji Apple Automated Device Enrollment integration)
 - iru_ade_device (Kandji ADE-assigned device adoption)
+- lumos_app (Lumos custom app definition; identity-governance plane)
+- lumos_app_store_app (Lumos app-store app installation, referencing a published app catalog entry)
+- lumos_access_policy (Lumos access policy bundling apps + business justification + conditions)
+- lumos_pre_approval_rule (Lumos pre-approval rule: skip-the-request automation for groups/users/permissions on a specific app)
+- lumos_requestable_permission (Lumos requestable permission entry within an app's request catalog)
 - unknown (use when the request cannot be mapped to a known resource)
 
 JAMF disambiguators (route to terraform_jamf_hcl, never to terraform_okta_hcl):
@@ -131,6 +136,16 @@ Kandji (Iru) disambiguators (route to terraform_kandji_hcl via the MScottBlake/i
 - "Kandji ADE device" / "adopt ADE device into Kandji" / "assign blueprint to ADE device" -> iru_ade_device
 
 If a prompt names both Kandji and JAMF without picking one, return resource_type = unknown and ask in `ambiguities` which MDM the user wants; the two MDMs do not translate one-to-one (a JAMF policy is not a Kandji blueprint).
+
+Lumos disambiguators (route to terraform_lumos_hcl via the teamlumos/lumos provider, NEVER to terraform_okta_hcl or terraform_kandji_hcl):
+- "Lumos app" / "register an app in Lumos" / "create a custom app in Lumos" -> lumos_app
+- "Lumos app store app" / "install from Lumos app catalog" / "request-flow app" -> lumos_app_store_app
+- "Lumos access policy" / "access policy" + (Lumos|access governance) / "bundle of apps for a team" -> lumos_access_policy
+- "Lumos pre-approval" / "pre-approval rule" / "skip the request for group X" / "auto-approve app for group" -> lumos_pre_approval_rule
+- "Lumos requestable permission" / "expose permission for request" / "Lumos request catalog entry" -> lumos_requestable_permission
+- "access review" + (Lumos) -> NOT directly modeled in the teamlumos/lumos v0.10 provider; emit a top-of-file comment noting access reviews are configured via the Lumos web console and not yet exposed as a Terraform resource.
+
+If a prompt names both Okta and Lumos in the same request, BOTH planes are valid: Okta provisions the underlying IdP groups / apps; Lumos provisions the access-governance overlay (request catalog, pre-approval, policies). Use output mode "Okta + Lumos" and place each provider's resources in its own file. Do NOT cross-wire Okta variables into the lumos provider block.
 
 ROUTING HINTS for auth server children — when language is "add a / create a" + scope/claim/policy/rule, the PRIMARY resource_type is the child resource, not okta_auth_server:
 - "Add a <name> scope to <server>" -> resource_type = okta_auth_server_scope (NOT okta_auth_server)
@@ -262,13 +277,23 @@ The user message contains an OUTPUT MODE line. You MUST obey it exactly:
 
 **OUTPUT MODE: Kandji only**
 - Generate complete terraform_kandji_hcl with the Kandji apply runbook header, provider block pinned to `MScottBlake/iru ~> 0.0`, and requested iru_* resources following SECTION L below.
-- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, terraform_lumos_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
 
 **OUTPUT MODE: Okta + Kandji**
 - Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
 - Generate complete terraform_kandji_hcl with Kandji resources following SECTION L below.
-- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, terraform_lumos_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
 - Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe. Kandji is a device-management plane, not an identity plane; do NOT cross-wire Okta variables into the iru provider block or vice versa.
+
+**OUTPUT MODE: Lumos only**
+- Generate complete terraform_lumos_hcl with the Lumos apply runbook header, provider block pinned to `teamlumos/lumos ~> 0.10`, and requested lumos_* resources following SECTION M below.
+- Set terraform_okta_hcl, terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, terraform_kandji_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements, optional_tf ALL to exactly "" (empty string).
+
+**OUTPUT MODE: Okta + Lumos**
+- Generate complete terraform_okta_hcl with Okta resources following SECTION B below.
+- Generate complete terraform_lumos_hcl with Lumos resources following SECTION M below.
+- Set terraform_lambda_hcl, terraform_gcp_hcl, terraform_jamf_hcl, fleet_gitops_yaml, terraform_fleet_hcl, terraform_snowflake_hcl, terraform_kandji_hcl, lambda_python, lambda_requirements, cloud_function_python, cloud_function_requirements ALL to exactly "" (empty string).
+- Both files declare `terraform { required_providers {} }`; the composite-mode merge in terraform_gen.py will dedupe. Lumos is the access-governance plane that overlays Okta; reference Okta groups / apps by NAME (string literals) inside lumos_* resources, NOT by Terraform reference, because Lumos resolves them internally via its connector. Do NOT cross-wire the okta_api_token variable into the lumos provider block.
 
 ---
 
@@ -3545,6 +3570,319 @@ translate one-to-one.
   a manual bump.
 - Wrapping the HCL in triple-backtick fences. The JSON output dict must
   contain the raw HCL text, not a fenced code block.
+
+---
+
+## SECTION M, Lumos Terraform (terraform_lumos_hcl)
+
+BINARY SCHEMA REALITY CHECK (Phase 24 grounded SECTION M against the cached
+teamlumos/lumos v0.10.3 provider binary at
+`_tftool/.terraform-plugin-cache/registry.terraform.io/teamlumos/lumos/0.10.3/windows_amd64/`;
+schema dumped via `terraform providers schema -json` on 2026-06-01 and stored
+at `_tftool/lumos_schema.json`).
+
+Lumos is an identity-governance / access-management plane that overlays
+existing IdP groups and SaaS apps with a request catalog, pre-approval rules,
+and policy bundles. The provider is OpenAPI-generated by Speakeasy and the
+attribute names occasionally drift from blog posts and older docs.
+
+README-vs-binary divergences observed and the binary is authoritative on
+all of them:
+  - Several online examples set `access_token = "lsk_..."` on the provider.
+    The canonical attribute name in the v0.10.3 binary is `http_bearer`,
+    NOT `access_token`. The environment variable `LUMOS_ACCESS_TOKEN` is
+    read by the provider automatically when `http_bearer` is omitted.
+  - The provider exposes 5 resource types (not 4). `lumos_access_policy`
+    exists in v0.10.x and is fully supported even though some early Lumos
+    blog posts only mention apps, app_store_apps, pre_approval_rules, and
+    requestable_permissions. Include lumos_access_policy when the prompt
+    asks for an "access policy" or "access bundle".
+  - The provider attribute is `server_url`, optional, defaulting to
+    `https://api.lumos.com`. Only set it when targeting an on-premise or
+    EU-hosted Lumos deployment.
+
+### Apply runbook header (MANDATORY, first lines of terraform_lumos_hcl)
+
+Every terraform_lumos_hcl output MUST begin with this comment block exactly
+as written, with no leading blank line:
+
+```
+# LUMOS APPLY RUNBOOK
+# 1. terraform init
+# 2. terraform plan -out tfplan
+# 3. terraform apply tfplan
+# Provider: teamlumos/lumos v0.10.x (resource prefix lumos_*).
+# Auth: HTTP bearer via LUMOS_ACCESS_TOKEN; PATs are minted from
+#   Settings -> Developers -> Personal Access Tokens in the Lumos web
+#   console. Tokens are prefixed `lsk_`. Use a read-only scope for plan;
+#   admin scope is required for apply on lumos_access_policy and
+#   lumos_pre_approval_rule.
+# Lumos resolves Okta group / app references by NAME via its connector,
+#   so cross-plane joins use string literals, not provider data sources.
+```
+
+### Provider block (always include in terraform_lumos_hcl)
+
+```
+terraform {
+  required_version = ">= 1.14.0"
+  required_providers {
+    lumos = {
+      source  = "teamlumos/lumos"
+      version = "~> 0.10"
+    }
+  }
+}
+
+provider "lumos" {
+  http_bearer = var.lumos_access_token
+  # server_url defaults to https://api.lumos.com; set only for EU / on-prem.
+}
+
+variable "lumos_access_token" {
+  type        = string
+  description = "Lumos PAT (prefix lsk_); mint from Settings -> Developers -> Personal Access Tokens."
+  sensitive   = true
+}
+```
+
+### Canonical resource attribute table (verbatim from the v0.10.3 binary schema)
+
+The full attribute lists below come from
+`terraform providers schema -json` against the cached binary. Required
+attributes MUST appear; optional attributes are emitted only when the intent
+asks for them; computed attributes (`id`, `app_class_id`, `instance_id`,
+`status`, etc.) are NEVER emitted (Terraform fills them in).
+
+**lumos_app**
+  - REQUIRED: name (string), category (string), description (string)
+  - OPTIONAL: logo_url (string), request_instructions (string),
+    website_url (string)
+  - COMPUTED: id, app_class_id, instance_id, status, sources, custom_attributes,
+    links, allow_multiple_permission_selection, user_friendly_label
+  - For custom in-house apps registered directly in Lumos (not from the
+    app-store catalog).
+
+**lumos_app_store_app**
+  - REQUIRED: app_id (string)
+  - OPTIONAL: custom_request_instructions (string), provisioning (object),
+    request_flow (object)
+  - COMPUTED: id, app_class_id, instance_id, status, category, description,
+    logo_url, request_instructions, sources, custom_attributes, links,
+    allow_multiple_permission_selection, user_friendly_label, website_url
+  - `app_id` is the catalog app id from the Lumos app store; reference an
+    existing catalog entry (e.g. data.lumos_app_store_app.slack.id) or paste
+    the id literally if known.
+  - `provisioning` and `request_flow` are nested objects; see the worked
+    example below for shape.
+
+**lumos_access_policy**
+  - REQUIRED: name (string), business_justification (string), apps (list of objects)
+  - OPTIONAL: access_condition (string), is_enabled (bool),
+    is_everyone_condition (bool), status (string)
+  - COMPUTED: id
+  - Each `apps` entry is `{ id = <string>, is_preapproved = <bool>,
+    permissions = [{ id = <string> }, ...] }`. An empty permissions list
+    means an app-level grant; a non-empty list scopes the grant to specific
+    requestable permissions.
+
+**lumos_pre_approval_rule**
+  - REQUIRED: app_id (string), justification (string)
+  - OPTIONAL: preapproved_groups (list of objects), preapproved_permissions
+    (list of objects), preapproved_users_by_attribute (list of objects),
+    preapproval_webhooks (object), time_based_access (list of strings)
+  - COMPUTED: id, app_class_id, app_instance_id
+  - Each `preapproved_groups` entry minimally needs `{ id = <string> }`;
+    Lumos resolves the other fields (name, integration_specific_id) from
+    its connector cache. `time_based_access` is a list of duration strings
+    like `["1d", "7d", "30d"]` that the requester may select.
+
+**lumos_requestable_permission**
+  - REQUIRED: app_id (string), label (string)
+  - OPTIONAL: app_class_id (string), app_instance_id (string),
+    include_inherited_configs (bool), request_config (object)
+  - COMPUTED: id, type
+  - `label` is the human-visible name shown in the request catalog (e.g.
+    "Admin", "Read-only"). `request_config` is an optional nested object
+    overriding the app-level request flow for this specific permission.
+
+### Worked example: a Slack app store entry plus a requestable permission
+
+```
+# LUMOS APPLY RUNBOOK
+# 1. terraform init
+# 2. terraform plan -out tfplan
+# 3. terraform apply tfplan
+# Provider: teamlumos/lumos v0.10.x (resource prefix lumos_*).
+# Auth: HTTP bearer via LUMOS_ACCESS_TOKEN; PATs are minted from
+#   Settings -> Developers -> Personal Access Tokens in the Lumos web
+#   console. Tokens are prefixed `lsk_`. Use a read-only scope for plan;
+#   admin scope is required for apply on lumos_access_policy and
+#   lumos_pre_approval_rule.
+# Lumos resolves Okta group / app references by NAME via its connector,
+#   so cross-plane joins use string literals, not provider data sources.
+
+terraform {
+  required_version = ">= 1.14.0"
+  required_providers {
+    lumos = {
+      source  = "teamlumos/lumos"
+      version = "~> 0.10"
+    }
+  }
+}
+
+provider "lumos" {
+  http_bearer = var.lumos_access_token
+}
+
+variable "lumos_access_token" {
+  type        = string
+  description = "Lumos PAT (prefix lsk_)."
+  sensitive   = true
+}
+
+variable "slack_catalog_app_id" {
+  type        = string
+  description = "Catalog id for the Slack app in Lumos; look up in the Lumos web console."
+}
+
+resource "lumos_app_store_app" "slack" {
+  app_id                       = var.slack_catalog_app_id
+  custom_request_instructions  = "Reach out in #access-help if you need this same-day."
+}
+
+resource "lumos_requestable_permission" "slack_admin" {
+  app_id = lumos_app_store_app.slack.id
+  label  = "Slack workspace admin"
+}
+```
+
+### Worked example: a pre-approval rule auto-granting Notion to a Lumos group
+
+```
+variable "engineering_lumos_group_id" {
+  type        = string
+  description = "Lumos group id for the engineering team; resolved out-of-band via the Lumos console."
+}
+
+variable "notion_catalog_app_id" {
+  type        = string
+  description = "Catalog id for Notion in the Lumos app store."
+}
+
+resource "lumos_app_store_app" "notion" {
+  app_id = var.notion_catalog_app_id
+}
+
+resource "lumos_pre_approval_rule" "notion_for_engineering" {
+  app_id        = lumos_app_store_app.notion.id
+  justification = "Engineering uses Notion as the canonical engineering wiki; no per-request review needed."
+
+  preapproved_groups = [
+    { id = var.engineering_lumos_group_id },
+  ]
+
+  time_based_access = ["1d", "7d", "30d"]
+}
+```
+
+### Worked example: an access policy bundling two apps for the support team
+
+```
+resource "lumos_access_policy" "support_baseline" {
+  name                   = "Support baseline"
+  business_justification = "Customer support representatives need same-day access to Zendesk and Slack to triage incoming tickets."
+  is_enabled             = true
+
+  apps = [
+    {
+      id             = lumos_app_store_app.zendesk.id
+      is_preapproved = true
+      permissions    = []
+    },
+    {
+      id             = lumos_app_store_app.slack.id
+      is_preapproved = true
+      permissions = [
+        { id = lumos_requestable_permission.slack_member.id },
+      ]
+    },
+  ]
+}
+```
+
+### Composite-mode notes (Okta + Lumos)
+
+When the output mode is `Okta + Lumos`, terraform_lumos_hcl and
+terraform_okta_hcl are emitted independently. They share no variables and no
+provider blocks; the composite-mode merge in `terraform_gen.py` deduplicates
+`terraform { required_providers {} }` blocks but otherwise leaves the two
+files alone. Lumos resolves Okta groups and apps by NAME via its connector,
+not via Terraform references; in the Lumos file, reference Okta-side entities
+as string literals (e.g. `name = "Engineering"`) rather than
+`okta_group.engineering.name` cross-resource references. Do NOT cross-wire
+the okta_api_token variable into the lumos provider block.
+
+If the user asks for SCIM-style provisioning from Okta INTO Lumos, note that
+Lumos's connector-based model REPLACES SCIM: Lumos pulls group / user
+membership from Okta via its built-in Okta connector configured in the Lumos
+web console. Emit a top-of-file comment instead:
+
+```
+# NOTE: Lumos does not consume an Okta SCIM endpoint. Group / user sync
+# from Okta into Lumos is configured via the Lumos web console
+# (Integrations -> Okta) and not modeled as Terraform on either side.
+# This file therefore models Lumos-side request governance only; Okta-side
+# resources live in the companion okta.tf file.
+```
+
+### PARSER OVERRIDE / DISAMBIGUATOR
+
+When the user prompt mentions any of these Lumos-specific terms, the intent
+parser MUST route the resource_type to the matching `lumos_*` entry:
+
+  - "Lumos app" / "register a custom app in Lumos" -> lumos_app
+  - "Lumos app store" / "app catalog entry" / "install Slack via Lumos"
+    -> lumos_app_store_app
+  - "Lumos access policy" / "access bundle" / "policy bundling apps"
+    -> lumos_access_policy
+  - "Lumos pre-approval" / "auto-approve" / "skip the request for group X"
+    -> lumos_pre_approval_rule
+  - "requestable permission" / "Lumos permission entry" / "expose Admin
+    role to the catalog" -> lumos_requestable_permission
+
+If both Lumos and Okta are mentioned, both planes are valid and the output
+mode is `Okta + Lumos`. Each provider's resources go into its own HCL file.
+
+### Common mistakes (do not commit any of these)
+
+- Emitting `source = "lumos/lumos"` or `source = "lumoshq/lumos"`.
+  Neither path exists on the Terraform Registry. The canonical source is
+  `teamlumos/lumos`.
+- Emitting `access_token = ...` on the provider block. The canonical
+  attribute is `http_bearer`. The binary schema does NOT have an
+  `access_token` attribute.
+- Pinning `version = "~> 0.0"` or `version = "0.9.x"`. The current published
+  version is 0.10.3; pin `~> 0.10` so 0.10.x patches flow through but the
+  next 0.x.0 bump requires a manual upgrade.
+- Emitting `lumos_app` without one of `name`, `category`, `description`.
+  All three are REQUIRED per the binary schema.
+- Emitting `lumos_app_store_app` without `app_id`. It is REQUIRED.
+- Emitting `lumos_access_policy` without `name`, `business_justification`,
+  or a non-empty `apps` list. All three are REQUIRED.
+- Emitting `lumos_pre_approval_rule` without `app_id` or `justification`.
+  Both are REQUIRED.
+- Emitting `lumos_requestable_permission` without `app_id` or `label`.
+  Both are REQUIRED.
+- Emitting an `okta_scim_*` or `okta_app_oauth` SCIM wiring INTO Lumos in
+  `Okta + Lumos` mode. Lumos's Okta integration is connector-based, not
+  SCIM-based; emit the explanatory comment shown above instead.
+- Cross-wiring `okta_group.x.id` into a Lumos resource. Lumos resolves
+  groups by NAME (string literal) through its connector; the Okta group's
+  Terraform id is not what Lumos expects.
+- Wrapping the HCL in triple-backtick fences. The JSON output dict must
+  contain the raw HCL text, not a fenced code block.
 """
 
 INTENT_USER_PROMPT_TEMPLATE = """Parse the following Okta operation request and return the structured JSON:
@@ -3561,6 +3899,7 @@ OUTPUT MODE: {output_mode}
 {gcp_resource_section}
 {jamf_resource_section}
 {kandji_resource_section}
+{lumos_resource_section}
 {clarifications_section}Additional instructions: {extra_instructions}
 {env_context_section}
 Okta provider version constraint: {provider_version}

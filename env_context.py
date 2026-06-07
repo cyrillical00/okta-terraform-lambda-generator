@@ -155,6 +155,8 @@ def build_env_context(
     snowflake_passphrase: str = "",
     kandji_base_url: str = "",
     kandji_api_token: str = "",
+    lumos_api_token: str = "",
+    lumos_server_url: str = "",
 ) -> dict:
     return {
         "okta": fetch_okta_context(okta_org_url, okta_api_token),
@@ -171,6 +173,7 @@ def build_env_context(
             snowflake_passphrase or None,
         ),
         "kandji": fetch_kandji_context(kandji_base_url, kandji_api_token),
+        "lumos": fetch_lumos_context(lumos_api_token, lumos_server_url),
     }
 
 
@@ -396,6 +399,73 @@ def fetch_kandji_context(base_url: str, api_token: str) -> dict:
     }
 
 
+def fetch_lumos_context(api_token: str, server_url: str = "") -> dict:
+    """Best-effort fetch of live Lumos apps / groups / requestable permissions.
+
+    Returns the canonical env-context shape used by render_env_pills and the
+    sidebar status block: `{connected, apps, groups, requestable_permissions,
+    error, partial_errors}`. When `api_token` is empty, short-circuits to the
+    disconnected shape without contacting the network.
+
+    Per-endpoint failures are non-fatal and append a one-line summary to
+    `partial_errors`, matching the JAMF / Fleet / Kandji pattern.
+
+    Secret expectations (resolved by the caller in app.py:_load_env_context):
+      api_token:  LUMOS_ACCESS_TOKEN  (PAT, prefix `lsk_`; read scope is enough)
+      server_url: LUMOS_SERVER_URL    (optional override; defaults to
+                                       https://api.lumos.com. Used by the
+                                       local mock server in
+                                       `_tftool/lumos_mock_server.py` and by
+                                       EU / on-prem Lumos deployments.)
+
+    Base URL defaults to https://api.lumos.com; tenants are identified by the
+    bearer token, not by a per-tenant subdomain. The `teamlumos/lumos`
+    Terraform provider attribute is `http_bearer`, NOT `access_token`; see
+    SECTION M's BINARY SCHEMA REALITY CHECK preamble.
+    """
+    if not api_token:
+        return {
+            "connected": False,
+            "error": "Not configured, add LUMOS_ACCESS_TOKEN to secrets.",
+        }
+    try:
+        from lumos_client import LumosClient, LumosError
+    except ImportError as e:
+        return {"connected": False, "error": f"Lumos client unavailable: {e}"}
+    try:
+        if server_url:
+            client = LumosClient(api_token, base_url=server_url)
+        else:
+            client = LumosClient(api_token)
+    except LumosError as e:
+        return {"connected": False, "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "error": f"Unexpected error: {e}"}
+
+    partial_errors: list[str] = []
+
+    def _safe(label: str, fn):
+        try:
+            return fn() or []
+        except LumosError as exc:
+            partial_errors.append(f"{label}: {exc}")
+            return []
+
+    apps = _safe("apps", client.list_apps)
+    groups = _safe("groups", client.list_groups)
+    requestable_permissions = _safe("requestable_permissions", client.list_requestable_permissions)
+
+    return {
+        "connected": True,
+        "base_url": client.base,
+        "apps": apps,
+        "groups": groups,
+        "requestable_permissions": requestable_permissions,
+        "error": None,
+        "partial_errors": partial_errors,
+    }
+
+
 def format_context_for_prompt(env_context: dict) -> str:
     """Returns a formatted string for injection into the generation prompt. Empty string if nothing connected."""
     okta = env_context.get("okta", {})
@@ -405,6 +475,7 @@ def format_context_for_prompt(env_context: dict) -> str:
     fleet = env_context.get("fleet", {})
     snowflake = env_context.get("snowflake", {})
     kandji = env_context.get("kandji", {})
+    lumos = env_context.get("lumos", {})
     sections = []
 
     if okta.get("connected"):
@@ -613,6 +684,31 @@ def format_context_for_prompt(env_context: dict) -> str:
                 lines.append(f'  - name: "{t.get("name", "")}"  id: {t.get("id", "")}')
             if len(tags) > 50:
                 lines.append(f'  ({len(tags)} total, showing 50)')
+        sections.append("\n".join(lines))
+
+    if lumos.get("connected"):
+        lines = ["### Lumos live resources"]
+        apps = lumos.get("apps", [])
+        if apps:
+            lines.append('**Apps** (existing Lumos apps; reference by id in lumos_app_store_app.app_id / lumos_pre_approval_rule.app_id):')
+            for a in apps[:50]:
+                lines.append(f'  - name: "{a.get("name", "")}"  id: {a.get("id", "")}  instance_id: {a.get("instance_id", "")}')
+            if len(apps) > 50:
+                lines.append(f'  ({len(apps)} total, showing 50)')
+        groups = lumos.get("groups", [])
+        if groups:
+            lines.append('**Groups** (existing Lumos groups; reference by id in lumos_pre_approval_rule.preapproved_groups):')
+            for g in groups[:50]:
+                lines.append(f'  - name: "{g.get("name", "")}"  id: {g.get("id", "")}  app_id: {g.get("app_id", g.get("source_app_id", ""))}')
+            if len(groups) > 50:
+                lines.append(f'  ({len(groups)} total, showing 50)')
+        rps = lumos.get("requestable_permissions", [])
+        if rps:
+            lines.append('**Requestable permissions** (existing labels; do not duplicate):')
+            for rp in rps[:50]:
+                lines.append(f'  - label: "{rp.get("label", "")}"  id: {rp.get("id", "")}  app_id: {rp.get("app_id", "")}')
+            if len(rps) > 50:
+                lines.append(f'  ({len(rps)} total, showing 50)')
         sections.append("\n".join(lines))
 
     if not sections:

@@ -568,14 +568,22 @@ def _load_env_context() -> None:
             # for env-context fetching.
             kandji_base_url=_get_secret("KANDJI_BASE_URL"),
             kandji_api_token=_get_secret("KANDJI_API_TOKEN"),
+            # Lumos (Phase 24). Personal Access Token prefixed `lsk_`; mint
+            # from Settings -> Developers -> Personal Access Tokens. Read
+            # scope is sufficient for env-context fetching. Base URL defaults
+            # to https://api.lumos.com (tenants are bearer-token identified);
+            # LUMOS_SERVER_URL overrides for the local mock server in
+            # `_tftool/lumos_mock_server.py` and for EU / on-prem deployments.
+            lumos_api_token=_get_secret("LUMOS_ACCESS_TOKEN"),
+            lumos_server_url=_get_secret("LUMOS_SERVER_URL"),
         )
         ctx = st.session_state.env_context or {}
         connected = sum(
-            1 for k in ("okta", "aws", "gcp", "jamf", "fleet", "snowflake", "kandji")
+            1 for k in ("okta", "aws", "gcp", "jamf", "fleet", "snowflake", "kandji", "lumos")
             if ctx.get(k, {}).get("connected")
         )
         status.update(
-            label=f"Live context ready: {connected} of 7 providers connected",
+            label=f"Live context ready: {connected} of 8 providers connected",
             state="complete",
         )
 
@@ -593,6 +601,7 @@ def _render_env_sidebar() -> None:
     fleet = ctx.get("fleet", {})
     snowflake = ctx.get("snowflake", {})
     kandji = ctx.get("kandji", {})
+    lumos = ctx.get("lumos", {})
 
     st.markdown("**Environment**")
 
@@ -705,6 +714,22 @@ def _render_env_sidebar() -> None:
     else:
         err = kandji.get("error", "Not configured")
         st.caption(f"Kandji: {err}")
+
+    if lumos.get("connected"):
+        n_apps = len(lumos.get("apps", []))
+        n_groups = len(lumos.get("groups", []))
+        n_rp = len(lumos.get("requestable_permissions", []))
+        st.success(
+            f"Lumos: {n_apps} apps, {n_groups} groups, {n_rp} requestable permissions"
+        )
+        partial = lumos.get("partial_errors") or []
+        if partial:
+            st.caption(f"Lumos partial: {len(partial)} endpoint(s) unavailable")
+            for p in partial:
+                st.caption(f"- {p[:140]}")
+    else:
+        err = lumos.get("error", "Not configured")
+        st.caption(f"Lumos: {err}")
 
     if st.button("Refresh environment", use_container_width=True):
         _audit.log(st.user.email, "env_refresh")
@@ -1061,8 +1086,8 @@ st.caption("Describe an operation in plain English and get production-ready Terr
 
 # Stage 1 — Input
 with st.container():
-    okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types = render_resource_type_selector()
-    _inferred_mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types)
+    okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types, lumos_types = render_resource_type_selector()
+    _inferred_mode = _infer_mode(okta_types, aws_types, gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types, lumos_types)
     _resolved_output_mode = render_output_mode_picker(_inferred_mode)
     user_input = st.text_area(
         "Describe the operation",
@@ -1156,6 +1181,10 @@ if parse_clicked and user_input.strip():
                     intent["fleet_resource_types"] = fleet_types
                 if snowflake_types:
                     intent["snowflake_resource_types"] = snowflake_types
+                if kandji_types:
+                    intent["kandji_resource_types"] = kandji_types
+                if lumos_types:
+                    intent["lumos_resource_types"] = lumos_types
                 # Output mode comes from the explicit picker (Phase 16). When
                 # the picker is on "Auto" the resolved value is the same as
                 # the inference cascade below; when the user has overridden

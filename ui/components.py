@@ -36,15 +36,21 @@ def _infer_mode(
     fleet_types: list[str] | None = None,
     snowflake_types: list[str] | None = None,
     kandji_types: list[str] | None = None,
+    lumos_types: list[str] | None = None,
 ) -> str:
     """Mirror app.py's mode-inference logic so the read-only chip stays in sync.
 
-    Order: Kandji -> Snowflake -> Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
+    Order: Lumos -> Kandji -> Snowflake -> Fleet GitOps -> JAMF -> GCP -> AWS -> Okta fallback.
     Fleet TF stays CLI/HTTP-only, so the UI never infers a Fleet TF mode."""
     jamf_types = jamf_types or []
     fleet_types = fleet_types or []
     snowflake_types = snowflake_types or []
     kandji_types = kandji_types or []
+    lumos_types = lumos_types or []
+    if lumos_types and okta_types:
+        return "Okta + Lumos"
+    if lumos_types:
+        return "Lumos only"
     if kandji_types and okta_types:
         return "Okta + Kandji"
     if kandji_types:
@@ -226,6 +232,23 @@ def render_env_pills(env_context: dict) -> None:
     else:
         pills.append(pill("Kandji", "off", kandji.get("error", "Not configured")))
 
+    # Lumos (Phase 24 added the live-context fetcher; pill flips to `on` when
+    # LUMOS_ACCESS_TOKEN is configured and the bearer-auth succeeds against
+    # https://api.lumos.com).
+    lumos = (env_context or {}).get("lumos", {})
+    if lumos.get("connected"):
+        n_apps = len(lumos.get("apps", []))
+        n_groups = len(lumos.get("groups", []))
+        n_rp = len(lumos.get("requestable_permissions", []))
+        partial = lumos.get("partial_errors") or []
+        tooltip = f"{n_apps} apps, {n_groups} groups, {n_rp} requestable permissions"
+        state = "warn" if partial else "on"
+        if partial:
+            tooltip += f" ({len(partial)} endpoints unavailable)"
+        pills.append(pill(f"Lumos ({n_apps + n_groups + n_rp})", state, tooltip))
+    else:
+        pills.append(pill("Lumos", "off", lumos.get("error", "Not configured")))
+
     st.markdown(f'<div class="tf-pill-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 
 
@@ -345,6 +368,14 @@ _KANDJI_RESOURCE_LABEL_TO_TF = {
     "ADE Device": "iru_ade_device",
 }
 
+_LUMOS_RESOURCE_LABEL_TO_TF = {
+    "App": "lumos_app",
+    "App Store App": "lumos_app_store_app",
+    "Access Policy": "lumos_access_policy",
+    "Pre-Approval Rule": "lumos_pre_approval_rule",
+    "Requestable Permission": "lumos_requestable_permission",
+}
+
 
 def _render_checkbox_grid(
     labels: list[str],
@@ -392,15 +423,15 @@ def _render_okta_tab() -> list[str]:
     return selected
 
 
-def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+def render_resource_type_selector() -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
     """Provider-tabbed resource-type selector. Returns (okta_types, aws_types,
-    gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types).
+    gcp_types, jamf_types, fleet_types, snowflake_types, kandji_types, lumos_types).
 
     Phase 16 redesign: replaced the six horizontally-stacked rows (~50 checkboxes
     visible at once) with `st.tabs` so only the active provider's checkboxes
     render. Tab switches are cheap because Streamlit's session state retains all
     checkbox values regardless of which tab body is currently visible, so the
-    7-tuple return always reflects the user's full selection across every
+    8-tuple return always reflects the user's full selection across every
     provider.
 
     Provider routing is unchanged:
@@ -408,9 +439,10 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str], li
       - Fleet -> fleet_gitops_yaml (Fleet TF stays CLI/HTTP-only)
       - Snowflake -> terraform_snowflake_hcl via snowflakedb/snowflake ~> 2.0
       - Kandji -> terraform_kandji_hcl via MScottBlake/iru ~> 0.0
+      - Lumos -> terraform_lumos_hcl via teamlumos/lumos ~> 0.10
     """
-    okta_tab, aws_tab, gcp_tab, jamf_tab, fleet_tab, snowflake_tab, kandji_tab = st.tabs(
-        ["Okta", "AWS", "GCP", "JAMF", "Fleet", "Snowflake", "Kandji"]
+    okta_tab, aws_tab, gcp_tab, jamf_tab, fleet_tab, snowflake_tab, kandji_tab, lumos_tab = st.tabs(
+        ["Okta", "AWS", "GCP", "JAMF", "Fleet", "Snowflake", "Kandji", "Lumos"]
     )
 
     with okta_tab:
@@ -458,7 +490,14 @@ def render_resource_type_selector() -> tuple[list[str], list[str], list[str], li
             key_prefix="kandji",
         )
 
-    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected, kandji_selected
+    with lumos_tab:
+        lumos_selected = _render_checkbox_grid(
+            list(_LUMOS_RESOURCE_LABEL_TO_TF.keys()),
+            _LUMOS_RESOURCE_LABEL_TO_TF,
+            key_prefix="lumos",
+        )
+
+    return okta_selected, aws_selected, gcp_selected, jamf_selected, fleet_selected, snowflake_selected, kandji_selected, lumos_selected
 
 
 _AUTO_LABEL = "Auto (inferred from selection)"
@@ -480,6 +519,8 @@ _ALL_OUTPUT_MODES = [
     "Okta + Snowflake",
     "Kandji only",
     "Okta + Kandji",
+    "Lumos only",
+    "Okta + Lumos",
 ]
 
 

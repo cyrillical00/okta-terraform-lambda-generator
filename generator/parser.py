@@ -62,6 +62,11 @@ ALLOWED_RESOURCE_TYPES = {
     "iru_device_note",
     "iru_ade_integration",
     "iru_ade_device",
+    "lumos_app",
+    "lumos_app_store_app",
+    "lumos_access_policy",
+    "lumos_pre_approval_rule",
+    "lumos_requestable_permission",
     "unknown",
 }
 REQUIRED_KEYS = {"operation_type", "resource_type", "resource_name", "attributes", "notes", "ambiguities"}
