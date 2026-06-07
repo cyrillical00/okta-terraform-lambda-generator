@@ -13,6 +13,14 @@ venv/
 qa_outputs_cache.json
 qa_report.json
 qa_full_run.log
-_tftool/
+# Ignore _tftool/ contents but allow a few dev tools through. Pattern uses
+# `_tftool/*` (not `_tftool/`) so git still descends into the directory and
+# evaluates the `!` re-include patterns below. With `_tftool/` git would
+# never recurse and the exceptions would be silently dropped.
+_tftool/*
+!_tftool/lumos_mock_server.py
+!_tftool/run_with_lumos_mock.py
 error screens/
 qa_full_run_postfix.log
+qa_*.log
+.phase24_diffs/
