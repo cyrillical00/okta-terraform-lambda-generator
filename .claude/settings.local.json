@@ -4,7 +4,9 @@
       "WebSearch",
       "WebFetch(domain:registry.terraform.io)",
       "WebFetch(domain:developer.okta.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python -m pytest -q --ignore=tests/test_gcp_client.py)",
+      "Bash(python -c \"from ui.components import render_resource_type_selector, render_output_mode_picker, _infer_mode; print\\('imports OK'\\); print\\('Auto routes to inferred:', render_output_mode_picker.__doc__[:60]\\)\")"
     ]
   }
 }

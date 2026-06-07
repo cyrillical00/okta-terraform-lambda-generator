@@ -82,6 +82,16 @@ VAR_DEFAULTS: dict[str, str] = {
     # ADE-related placeholders used by iru_ade_integration / iru_ade_device.
     "ade_token_file":               '"placeholder-ade-token-file"',
     "ceo_device_id":                '"00000000-0000-0000-0000-000000000000"',
+    # Lumos (teamlumos/lumos ~> 0.10). Provider validates the auth shape but
+    # does not connect during `terraform validate`; placeholders that look
+    # syntactically valid let the validate sweep succeed. The PAT must match
+    # the `lsk_` shape so the redact regex flags any accidental real-token
+    # leak in apply output.
+    "lumos_access_token":           '"lsk_PLACEHOLDER_TOKEN_FOR_VALIDATE_ONLY"',
+    # Common per-app catalog id placeholders used in worked examples.
+    "slack_catalog_app_id":         '"00000000-0000-0000-0000-000000000001"',
+    "notion_catalog_app_id":        '"00000000-0000-0000-0000-000000000002"',
+    "engineering_lumos_group_id":   '"00000000-0000-0000-0000-000000000003"',
 }
 
 
@@ -146,6 +156,7 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     fleet = outputs.get("terraform_fleet_hcl", "") or ""
     snowflake = outputs.get("terraform_snowflake_hcl", "") or ""
     kandji = outputs.get("terraform_kandji_hcl", "") or ""
+    lumos = outputs.get("terraform_lumos_hcl", "") or ""
     if okta.strip() and lam.strip():
         okta, lam = dedupe_variable_blocks(okta, lam)
     if okta.strip() and gcp.strip():
@@ -158,6 +169,8 @@ def write_workspace(tid: str, outputs: dict) -> Path:
         okta, snowflake = dedupe_variable_blocks(okta, snowflake)
     if okta.strip() and kandji.strip():
         okta, kandji = dedupe_variable_blocks(okta, kandji)
+    if okta.strip() and lumos.strip():
+        okta, lumos = dedupe_variable_blocks(okta, lumos)
     if okta.strip():
         (workdir / "okta.tf").write_text(okta, encoding="utf-8", newline="\n")
     if lam.strip():
@@ -172,7 +185,9 @@ def write_workspace(tid: str, outputs: dict) -> Path:
         (workdir / "jamf.tf").write_text(jamf, encoding="utf-8", newline="\n")
     if kandji.strip():
         (workdir / "kandji.tf").write_text(kandji, encoding="utf-8", newline="\n")
-    types = parse_var_types(okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake + "\n" + kandji)
+    if lumos.strip():
+        (workdir / "lumos.tf").write_text(lumos, encoding="utf-8", newline="\n")
+    types = parse_var_types(okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake + "\n" + kandji + "\n" + lumos)
     if types:
         lines = [f"{name} = {default_for(name, t)}" for name, t in sorted(types.items())]
         (workdir / "terraform.tfvars").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
@@ -180,7 +195,7 @@ def write_workspace(tid: str, outputs: dict) -> Path:
     # validate time. Touch any referenced relative paths so validate does
     # not fail on missing files. file() is what JAMF scripts and macOS
     # configuration profiles use to load script contents from disk.
-    full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake + "\n" + kandji
+    full_hcl = okta + "\n" + lam + "\n" + gcp + "\n" + jamf + "\n" + fleet + "\n" + snowflake + "\n" + kandji + "\n" + lumos
     for m in re.finditer(r'filebase64sha256\("([^"]+)"\)', full_hcl):
         rel_path = m.group(1)
         target = (workdir / rel_path).resolve()

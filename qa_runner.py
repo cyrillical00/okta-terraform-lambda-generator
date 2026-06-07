@@ -139,6 +139,13 @@ class TestCase:
     kandji_types: list = field(default_factory=list)
     must_contain_kandji: list = field(default_factory=list)
     must_not_contain_kandji: list = field(default_factory=list)
+    # Lumos Terraform HCL test fields (Lumos only / Okta + Lumos).
+    # When lumos_types is set, build_intent routes the test to the Lumos
+    # output path via teamlumos/lumos ~> 0.10; run_checks reads
+    # terraform_lumos_hcl and composes with tf_validate.run_terraform.
+    lumos_types: list = field(default_factory=list)
+    must_contain_lumos: list = field(default_factory=list)
+    must_not_contain_lumos: list = field(default_factory=list)
     # Multi-object reliability check: {resource_type: required_min_count} across
     # all HCL keys. Asserts the generator emitted N distinct `resource "X" "label"`
     # blocks of each named type. Closes the JF10/COMP02 class of failure where
@@ -1617,6 +1624,136 @@ TEST_CASES = [
                  "sso_users",
              ],
              notes="Composite Okta + Kandji: SAML app on Okta side + blueprint + tag on Kandji side."),
+
+    # ── Lumos Terraform via teamlumos/lumos ~> 0.10 (Phase 24) ────────────────
+    TestCase("LM01",
+             "Register a custom Lumos app called Internal Dashboard in the Engineering category with a description explaining it is the team's incident triage dashboard.",
+             lumos_types=["lumos_app"],
+             must_contain_lumos=[
+                 'resource "lumos_app"',
+                 "Internal Dashboard",
+                 "category",
+                 "description",
+                 'teamlumos/lumos',
+             ],
+             must_not_contain_lumos=[
+                 'source = "lumos/lumos"',
+                 'source = "lumoshq/lumos"',
+                 'access_token =',
+             ],
+             notes="lumos_app top-level custom-app registration with required name + category + description."),
+
+    TestCase("LM02",
+             "Install Slack from the Lumos app store using catalog id var.slack_catalog_app_id, with custom request instructions telling users to reach out in #access-help for same-day requests.",
+             lumos_types=["lumos_app_store_app"],
+             must_contain_lumos=[
+                 'resource "lumos_app_store_app"',
+                 "app_id",
+                 "custom_request_instructions",
+                 "access-help",
+             ],
+             notes="lumos_app_store_app catalog install with custom request instructions."),
+
+    TestCase("LM03",
+             "Expose a Lumos requestable permission called Slack workspace admin on the slack_workspace app via var.slack_workspace_app_id.",
+             lumos_types=["lumos_requestable_permission"],
+             must_contain_lumos=[
+                 'resource "lumos_requestable_permission"',
+                 "Slack workspace admin",
+                 "app_id",
+                 "label",
+             ],
+             notes="lumos_requestable_permission with required app_id + label."),
+
+    TestCase("LM04",
+             "Create a Lumos pre-approval rule on the notion_catalog app (id var.notion_catalog_app_id) that auto-approves the engineering group (id var.engineering_lumos_group_id) for one day, seven day, and thirty day access durations. Justification: engineering uses Notion as the canonical wiki and per-request review adds no value.",
+             lumos_types=["lumos_pre_approval_rule"],
+             must_contain_lumos=[
+                 'resource "lumos_pre_approval_rule"',
+                 "app_id",
+                 "justification",
+                 "preapproved_groups",
+                 "time_based_access",
+                 "1d",
+                 "7d",
+                 "30d",
+             ],
+             notes="lumos_pre_approval_rule with preapproved_groups + time_based_access list."),
+
+    TestCase("LM05",
+             "Build a Lumos access policy called Support baseline that bundles two Lumos app store apps (zendesk and slack via their catalog ids) and grants them pre-approved at the app level. Business justification: customer support representatives need same-day access to triage incoming tickets.",
+             lumos_types=["lumos_access_policy", "lumos_app_store_app"],
+             must_contain_lumos=[
+                 'resource "lumos_access_policy"',
+                 "Support baseline",
+                 "business_justification",
+                 "apps",
+                 "is_preapproved",
+             ],
+             must_contain_count={"lumos_app_store_app": 2},
+             notes="lumos_access_policy bundling two app_store_apps with pre-approved app-level grants."),
+
+    TestCase("LM06",
+             "Create a Lumos app store install for Datadog using catalog id var.datadog_catalog_app_id, plus a requestable permission called Datadog admin on it.",
+             lumos_types=["lumos_app_store_app", "lumos_requestable_permission"],
+             must_contain_lumos=[
+                 'resource "lumos_app_store_app"',
+                 'resource "lumos_requestable_permission"',
+                 "Datadog admin",
+             ],
+             notes="lumos_app_store_app + lumos_requestable_permission cross-reference; permission.app_id references the app_store_app id."),
+
+    TestCase("LM07",
+             "Register three Lumos custom apps for the Sales, Marketing, and Finance internal wikis, all in the Internal Tools category.",
+             lumos_types=["lumos_app"],
+             must_contain_lumos=[
+                 'resource "lumos_app"',
+                 "Sales",
+                 "Marketing",
+                 "Finance",
+                 "Internal Tools",
+             ],
+             must_contain_count={"lumos_app": 3},
+             notes="Multi-object: 3 distinct lumos_app resources."),
+
+    TestCase("LM08",
+             "Set up a Lumos pre-approval rule on the GitHub Enterprise app (id var.github_catalog_app_id) that pre-approves the engineering group (id var.engineering_lumos_group_id) with one-day and seven-day durations.",
+             lumos_types=["lumos_pre_approval_rule"],
+             must_contain_lumos=[
+                 'resource "lumos_pre_approval_rule"',
+                 "preapproved_groups",
+                 "time_based_access",
+             ],
+             must_not_contain_lumos=[
+                 'access_token =',
+                 'source = "lumos/lumos"',
+             ],
+             notes="lumos_pre_approval_rule with group + time-based access; provider attr must be http_bearer, not access_token."),
+
+    TestCase("LM09",
+             "Create a Lumos custom app called Acme Internal Tool in the Engineering category with description This is the in-house deploy console and the website URL set to var.acme_internal_url.",
+             lumos_types=["lumos_app"],
+             must_contain_lumos=[
+                 'resource "lumos_app"',
+                 "Acme Internal Tool",
+                 "website_url",
+                 "Engineering",
+             ],
+             notes="lumos_app with optional website_url + required category."),
+
+    TestCase("LM10",
+             "Set up SAML SSO for Lumos in Okta as an okta_app_saml app, and on the Lumos side install Slack from the app store (catalog id var.slack_catalog_app_id) and expose a requestable permission called Slack member on it.",
+             okta_types=["okta_app_saml"],
+             lumos_types=["lumos_app_store_app", "lumos_requestable_permission"],
+             must_contain=[
+                 "okta_app_saml",
+             ],
+             must_contain_lumos=[
+                 'resource "lumos_app_store_app"',
+                 'resource "lumos_requestable_permission"',
+                 "Slack member",
+             ],
+             notes="Composite Okta + Lumos: SAML app on Okta side + app_store install + requestable permission on Lumos side."),
 ]
 
 
@@ -1898,6 +2035,7 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             + "\n" + (outputs.get("terraform_fleet_hcl", "") or "")
             + "\n" + (outputs.get("terraform_snowflake_hcl", "") or "")
             + "\n" + (outputs.get("terraform_kandji_hcl", "") or "")
+            + "\n" + (outputs.get("terraform_lumos_hcl", "") or "")
         )
         for rtype, min_count in tc.must_contain_count.items():
             actual = len(re.findall(rf'resource\s+"{re.escape(rtype)}"\s+"', full_hcl))
@@ -2261,6 +2399,34 @@ def run_checks(tc: TestCase, intent: dict, outputs: dict) -> list:
             if needle in kandji_hcl:
                 issues.append(f"Forbidden string '{needle}' in terraform_kandji_hcl")
 
+    # ── 19c. Lumos Terraform HCL checks (Lumos only / Okta + Lumos) ──
+    lumos_hcl = outputs.get("terraform_lumos_hcl", "") or ""
+    if output_mode in ("Lumos only", "Okta + Lumos"):
+        if not lumos_hcl.strip():
+            issues.append(f"terraform_lumos_hcl empty in {output_mode} mode")
+        else:
+            if "# LUMOS APPLY RUNBOOK" not in lumos_hcl:
+                issues.append("terraform_lumos_hcl missing `# LUMOS APPLY RUNBOOK` header")
+            # In composite `Okta + Lumos` the merged required_providers block
+            # lives in okta.tf, so the source string can legitimately live
+            # there rather than lumos.tf. Treat both files as the workspace.
+            _lumos_scope = lumos_hcl + "\n" + (outputs.get("terraform_okta_hcl", "") or "")
+            if 'teamlumos/lumos' not in _lumos_scope:
+                issues.append("terraform_lumos_hcl (or companion okta.tf in composite mode) missing required source `teamlumos/lumos`")
+            # Old / wrong source paths must not appear.
+            if 'lumos/lumos' in _lumos_scope.replace('teamlumos/lumos', '') or 'lumoshq/lumos' in _lumos_scope:
+                issues.append("workspace uses non-canonical Lumos provider source; use `teamlumos/lumos`")
+            # Provider attribute: http_bearer (binary), NOT access_token.
+            import re as _re_lm
+            if _re_lm.search(r'provider\s+"lumos"\s*\{[^}]*access_token\s*=', lumos_hcl, _re_lm.DOTALL):
+                issues.append("terraform_lumos_hcl provider block uses `access_token`; the lumos provider expects `http_bearer`")
+        for needle in tc.must_contain_lumos:
+            if needle not in lumos_hcl:
+                issues.append(f"Expected '{needle}' in terraform_lumos_hcl")
+        for needle in tc.must_not_contain_lumos:
+            if needle in lumos_hcl:
+                issues.append(f"Forbidden string '{needle}' in terraform_lumos_hcl")
+
     # ── 20. Universal post-check: Phase 18b secret-shape scanner ──
     # generator.terraform_gen.generate_all attaches its scanner findings
     # under the private `_secret_scan_findings` key. Any non-empty list
@@ -2289,7 +2455,7 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     if intent.get("operation_type") == "unknown" and (
         tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
         or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
-        or tc.kandji_types
+        or tc.kandji_types or tc.lumos_types
     ):
         intent["operation_type"] = "create"
     if tc.okta_types:
@@ -2308,7 +2474,10 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
         intent["snowflake_resource_types"] = tc.snowflake_types
     if tc.kandji_types:
         intent["kandji_resource_types"] = tc.kandji_types
+    if tc.lumos_types:
+        intent["lumos_resource_types"] = tc.lumos_types
     # Mode mapping mirrors app.py:Stage 1 (after-parse):
+    # lumos+okta -> "Okta + Lumos", lumos alone -> "Lumos only",
     # kandji+okta -> "Okta + Kandji", kandji alone -> "Kandji only",
     # snowflake+okta -> "Okta + Snowflake", snowflake alone -> "Snowflake only",
     # fleet_tf+okta -> "Okta + Fleet TF", fleet_tf alone -> "Fleet TF only",
@@ -2316,7 +2485,11 @@ def build_intent(tc: TestCase, client, model: str) -> dict:
     # jamf+okta -> "Okta + JAMF", jamf alone -> "JAMF only",
     # gcp+okta -> "Okta + GCP", gcp alone -> "GCP only", aws+okta -> "Both",
     # okta alone -> "Okta Terraform only", aws alone (rare) -> "Lambda only".
-    if tc.kandji_types and tc.okta_types:
+    if tc.lumos_types and tc.okta_types:
+        intent["output_mode"] = "Okta + Lumos"
+    elif tc.lumos_types:
+        intent["output_mode"] = "Lumos only"
+    elif tc.kandji_types and tc.okta_types:
         intent["output_mode"] = "Okta + Kandji"
     elif tc.kandji_types:
         intent["output_mode"] = "Kandji only"
@@ -2594,7 +2767,7 @@ def _decode_batch_result_to_intent(result_entry: dict, tc: "TestCase") -> dict:
     if intent.get("operation_type") == "unknown" and (
         tc.gcp_types or tc.aws_types or tc.okta_types or tc.jamf_types
         or tc.fleet_types or tc.fleet_tf_types or tc.snowflake_types
-        or tc.kandji_types
+        or tc.kandji_types or tc.lumos_types
     ):
         intent["operation_type"] = "create"
     if tc.okta_types:
@@ -2861,7 +3034,7 @@ def _run_terraform_validate(results: list[dict], outputs_by_id: dict) -> tuple[i
         outputs = outputs_by_id.get(tid)
         has_hcl = outputs and any(
             (outputs.get(k) or "").strip()
-            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl", "terraform_snowflake_hcl", "terraform_kandji_hcl")
+            for k in ("terraform_okta_hcl", "terraform_lambda_hcl", "terraform_gcp_hcl", "terraform_jamf_hcl", "terraform_fleet_hcl", "terraform_snowflake_hcl", "terraform_kandji_hcl", "terraform_lumos_hcl")
         )
         if not has_hcl:
             r["terraform_validate_pass"] = None
