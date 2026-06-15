@@ -10,13 +10,14 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.102.0
+anthropic==0.109.1
     # via -r requirements.in
 anyio==4.13.0
     # via
     #   anthropic
     #   httpx
     #   starlette
+    #   streamlit
 asn1crypto==1.5.1
     # via snowflake-connector-python
 attrs==26.1.0
@@ -27,11 +28,11 @@ authlib==1.7.2
     # via -r requirements.in
 blinker==1.9.0
     # via streamlit
-boto3==1.43.9
+boto3==1.43.29
     # via
     #   -r requirements.in
     #   snowflake-connector-python
-botocore==1.43.9
+botocore==1.43.29
     # via
     #   boto3
     #   s3transfer
@@ -53,9 +54,9 @@ charset-normalizer==3.4.7
     #   requests
     #   snowflake-connector-python
 click==8.4.0
-    # via streamlit
-colorama==0.4.6
-    # via click
+    # via
+    #   streamlit
+    #   uvicorn
 cryptography==48.0.0
     # via
     #   authlib
@@ -68,7 +69,7 @@ distro==1.9.0
     # via anthropic
 docstring-parser==0.18.0
     # via anthropic
-fastapi==0.136.1
+fastapi==0.137.0
     # via -r requirements.in
 filelock==3.29.0
     # via snowflake-connector-python
@@ -82,7 +83,7 @@ google-api-core==2.30.3
     #   google-cloud-iam
     #   google-cloud-pubsub
     #   google-cloud-run
-google-auth==2.53.0
+google-auth==2.54.0
     # via
     #   -r requirements.in
     #   google-api-core
@@ -94,7 +95,7 @@ google-cloud-functions==1.23.0
     # via -r requirements.in
 google-cloud-iam==2.23.0
     # via -r requirements.in
-google-cloud-pubsub==2.38.0
+google-cloud-pubsub==2.39.0
     # via -r requirements.in
 google-cloud-run==0.16.0
     # via -r requirements.in
@@ -114,6 +115,7 @@ grpcio==1.80.0
     #   google-api-core
     #   google-cloud-functions
     #   google-cloud-iam
+    #   google-cloud-pubsub
     #   google-cloud-run
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -123,9 +125,13 @@ grpcio-status==1.80.0
     #   google-api-core
     #   google-cloud-pubsub
 h11==0.16.0
-    # via httpcore
+    # via
+    #   httpcore
+    #   uvicorn
 httpcore==1.0.9
     # via httpx
+httptools==0.8.0
+    # via streamlit
 httpx==0.28.1
     # via anthropic
 idna==3.15
@@ -136,6 +142,8 @@ idna==3.15
     #   snowflake-connector-python
 importlib-metadata==8.7.1
     # via opentelemetry-api
+itsdangerous==2.2.0
+    # via streamlit
 jinja2==3.1.6
     # via
     #   altair
@@ -233,6 +241,8 @@ python-dateutil==2.9.0.post0
     #   pandas
 python-dotenv==1.2.2
     # via -r requirements.in
+python-multipart==0.0.32
+    # via streamlit
 pytz==2026.2
     # via snowflake-connector-python
 pyyaml==6.0.3
@@ -252,23 +262,25 @@ rpds-py==0.30.0
     # via
     #   jsonschema
     #   referencing
-s3transfer==0.17.0
+s3transfer==0.18.0
     # via boto3
 six==1.17.0
     # via python-dateutil
-slack-sdk==3.41.0
+slack-sdk==3.42.0
     # via -r requirements.in
 smmap==5.0.3
     # via gitdb
 sniffio==1.3.1
     # via anthropic
-snowflake-connector-python==4.5.0
+snowflake-connector-python==4.6.0
     # via -r requirements.in
 sortedcontainers==2.4.0
     # via snowflake-connector-python
 starlette==1.0.0
-    # via fastapi
-streamlit==1.56.0
+    # via
+    #   fastapi
+    #   streamlit
+streamlit==1.58.0
     # via -r requirements.in
 tenacity==9.1.4
     # via streamlit
@@ -276,8 +288,6 @@ toml==0.10.2
     # via streamlit
 tomlkit==0.15.0
     # via snowflake-connector-python
-tornado==6.5.5
-    # via streamlit
 typing-extensions==4.15.0
     # via
     #   altair
@@ -297,14 +307,16 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-tzdata==2026.2
-    # via pandas
 urllib3==2.7.0
     # via
     #   botocore
     #   pygithub
     #   requests
+uvicorn==0.49.0
+    # via streamlit
 watchdog==6.0.0
+    # via streamlit
+websockets==16.0
     # via streamlit
 zipp==3.23.1
     # via importlib-metadata
