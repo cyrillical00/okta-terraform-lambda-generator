@@ -226,6 +226,14 @@ To upgrade Okta to v6 (a breaking change for several resources), bump the constr
 
 Streamlit Community Cloud is the live runtime. Local `streamlit run app.py` works for development; ADC handles GCP auth in that mode.
 
+### Credential keepalive
+
+Okta revokes SSWS API tokens after 30 days without use, and live Okta context goes dark quietly when that happens. `.github/workflows/keepalive.yml` runs `keepalive.py` every Monday: one read-only Okta call (resets the token's idle clock) and one GCP call (mints a token from the service-account key and lists one service account, a canary for a deleted or disabled key). A dead credential turns the run red and GitHub emails you.
+
+It needs the same four values as Streamlit Cloud, added as repo secrets under Settings > Secrets and variables > Actions: `OKTA_ORG_URL`, `OKTA_API_TOKEN`, `GCP_PROJECT_ID`, `GCP_SA_JSON`. When you rotate either credential, update both places. Run it on demand with `gh workflow run keepalive.yml`, or locally with `python keepalive.py [okta|gcp]`.
+
+The repo is public, so GitHub disables scheduled workflows after 60 days with no repo activity. Each run calls the workflow-enable API to re-arm itself, but that reset is not documented by GitHub. If the Actions tab ever shows the schedule as disabled, `gh workflow enable keepalive.yml` turns it back on.
+
 ## Lambda deployment note
 
 Generated `lambda.tf` references `../lambda/lambda_function.zip`. Build this before `terraform apply`:
