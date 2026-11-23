@@ -49,21 +49,26 @@ from api._bootstrap import USAGE_UNAVAILABLE_MESSAGE, prepare_client, quota_bloc
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP for rate-limiter keying.
+    """Client address used as the rate-limiter key.
 
-    Vercel sets `X-Forwarded-For` with the original caller's IP as the
-    first comma-separated entry; we prefer that over `request.client.host`
-    (which is the inbound TLS terminator, not the real caller). Falls
-    back to "unknown" when neither is set so the limiter still has a
-    stable key for tests / local runs.
+    Platform assumed: Vercel. Its edge sets `x-real-ip` and
+    `x-vercel-forwarded-for` itself and overwrites what the caller sent, so
+    those are preferred. `x-forwarded-for` is only a fallback for other
+    hosts, and there the right-most entry (appended by the nearest proxy) is
+    used. The left-most entry is whatever the caller typed: keying on it
+    would let one client claim a new address, and a fresh rate-limit window,
+    on every request.
+
+    Falls back to the socket peer, then "unknown", so the limiter always
+    has a stable key for tests / local runs.
     """
-    xff = (request.headers.get("x-forwarded-for") or "").strip()
-    if xff:
-        # First entry is the original client; subsequent entries are
-        # intermediate proxies appended by each hop.
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    for header in ("x-vercel-forwarded-for", "x-forwarded-for"):
+        hops = [h.strip() for h in (request.headers.get(header) or "").split(",") if h.strip()]
+        if hops:
+            return hops[-1]
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
