@@ -43,7 +43,7 @@ from headless_rate_limit import (
 
 from api import _push_policy
 from api._auth import ApiKeyEntry, verify_api_caller
-from api._bootstrap import prepare_client, quota_blocked
+from api._bootstrap import USAGE_UNAVAILABLE_MESSAGE, prepare_client, quota_blocked
 
 
 def _client_ip(request: Request) -> str:
@@ -259,6 +259,12 @@ def generate_endpoint(
     ctx = prepare_client(actor_id)
 
     blocked, spent, quota = quota_blocked(ctx)
+    if blocked and ctx.usage_unavailable:
+        audit.log(
+            actor_id, "quota_blocked",
+            extra={"quota_usd": quota, "surface": "http", "reason": "usage_unavailable"},
+        )
+        raise HTTPException(status_code=503, detail=USAGE_UNAVAILABLE_MESSAGE)
     if blocked:
         audit.log(
             actor_id, "quota_blocked",

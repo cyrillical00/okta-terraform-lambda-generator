@@ -84,7 +84,7 @@ from headless_rate_limit import (
 )
 
 from api.index import _build_files, app
-from api._bootstrap import prepare_client, quota_blocked
+from api._bootstrap import USAGE_UNAVAILABLE_MESSAGE, prepare_client, quota_blocked
 
 
 # ─── HMAC verification ───────────────────────────────────────────────────
@@ -367,7 +367,10 @@ async def jira_webhook(request: Request) -> Any:
 
     blocked, spent, quota = quota_blocked(ctx)
     if blocked:
-        msg = f"TF Tool quota exceeded for today: ${spent:.2f} of ${quota:.2f} USD."
+        msg = (
+            f"TF Tool: {USAGE_UNAVAILABLE_MESSAGE}" if ctx.usage_unavailable
+            else f"TF Tool quota exceeded for today: ${spent:.2f} of ${quota:.2f} USD."
+        )
         ok, err = _post_comment(base_url, issue_key, msg)
         audit.log(
             actor_label, "quota_blocked",
