@@ -32,7 +32,7 @@ CANONICAL_HCL_WITH_BOILERPLATE = textwrap.dedent('''\
     }
 
     provider "okta" {
-      org_name  = "integrator-2720791"
+      org_name  = "example-org"
       base_url  = "okta.com"
       api_token = var.okta_api_token
     }
