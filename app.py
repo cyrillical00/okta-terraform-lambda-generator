@@ -1,3 +1,4 @@
+import html as _html
 import os
 
 import anthropic
@@ -856,7 +857,11 @@ def _render_history_sidebar(email: str) -> None:
             col_text, col_btn = st.columns([5, 1])
             with col_text:
                 st.caption(f"{badge}  {ts}")
-                st.markdown(f'<span class="tf-sidebar-preview">{preview}</span>', unsafe_allow_html=True)
+                # preview is the user's saved prompt: escape it before it goes into raw HTML
+                st.markdown(
+                    f'<span class="tf-sidebar-preview">{_html.escape(preview)}</span>',
+                    unsafe_allow_html=True,
+                )
             with col_btn:
                 if st.button("↺", key=f"reuse_{i}", help=entry["input"]):
                     st.session_state.user_input_area = entry["input"]
