@@ -47,6 +47,9 @@ def _client():
     """Late import so env-var overrides above land first."""
     from api.index import app
     import api.jira  # noqa: F401  (registers /api/jira/webhook)
+    # Each test starts with no deliveries on record, so re-using the same
+    # payload in several tests is not mistaken for a replay.
+    api.jira._reset_replay_state_for_tests()
     return TestClient(app)
 
 

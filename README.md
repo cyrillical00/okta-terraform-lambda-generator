@@ -200,6 +200,8 @@ Required env vars: `SLACK_SIGNING_SECRET`, `SLACK_DEFAULT_REPO`. The Slack-app i
 
 After generation, pushes to `JIRA_DEFAULT_REPO` on branch `jira/<issue_key>` and posts a JIRA comment via REST v3 with the commit URL and a fenced `okta.tf` preview. HTTP Basic auth on the callback uses `JIRA_USER_EMAIL:JIRA_API_TOKEN` per JIRA Cloud's auth model. Optional auto-transition (e.g. to "In Review") gated behind `JIRA_AUTO_TRANSITION=1` and `JIRA_TRANSITION_ID`; off by default since transition IDs are project-specific.
 
+The callback uses the bot's JIRA credentials, so it is only sent to `JIRA_BASE_URL` when that is set, or otherwise to the issue's own `https://<site>.atlassian.net` address. Set `JIRA_BASE_URL` for Jira Data Center or a custom domain. Issue keys are validated, a delivery whose signed body carries a `timestamp` older than 10 minutes is ignored, and an identical signed body is processed once per warm worker.
+
 JIRA's webhook delivery is fire-and-forget with a 30-second window for a 2xx response; the handler completes the full generate within that window thanks to Vercel Fluid Compute, no background-task gymnastics.
 
 ### Auth model summary
