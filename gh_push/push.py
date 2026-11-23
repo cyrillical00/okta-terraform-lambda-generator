@@ -10,7 +10,22 @@ def build_commit_message(intent: dict) -> str:
     return f"feat: generate {resource_type} {resource_name} via TF Tool"
 
 
-def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_message: str, branch: str = "") -> str:
+def push_to_github(
+    files: dict[str, str],
+    repo_name: str,
+    token: str,
+    commit_message: str,
+    branch: str = "",
+    *,
+    allow_default_branch: bool = True,
+) -> str:
+    """Commit `files` to `repo_name` on `branch` and return the commit URL.
+
+    With `allow_default_branch=False` the push is refused when the target
+    resolves to the repository's default branch (including when `branch` is
+    empty). Callers that act for a remote API client pass False so the
+    result always lands on a branch that still needs a review and merge.
+    """
     g = Github(token)
     try:
         repo = g.get_repo(repo_name)
@@ -23,6 +38,14 @@ def push_to_github(files: dict[str, str], repo_name: str, token: str, commit_mes
         raise
 
     target_branch = branch or repo.default_branch
+    if not allow_default_branch and target_branch == repo.default_branch:
+        structured_log.log_error(
+            "gh_push_default_branch_refused", repo=repo_name, branch=target_branch,
+        )
+        raise RuntimeError(
+            f"Refusing to push to the default branch '{target_branch}' of '{repo_name}'. "
+            "Use a feature branch and open a pull request."
+        )
     try:
         branch_ref = repo.get_branch(target_branch)
     except GithubException as e:

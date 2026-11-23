@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 import audit
 import cost
 import redact
+import roles
 from core import service as core_service
 from gh_push.push import push_to_github
 from headless_rate_limit import (
@@ -40,7 +41,8 @@ from headless_rate_limit import (
     check_input_length,
 )
 
-from api._auth import verify_api_key
+from api import _push_policy
+from api._auth import ApiKeyEntry, verify_api_caller
 from api._bootstrap import prepare_client, quota_blocked
 
 
@@ -63,6 +65,24 @@ def _client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
+
+
+def _require(action: str, caller: ApiKeyEntry) -> None:
+    """Enforce the role attached to the caller's API key.
+
+    Uses the same capability matrix as the Streamlit app (roles.py), so a
+    "viewer" key cannot generate and only "editor" and above can push.
+    """
+    if not roles.can(action, caller.role):
+        audit.log(
+            caller.actor_id,
+            "http_forbidden",
+            extra={"surface": "http", "action": action, "role": caller.role},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"this API key's role ({caller.role}) may not {action.replace('_', ' ')}",
+        )
 
 
 # ─── shared FastAPI app ───────────────────────────────────────────────────
@@ -138,8 +158,11 @@ class GenerateResponse(BaseModel):
 
 class PushRequest(BaseModel):
     files: dict[str, str] = Field(..., min_length=1)
-    repo: str = Field(..., description="owner/repo")
-    branch: str = ""
+    repo: str = Field(..., description="owner/repo; must be on the server's push allow-list")
+    branch: str = Field(
+        default="",
+        description="Target branch. Never the default branch; left empty, a tfgen/... branch is created.",
+    )
     commit_message: str = Field(..., min_length=1)
 
 
@@ -168,7 +191,7 @@ def health() -> HealthResponse:
 def generate_endpoint(
     body: GenerateRequest,
     request: Request,
-    actor_id: str = Depends(verify_api_key),
+    caller: ApiKeyEntry = Depends(verify_api_caller),
 ) -> Any:
     """Full free-text -> Terraform pipeline.
 
@@ -191,6 +214,8 @@ def generate_endpoint(
     are JSONResponse instances rather than raised HTTPException so we can
     set a `Retry-After` header alongside the structured error body.
     """
+    actor_id = caller.actor_id
+    _require("generate", caller)
     client_ip = _client_ip(request)
 
     allowed, retry_after = HTTP_RATE_LIMITER.check(client_ip)
@@ -296,42 +321,95 @@ def generate_endpoint(
 @app.post("/api/push", response_model=PushResponse)
 def push_endpoint(
     body: PushRequest,
-    actor_id: str = Depends(verify_api_key),
-) -> PushResponse:
+    request: Request,
+    caller: ApiKeyEntry = Depends(verify_api_caller),
+) -> Any:
     """Push a file map to a GitHub repo on a branch.
 
-    Uses the *server's* GITHUB_TOKEN, not the caller's. That's the same
-    model as the Streamlit app: customers share the bot's identity for
-    pushes. If a future use case needs caller-supplied tokens, add a
+    Uses the *server's* GITHUB_TOKEN, not the caller's. Because of that the
+    caller does not get to choose freely where it writes:
+
+      * the key's role must allow pushing (editor or admin)
+      * the repo must be on TFGEN_PUSH_ALLOWED_REPOS (nothing is pushed
+        while that list is empty)
+      * paths must be inside the directories this tool generates into
+      * the default branch is never written; an empty `branch` gets a
+        generated `tfgen/...` name
+
+    If a future use case needs caller-supplied tokens, add a
     `github_token` field to PushRequest and gate it behind a separate
     role.
     """
+    actor_id = caller.actor_id
+    _require("push_org", caller)
+
+    client_ip = _client_ip(request)
+    allowed, retry_after = HTTP_RATE_LIMITER.check(client_ip)
+    if not allowed:
+        audit.log(
+            actor_id,
+            "rate_limited_http",
+            extra={
+                "surface": "http",
+                "route": "push",
+                "client_ip": client_ip,
+                "retry_after_seconds": retry_after,
+            },
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limited", "retry_after_seconds": retry_after},
+            headers={"Retry-After": str(retry_after)},
+        )
+
     gh_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
     if not gh_token:
         raise HTTPException(status_code=503, detail="server is not configured: GITHUB_TOKEN missing")
+    if not _push_policy.allowed_repos():
+        raise HTTPException(
+            status_code=503,
+            detail="server is not configured: TFGEN_PUSH_ALLOWED_REPOS is empty, so pushes are disabled",
+        )
+
+    try:
+        repo = _push_policy.check_repo(body.repo)
+        _push_policy.check_files(body.files)
+        branch = _push_policy.resolve_branch(body.branch, actor_id)
+        commit_message = _push_policy.check_commit_message(body.commit_message)
+    except _push_policy.PushPolicyError as e:
+        audit.log(
+            actor_id,
+            "http_push_rejected",
+            extra={"repo": body.repo[:200], "branch": body.branch[:200], "reason": str(e)},
+        )
+        status = 403 if "allow-list" in str(e) else 400
+        raise HTTPException(status_code=status, detail=str(e))
 
     try:
         url = push_to_github(
             body.files,
-            body.repo,
+            repo,
             gh_token,
-            body.commit_message,
-            branch=body.branch,
+            commit_message,
+            branch=branch,
+            allow_default_branch=False,
         )
     except RuntimeError as e:
         # push_to_github raises RuntimeError for human-readable failures
-        # (repo not found, branch can't be created, empty repo).
-        audit.log(actor_id, "http_push_failed", extra={"repo": body.repo, "branch": body.branch, "error": str(e)})
+        # (repo not found, branch can't be created, empty repo, default
+        # branch refused).
+        audit.log(actor_id, "http_push_failed", extra={"repo": repo, "branch": branch, "error": str(e)})
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 — we want the audit log + 500
-        audit.log(actor_id, "http_push_failed", extra={"repo": body.repo, "branch": body.branch, "error": str(e)})
-        raise HTTPException(status_code=500, detail=f"push failed: {e}")
+        # The detail goes to the audit log, not to the caller.
+        audit.log(actor_id, "http_push_failed", extra={"repo": repo, "branch": branch, "error": str(e)})
+        raise HTTPException(status_code=500, detail="push failed")
 
     audit.log(
         actor_id,
         "http_push",
         commit_url=url,
-        extra={"repo": body.repo, "branch": body.branch or "(default)", "files": len(body.files)},
+        extra={"repo": repo, "branch": branch, "files": len(body.files)},
     )
 
     return PushResponse(commit_url=url)

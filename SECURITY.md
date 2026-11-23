@@ -229,6 +229,12 @@ The helper generates a fresh `secrets.token_urlsafe(32)` token, computes its SHA
 
 The legacy single shared secret `TFGEN_API_KEY` env var is still accepted for backwards compatibility. Requests matching the legacy value are tagged with the synthetic `actor_id = "legacy-tfgen"`; their daily cap falls back to `TFGEN_HTTP_DAILY_QUOTA_USD` or `[cost] daily_cap_usd` in `roles.toml`. New deployments should migrate to per-key tokens via the issuance helper. The legacy path will be removed in a future phase once all known callers have rotated.
 
+#### Role enforcement and push limits on the HTTP API
+
+The role stored with each key is enforced on every request, using the same capability matrix as the Streamlit app: `viewer` keys cannot generate, and only `editor` and `admin` keys can call `/api/push`. The legacy key is treated as `editor` unless `TFGEN_LEGACY_KEY_ROLE` is set; an unrecognised role (in the env var or in `roles.toml`) is treated as `viewer`.
+
+`/api/push` writes with the server's GitHub token, so its target is constrained server-side: the repo must be listed in `TFGEN_PUSH_ALLOWED_REPOS` (pushes are disabled while the list is empty), file paths must be inside the tool's own output directories, the default branch is refused, and the route shares the per-client rate limit with `/api/generate`. Rejected pushes are audit-logged as `http_push_rejected`.
+
 ### GitHub-backed audit sink (Phase 21c)
 
 `audit_github_sink.py` is an opt-in mirror of every `audit.log()` call to a monthly JSONL file in the configured GitHub repo. Defence in depth: the existing local-file path and the per-user GitHub log keep writing independently, so a sink failure cannot lose events. Failures (429, 5xx, 404 on the audit-repo root, network errors) buffer events in memory and retry on the next call; after 10 consecutive failures the buffered batch is dropped with an `st.error` notification (Streamlit context) or a `print` to stderr (headless context). User-facing operations are NEVER blocked by a sink failure.

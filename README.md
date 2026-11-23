@@ -179,6 +179,13 @@ curl -H "X-API-Key: $TFGEN_API_KEY" \
 
 Response: `{"intent": {...}, "files": {"terraform/okta.tf": "...", ...}, "validation_result": {...}, "cost_usd": 0.07, "cost_remaining_usd": 4.93}`.
 
+`/api/push` commits with the server's `GITHUB_TOKEN`, so the server decides where it may write:
+
+- **Role.** The key's role is enforced: `/api/generate` needs `contributor` or above, `/api/push` needs `editor` or above. The legacy `TFGEN_API_KEY` counts as `editor`; set `TFGEN_LEGACY_KEY_ROLE` to change that.
+- **Repo allow-list.** `TFGEN_PUSH_ALLOWED_REPOS` (comma-separated `owner/repo`) lists the only repositories the endpoint will push to. While it is empty, `/api/push` answers 503.
+- **Paths.** Files must be under `terraform/`, `lambda/`, `cloud_function/` or `fleet/` and end in `.tf`, `.tfvars.example`, `.py`, `.txt`, `.yml` or `.yaml`.
+- **Branch.** The repository's default branch is never written. Leave `branch` empty to get a generated `tfgen/...` branch, then open a pull request.
+
 ### Slack `/tfgen`
 
 `api/slack.py` registers a slash-command endpoint on the same FastAPI app. Slack signs every request with `X-Slack-Signature` over body + timestamp; the handler verifies and rejects replays older than 5 minutes.
