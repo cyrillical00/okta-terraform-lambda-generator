@@ -7,6 +7,11 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# Default for every job: a read-only token. A job that needs more (codeql)
+# declares it itself.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     name: pytest
@@ -69,6 +74,9 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read  # the action lists a PR's commits to scan them
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
