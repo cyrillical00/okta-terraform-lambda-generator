@@ -29,7 +29,7 @@ to end, including the multi-page concatenation path.
 
 ## How to run
 
-  cd "C:/Users/cbot/TF Tool"
+  cd "<path to this repo>"
   python _tftool/lumos_mock_server.py
   # Listens on http://127.0.0.1:8765 by default
   # Override with: python _tftool/lumos_mock_server.py 9000

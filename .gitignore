@@ -24,3 +24,5 @@ error screens/
 qa_full_run_postfix.log
 qa_*.log
 .phase24_diffs/
+# Per-machine assistant settings; never commit
+.claude/settings.local.json
