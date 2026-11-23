@@ -110,3 +110,45 @@ def test_import_is_allowed_for_permitted_roles():
 
 def test_denial_is_a_runtime_error_so_the_ui_error_path_handles_it():
     assert issubclass(repo_context.RepoAccessDenied, RuntimeError)
+
+
+# ─── closing open sign-up is a configuration choice ──────────────────────
+
+
+def _with_default(value):
+    secrets = {**SECRETS, "roles": {**SECRETS["roles"], "default": value}}
+    return patch.object(roles, "_read_secrets_table", side_effect=lambda name: dict(secrets.get(name, {})))
+
+
+def test_unlisted_accounts_keep_viewer_access_by_default():
+    assert roles.get_role("stranger@example.org") == "viewer"
+    assert roles.has_access("stranger@example.org") is True
+    assert roles.can("parse", "stranger@example.org") is True
+
+
+def test_default_none_refuses_unlisted_accounts():
+    with _with_default("none"):
+        assert roles.get_role("stranger@example.org") == "none"
+        assert roles.has_access("stranger@example.org") is False
+        for action in ("parse", "self_check", "view_outputs", "generate", "push_personal",
+                       "push_org", "env_refresh", "manage_roles"):
+            assert roles.can(action, "stranger@example.org") is False, action
+        assert roles.can_push_to("stranger@example.org", "any/repo") is False
+        assert roles.can_read_repo("stranger@example.org", "any/repo") is False
+
+
+def test_default_none_does_not_affect_listed_accounts():
+    with _with_default("none"):
+        assert roles.has_access("viewer@example.com") is True
+        assert roles.can("parse", "viewer@example.com") is True
+        assert roles.can("generate", "mapped@example.com") is True
+        assert roles.can("manage_roles", "admin@example.com") is True
+
+
+def test_the_none_role_string_itself_grants_nothing():
+    assert roles.can("parse", roles.NO_ACCESS_ROLE) is False
+
+
+def test_an_unrecognised_default_falls_back_to_viewer():
+    with _with_default("superuser"):
+        assert roles.get_role("stranger@example.org") == "viewer"

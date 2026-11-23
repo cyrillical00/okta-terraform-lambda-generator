@@ -916,6 +916,23 @@ if not st.user.is_logged_in:
     st.button("Sign in with Google", on_click=st.login, args=("google",))
     st.stop()
 
+# ── Access gate ──────────────────────────────────────────────────────────
+# Any Google account can complete the sign-in above. A deployment that wants
+# only listed accounts sets `default = "none"` in the [roles] secrets table;
+# everyone else stops here, before any model call or provider API call is
+# made on their behalf.
+if not _roles.has_access(st.user.email):
+    if not st.session_state.get("audit_access_denied_logged"):
+        _audit.log(st.user.email, "access_denied", extra={"reason": "account is not on the role list"})
+        st.session_state["audit_access_denied_logged"] = True
+    st.title("Okta Terraform + Lambda Generator")
+    st.error(
+        "This account is not authorised to use this app. "
+        "Ask an administrator to add your e-mail to a role."
+    )
+    st.button("Sign out", on_click=st.logout)
+    st.stop()
+
 # ── Session-idle timeout (30 minutes) ────────────────────────────────────
 # Streamlit has no native session timeout. Track activity in session_state
 # and force re-login when idle past the threshold. Updated on every render.

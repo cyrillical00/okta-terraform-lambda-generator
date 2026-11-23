@@ -14,7 +14,8 @@ Configuration: a `[roles]` table in Streamlit secrets:
     admin   = ["alice@example.com", "ops@example.com"]
     editor  = ["bob@example.com"]
     viewer  = ["intern@example.com"]
-    default = "viewer"   # role for any signed-in email not listed above
+    default = "viewer"   # role for any signed-in email not listed above;
+                         # set to "none" to refuse accounts that are not listed
 
 Per-role daily $ quota: a `[quotas]` table:
     [quotas]
@@ -49,6 +50,11 @@ DEFAULT_QUOTAS = {
 
 # Default role for emails not explicitly mapped. Tightest sensible default.
 DEFAULT_FALLBACK_ROLE = "viewer"
+
+# Not a role anyone is assigned. `default = "none"` in [roles] makes it the
+# answer for every account that is not listed, which closes open sign-up:
+# such an account has no capability at all and the app stops it at the door.
+NO_ACCESS_ROLE = "none"
 
 # Capability matrix: action -> minimum role required.
 _CAPS = {
@@ -112,9 +118,15 @@ def _email_to_role_map() -> dict:
 def _fallback_role() -> str:
     raw = _read_secrets_table("roles")
     val = raw.get("default") if isinstance(raw.get("default"), str) else None
-    if val and val in ROLE_ORDER:
+    if val and (val in ROLE_ORDER or val == NO_ACCESS_ROLE):
         return val
     return DEFAULT_FALLBACK_ROLE
+
+
+def has_access(email: str) -> bool:
+    """False when the account resolves to NO_ACCESS_ROLE, i.e. it is not on
+    the role list and the deployment has set `default = "none"`."""
+    return get_role(email) != NO_ACCESS_ROLE
 
 
 def get_role(email: str) -> str:
@@ -130,6 +142,8 @@ def can(action: str, role_or_email: str) -> bool:
     perform `action`. Unknown action -> deny."""
     required = _CAPS.get(action)
     if required is None:
+        return False
+    if role_or_email == NO_ACCESS_ROLE:
         return False
     actor_role = role_or_email if role_or_email in ROLE_ORDER else get_role(role_or_email)
     return _role_rank(actor_role) >= _role_rank(required)

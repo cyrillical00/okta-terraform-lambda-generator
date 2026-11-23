@@ -18,10 +18,10 @@ Roles are configured in `[roles]` of `.streamlit/secrets.toml`:
 |---|---|
 | `admin` | All features, manage `roles.toml` via the in-app sidebar, view all users' audit/cost. |
 | `editor` | All generation/push, sees only own audit/cost. |
-| `contributor` | Generation OK; push only to repos owned by their GitHub username (e.g. `alice@x.com` can push to `alice/foo` but not `acme/foo`). |
+| `contributor` | Generation OK; push to, and import Terraform context from, only repos owned by the GitHub username mapped to them in `[github_usernames]` (e.g. `"alice@x.com" = "alice-gh"` allows `alice-gh/foo` but not `acme/foo`). No mapping, no repos. |
 | `viewer` | Parse and view outputs only. No generation, no push. |
 
-Default for any signed-in user not in the role map is `viewer` (most restrictive). See `roles.py:_CAPS` for the full capability matrix and `roles.py:can_push_to` for the push-scope rule.
+Default for any signed-in user not in the role map is `viewer`. Any Google account can complete sign-in, so on an open OAuth client that means anyone can parse prompts at the viewer quota. To refuse accounts that are not listed, set `default = "none"`: they are stopped right after sign-in, before any model or provider API call. See `roles.py:_CAPS` for the full capability matrix and `roles.py:can_push_to` for the push-scope rule.
 
 Example `[roles]` block:
 
