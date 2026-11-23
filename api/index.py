@@ -22,6 +22,7 @@ reuses the same `app` for every request via Fluid Compute.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Literal
 
@@ -32,6 +33,7 @@ from pydantic import BaseModel, Field
 import audit
 import cost
 import redact
+import repo_context
 import roles
 from core import service as core_service
 from gh_push.push import push_to_github
@@ -127,13 +129,78 @@ OutputMode = Literal[
 ]
 
 
+# ─── limits on the optional generate inputs ──────────────────────────────
+# The prompt has its own cap (INPUT_LENGTH_CAP_BYTES). Every other
+# caller-supplied field reaches the model too, so each one is bounded and
+# passed through the same redaction as the prompt.
+
+EXTRA_INSTRUCTIONS_CAP_BYTES = INPUT_LENGTH_CAP_BYTES
+ENV_CONTEXT_CAP_BYTES = 200_000
+# Same ceilings the Streamlit repo importer applies (repo_context.py).
+REPO_CONTEXT_MAX_FILES = repo_context.MAX_FILES
+REPO_CONTEXT_CAP_BYTES = repo_context.MAX_TOTAL_CHARS
+REPO_CONTEXT_PATH_MAX_CHARS = 200
+
+# A Terraform version constraint: one or more comma-separated terms such as
+# "~> 4.0" or ">= 4.0, < 5.0". Nothing else belongs in this field.
+_VERSION_TERM = r"(?:(?:=|!=|>=|<=|>|<|~>)[ \t]*)?\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.]+)?"
+PROVIDER_VERSION_PATTERN = rf"^[ \t]*{_VERSION_TERM}(?:[ \t]*,[ \t]*{_VERSION_TERM})*[ \t]*$"
+
+
+def _extra_input_problem(body: "GenerateRequest") -> tuple[str, int] | None:
+    """Return (reason, cap) for the first optional field over its limit."""
+    ok, reason = check_input_length(body.extra_instructions, EXTRA_INSTRUCTIONS_CAP_BYTES)
+    if not ok:
+        return f"extra_instructions: {reason}", EXTRA_INSTRUCTIONS_CAP_BYTES
+
+    if body.env_context is not None:
+        size = len(json.dumps(body.env_context, default=str).encode("utf-8"))
+        if size > ENV_CONTEXT_CAP_BYTES:
+            return f"env_context: {size} bytes exceeds cap {ENV_CONTEXT_CAP_BYTES}", ENV_CONTEXT_CAP_BYTES
+
+    files = body.repo_context_files or {}
+    if len(files) > REPO_CONTEXT_MAX_FILES:
+        return (
+            f"repo_context_files: {len(files)} files exceeds limit {REPO_CONTEXT_MAX_FILES}",
+            REPO_CONTEXT_CAP_BYTES,
+        )
+    if any(len(path) > REPO_CONTEXT_PATH_MAX_CHARS for path in files):
+        return "repo_context_files: file path too long", REPO_CONTEXT_CAP_BYTES
+    size = sum(len(path.encode("utf-8")) + len((text or "").encode("utf-8")) for path, text in files.items())
+    if size > REPO_CONTEXT_CAP_BYTES:
+        return f"repo_context_files: {size} bytes exceeds cap {REPO_CONTEXT_CAP_BYTES}", REPO_CONTEXT_CAP_BYTES
+    return None
+
+
+def _redact_tree(value: Any, summary: dict[str, int]) -> Any:
+    """Redact every string inside a JSON-like value; counts go into `summary`.
+
+    Dict keys (file paths, field names) are left as they are.
+    """
+    if isinstance(value, str):
+        cleaned, found = redact.redact(value)
+        for label, count in (found or {}).items():
+            summary[label] = summary.get(label, 0) + count
+        return cleaned
+    if isinstance(value, dict):
+        return {k: _redact_tree(v, summary) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_tree(v, summary) for v in value]
+    return value
+
+
 # ─── request / response shapes ───────────────────────────────────────────
 
 
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Plain-English description of the operation.")
     output_mode: OutputMode = "Both"
-    provider_version: str = Field(default="~> 4.0", description="Okta provider version constraint.")
+    provider_version: str = Field(
+        default="~> 4.0",
+        max_length=64,
+        pattern=PROVIDER_VERSION_PATTERN,
+        description="Okta provider version constraint, e.g. \"~> 4.0\" or \">= 4.0, < 5.0\".",
+    )
     max_passes: int = Field(default=3, ge=1, le=5, description="Validate-and-fix passes.")
     extra_instructions: str = ""
     env_context: dict[str, Any] | None = Field(
@@ -256,6 +323,19 @@ def generate_endpoint(
             },
         )
 
+    problem = _extra_input_problem(body)
+    if problem:
+        reason, cap = problem
+        audit.log(
+            actor_id,
+            "input_too_large_http",
+            extra={"surface": "http", "client_ip": client_ip, "reason": reason, "cap_bytes": cap},
+        )
+        return JSONResponse(
+            status_code=413,
+            content={"error": "input_too_large", "reason": reason, "cap_bytes": cap},
+        )
+
     ctx = prepare_client(actor_id)
 
     blocked, spent, quota = quota_blocked(ctx)
@@ -276,17 +356,22 @@ def generate_endpoint(
         )
 
     cleaned_prompt, redact_summary = redact.redact(body.prompt)
+    # The optional fields go to the model as well: same redaction, one summary.
+    redact_summary = dict(redact_summary or {})
+    extra_instructions = _redact_tree(body.extra_instructions, redact_summary)
+    env_context = _redact_tree(body.env_context, redact_summary)
+    repo_context_files = _redact_tree(body.repo_context_files, redact_summary)
 
     result = core_service.generate(
         cleaned_prompt,
         client=ctx.client,
         model=ctx.model,
         output_mode=body.output_mode,
-        provider_version=body.provider_version,
+        provider_version=body.provider_version.strip(),
         max_passes=body.max_passes,
-        extra_instructions=body.extra_instructions,
-        env_context=body.env_context,
-        repo_context_files=body.repo_context_files,
+        extra_instructions=extra_instructions,
+        env_context=env_context,
+        repo_context_files=repo_context_files,
     )
 
     files = None
