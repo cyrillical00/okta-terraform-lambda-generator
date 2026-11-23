@@ -22,6 +22,10 @@ repo. Auto-rotate on month boundary. Older months are never modified.
 Opt-in via `[audit] github_sink_enabled = true` in roles.toml. Default
 false so Streamlit Cloud users without the secret get no GitHub sink,
 no errors.
+
+The target (`github_audit_repo`) must be a PRIVATE repository: events hold
+actor e-mails, client IPs and prompt previews. The sink checks this on
+every flush and writes nothing to a public repo.
 """
 
 from __future__ import annotations
@@ -92,8 +96,12 @@ def _sink_enabled() -> bool:
 
 
 def _sink_repo() -> str:
+    """Target repo for the sink, or "" while it is still the placeholder."""
     cfg = _read_audit_config()
-    return (cfg.get("github_audit_repo") or "").strip()
+    repo = (cfg.get("github_audit_repo") or "").strip()
+    if repo.upper().startswith("REPLACE_WITH_"):
+        return ""
+    return repo
 
 
 def _sink_path_prefix() -> str:
@@ -225,6 +233,12 @@ def _flush_to_github(events: list[dict]) -> bool:
         repo = g.get_repo(repo_name)
     except Exception as e:
         _structured_warn("audit_sink_repo_unreachable", repo=repo_name, error=str(e))
+        return False
+
+    # Audit events carry actor e-mails, client IPs and prompt previews. They
+    # are only ever written to a repository GitHub reports as private.
+    if getattr(repo, "private", None) is not True:
+        _structured_warn("audit_sink_repo_not_private", repo=repo_name)
         return False
 
     path = f"{_sink_path_prefix()}audit-{_current_month_key()}.jsonl"

@@ -53,7 +53,11 @@ daily_cap_usd = 5.00
 # Failures (429, 5xx, network) are queued in memory and retried on the
 # next event. After 10 consecutive failures the buffered batch is dropped
 # with an error notification; user-facing operations are never blocked.
+#
+# github_audit_repo MUST be a private repository. Audit events contain actor
+# e-mails, client IPs and prompt previews; the sink refuses to write to a
+# public repo and stays off while the placeholder below is in place.
 [audit]
 github_sink_enabled    = false
-github_audit_repo      = "cyrillical00/okta-terraform-lambda-generator"
+github_audit_repo      = "REPLACE_WITH_OWNER/PRIVATE_AUDIT_REPO"
 github_audit_path_prefix = "_tftool/audit/"

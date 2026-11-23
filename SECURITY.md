@@ -239,6 +239,8 @@ The role stored with each key is enforced on every request, using the same capab
 
 `audit_github_sink.py` is an opt-in mirror of every `audit.log()` call to a monthly JSONL file in the configured GitHub repo. Defence in depth: the existing local-file path and the per-user GitHub log keep writing independently, so a sink failure cannot lose events. Failures (429, 5xx, 404 on the audit-repo root, network errors) buffer events in memory and retry on the next call; after 10 consecutive failures the buffered batch is dropped with an `st.error` notification (Streamlit context) or a `print` to stderr (headless context). User-facing operations are NEVER blocked by a sink failure.
 
+The sink target (`[audit] github_audit_repo` in `roles.toml`) must be a **private** repository: events contain actor e-mails, client IPs and prompt previews. The sink checks the repository's visibility on every flush and writes nothing if it is public; the committed `roles.toml` ships a `REPLACE_WITH_...` placeholder, which keeps the sink off even if the flag is enabled.
+
 #### Storage layout
 
 ```text

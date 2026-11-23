@@ -72,6 +72,8 @@ class _FakeRepo:
         self.fail_mode = fail_mode
         self.files: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
+        # The sink only writes to private repositories.
+        self.private = True
 
     def get_contents(self, path: str):
         self.calls.append(("get", path))
@@ -494,3 +496,69 @@ if __name__ == "__main__":
             print(f"ERROR {fn.__name__}: {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failures}/{len(tests)} passed")
     sys.exit(0 if failures == 0 else 1)
+
+
+# ── private-repo requirement ─────────────────────────────────────────────
+
+
+def test_public_repo_is_never_written(tmp_path, monkeypatch):
+    """Audit events must not be mirrored into a public repository."""
+    _point_to_roles_toml(monkeypatch, _write_roles_toml(tmp_path, enabled=True))
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_fake_for_test")
+    repo = _install_fake_github(monkeypatch)
+    repo.private = False
+    import importlib
+    import audit_github_sink as sink
+    importlib.reload(sink)
+    sink._reset_state_for_tests()
+
+    sink.append_event({"actor_id": "someone@example.com", "action": "generate"})
+
+    assert repo.files == {}, "nothing may be written to a public repo"
+    assert repo.calls == [], "the contents API must not even be read"
+    assert len(sink._BUFFER) == 1, "the event stays buffered like any other failed flush"
+
+
+def test_unknown_visibility_is_treated_as_public(tmp_path, monkeypatch):
+    _point_to_roles_toml(monkeypatch, _write_roles_toml(tmp_path, enabled=True))
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_fake_for_test")
+    repo = _install_fake_github(monkeypatch)
+    del repo.private
+    import importlib
+    import audit_github_sink as sink
+    importlib.reload(sink)
+    sink._reset_state_for_tests()
+
+    sink.append_event({"actor_id": "a", "action": "generate"})
+    assert repo.files == {}
+
+
+def test_placeholder_repo_keeps_the_sink_off(tmp_path, monkeypatch):
+    path = _write_roles_toml(tmp_path, enabled=True)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("owner/test-repo", "REPLACE_WITH_OWNER/PRIVATE_AUDIT_REPO"),
+        encoding="utf-8",
+    )
+    _point_to_roles_toml(monkeypatch, path)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_fake_for_test")
+    repo = _install_fake_github(monkeypatch)
+    import importlib
+    import audit_github_sink as sink
+    importlib.reload(sink)
+    sink._reset_state_for_tests()
+
+    assert sink._sink_repo() == ""
+    sink.append_event({"actor_id": "a", "action": "generate"})
+    assert repo.files == {} and repo.calls == []
+
+
+def test_committed_config_does_not_point_at_a_real_repo():
+    """The roles.toml shipped in this (public) repo must keep the placeholder."""
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover
+        import tomli as tomllib
+    with open(os.path.join(REPO_ROOT, "roles.toml"), "rb") as f:
+        audit_cfg = tomllib.load(f).get("audit") or {}
+    assert audit_cfg.get("github_sink_enabled") is False
+    assert str(audit_cfg.get("github_audit_repo", "")).startswith("REPLACE_WITH_")
