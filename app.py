@@ -144,7 +144,7 @@ from ui.onboarding import render as render_onboarding_tour
 from ui.account import render_sidebar_links as render_account_links, render_dialogs as render_account_dialogs
 from ui.cost_dashboard import render_cost_dashboard
 from env_context import build_env_context
-from repo_context import fetch_terraform_files
+from repo_context import RepoAccessDenied, fetch_terraform_files_as
 
 
 # ── sidebar read cache ────────────────────────────────────────────────────
@@ -769,9 +769,21 @@ def _render_repo_sidebar(default_repo: str) -> None:
 
     if load_clicked and repo_input.strip():
         try:
-            files = fetch_terraform_files(github_token, repo_input.strip(), path_input.strip())
+            # Role check + fetch. The server token is used, so the user's role
+            # decides which repos they may read.
+            files = fetch_terraform_files_as(
+                st.user.email, github_token, repo_input.strip(), path_input.strip()
+            )
             st.session_state.repo_tf_files = files
             st.session_state.repo_tf_error = None
+        except RepoAccessDenied as e:
+            st.session_state.repo_tf_files = None
+            st.session_state.repo_tf_error = str(e)
+            _audit.log(
+                st.user.email,
+                "repo_import_blocked",
+                extra={"role": _roles.get_role(st.user.email), "repo": repo_input.strip()[:200]},
+            )
         except RuntimeError as e:
             st.session_state.repo_tf_files = None
             st.session_state.repo_tf_error = str(e)

@@ -5,7 +5,8 @@ a roles config.
 Roles (most permissive to least):
   admin       — all features + can edit roles config + sees every user's audit/cost
   editor      — full generation/push, sees only their own audit/cost
-  contributor — generation OK; push only to repos owned by them (literal username match)
+  contributor — generation OK; push only to repos owned by the GitHub user mapped to
+                them in the `[github_usernames]` table
   viewer      — parse + view; no generate, no push
 
 Configuration: a `[roles]` table in Streamlit secrets:
@@ -22,7 +23,13 @@ Per-role daily $ quota: a `[quotas]` table:
     contributor = 2.00
     viewer      = 0.50
 
-If neither table exists in secrets, defaults below apply.
+Contributor repo ownership: a `[github_usernames]` table mapping each
+contributor's sign-in e-mail to their GitHub username. A contributor with
+no entry cannot push to, or import from, any repo:
+    [github_usernames]
+    "alice@example.com" = "alice-gh"
+
+If neither `[roles]` nor `[quotas]` exists in secrets, defaults below apply.
 
 Module load is side-effect free; reads Streamlit secrets lazily.
 """
@@ -128,10 +135,27 @@ def can(action: str, role_or_email: str) -> bool:
     return _role_rank(actor_role) >= _role_rank(required)
 
 
+def _github_username(email: str) -> str:
+    """GitHub username explicitly mapped to `email` in `[github_usernames]`.
+
+    Returns "" when there is no mapping. Nothing is inferred from the e-mail
+    address itself: a local-part that happens to equal someone's GitHub
+    account or organisation name proves nothing about who owns it.
+    """
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return ""
+    for key, value in _read_secrets_table("github_usernames").items():
+        if isinstance(key, str) and key.strip().lower() == wanted and isinstance(value, str):
+            return value.strip().lower()
+    return ""
+
+
 def can_push_to(email: str, repo: str) -> bool:
-    """Repo-aware push gate. `repo` is "owner/name". Contributor can push
-    only when owner == their GitHub username (derived from email local-part
-    as a best-effort fallback when no explicit GitHub username is mapped)."""
+    """Repo-aware push gate. `repo` is "owner/name". Editors and admins can
+    push anywhere the server token can. A contributor can push only when the
+    repo owner is the GitHub username mapped to their e-mail in
+    `[github_usernames]`; without a mapping the answer is no."""
     if not email or not repo or "/" not in repo:
         return False
     role = get_role(email)
@@ -139,13 +163,18 @@ def can_push_to(email: str, repo: str) -> bool:
         return True
     if _role_rank(role) >= _role_rank("contributor"):
         owner = repo.split("/", 1)[0].strip().lower()
-        # Best-effort: match the email local-part. If you want strict
-        # mapping, add a [github_usernames] table to secrets and look it up
-        # here. For now this is the common case (cyrillical00@gmail.com ->
-        # cyrillical00).
-        local = email.split("@", 1)[0].strip().lower()
-        return owner == local
+        username = _github_username(email)
+        return bool(username) and owner == username
     return False
+
+
+def can_read_repo(email: str, repo: str) -> bool:
+    """Gate for importing files from `repo` with the server's GitHub token.
+
+    Same rule as pushing: the server token can usually read far more than a
+    given user should see, so viewers get nothing and contributors only
+    their own repos."""
+    return can_push_to(email, repo)
 
 
 def daily_quota_usd(email: str) -> float:
