@@ -61,7 +61,7 @@ from headless_rate_limit import (
     check_input_length,
 )
 
-from api._bootstrap import prepare_client, quota_blocked
+from api._bootstrap import USAGE_UNAVAILABLE_MESSAGE, prepare_client, quota_blocked
 from api.index import app, _build_files
 
 
@@ -247,7 +247,8 @@ def _run_generation(
     if blocked:
         _post_response(
             response_url,
-            f"Daily quota exhausted: ${spent:.2f} / ${quota:.2f} USD. Try again tomorrow.",
+            USAGE_UNAVAILABLE_MESSAGE if ctx.usage_unavailable
+            else f"Daily quota exhausted: ${spent:.2f} / ${quota:.2f} USD. Try again tomorrow.",
         )
         audit.log(
             actor_id, "quota_blocked",

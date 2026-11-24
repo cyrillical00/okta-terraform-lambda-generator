@@ -7,7 +7,7 @@ from jamf_client import JamfClient, JamfError
 
 
 def _parse_org_url(url: str) -> tuple[str, str]:
-    """Parse 'https://integrator-2720791.okta.com' -> ('integrator-2720791', 'okta.com').
+    """Parse 'https://example-org.okta.com' -> ('example-org', 'okta.com').
 
     Handles okta.com, oktapreview.com, okta-emea.com, and any custom subdomain.
     Returns ('', '') if the URL cannot be parsed.

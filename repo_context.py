@@ -2,8 +2,32 @@ import base64
 
 from github import Github, GithubException
 
+import roles
+
 MAX_FILES = 20
 MAX_TOTAL_CHARS = 60_000
+
+
+class RepoAccessDenied(RuntimeError):
+    """The signed-in user's role may not import from the requested repo."""
+
+
+def fetch_terraform_files_as(email: str, github_token: str, repo_name: str, tf_path: str = "terraform") -> dict[str, str]:
+    """`fetch_terraform_files` on behalf of a signed-in user.
+
+    The fetch runs with the server's GitHub token, which can read repos the
+    user has no business seeing. So the user's role is checked first
+    (`roles.can_read_repo`): editors and admins may import from any repo,
+    contributors only from repos owned by their mapped GitHub user, viewers
+    from none. Raises RepoAccessDenied before any GitHub call otherwise.
+    """
+    repo_name = (repo_name or "").strip()
+    if not roles.can_read_repo(email, repo_name):
+        raise RepoAccessDenied(
+            f"Role '{roles.get_role(email)}' cannot import from '{repo_name}'. "
+            "Contributors can import only from repos owned by them; ask an editor or admin."
+        )
+    return fetch_terraform_files(github_token, repo_name, tf_path)
 
 
 def fetch_terraform_files(github_token: str, repo_name: str, tf_path: str = "terraform") -> dict[str, str]:

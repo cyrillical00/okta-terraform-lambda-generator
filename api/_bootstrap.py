@@ -47,6 +47,8 @@ class CallerContext:
     client: anthropic.Anthropic  # cost-wrapped
     model: str
     daily_quota_usd: float
+    # Set by quota_blocked() when today's spend could not be determined.
+    usage_unavailable: bool = False
 
 
 _configured = False
@@ -122,10 +124,31 @@ def quota_blocked(ctx: CallerContext) -> tuple[bool, float, float]:
     A quota of 0 means unlimited (matches the roles.py admin default).
     Every check is audit-logged at the call site so abuse patterns
     surface in the audit log.
+
+    Fails closed: if today's spend cannot be read, or there is no store to
+    record it in, the caller is blocked and `ctx.usage_unavailable` is set
+    so the handler can say why. An unknown total never counts as zero.
     """
     if ctx.daily_quota_usd <= 0:
         return False, cost.today_usd(ctx.actor_id), 0.0
-    spent = cost.today_usd(ctx.actor_id)
+    try:
+        spent = cost.today_usd(ctx.actor_id, strict=True)
+    except cost.UsageUnavailable as e:
+        ctx.usage_unavailable = True
+        try:
+            audit.log(
+                ctx.actor_id,
+                "quota_check",
+                extra={
+                    "surface": "http",
+                    "quota_usd": round(ctx.daily_quota_usd, 6),
+                    "blocked": True,
+                    "reason": f"usage unavailable: {e}",
+                },
+            )
+        except Exception:
+            pass
+        return True, ctx.daily_quota_usd, ctx.daily_quota_usd
     blocked = spent >= ctx.daily_quota_usd
     try:
         audit.log(
@@ -144,3 +167,9 @@ def quota_blocked(ctx: CallerContext) -> tuple[bool, float, float]:
         # import-time misconfiguration path where audit is unavailable.
         pass
     return blocked, spent, ctx.daily_quota_usd
+
+
+USAGE_UNAVAILABLE_MESSAGE = (
+    "Today's spend could not be verified, so the request was not run. "
+    "Try again later; if this keeps happening the usage store needs attention."
+)

@@ -1,3 +1,4 @@
+import html as _html
 import os
 
 import anthropic
@@ -144,7 +145,7 @@ from ui.onboarding import render as render_onboarding_tour
 from ui.account import render_sidebar_links as render_account_links, render_dialogs as render_account_dialogs
 from ui.cost_dashboard import render_cost_dashboard
 from env_context import build_env_context
-from repo_context import fetch_terraform_files
+from repo_context import RepoAccessDenied, fetch_terraform_files_as
 
 
 # ── sidebar read cache ────────────────────────────────────────────────────
@@ -769,9 +770,21 @@ def _render_repo_sidebar(default_repo: str) -> None:
 
     if load_clicked and repo_input.strip():
         try:
-            files = fetch_terraform_files(github_token, repo_input.strip(), path_input.strip())
+            # Role check + fetch. The server token is used, so the user's role
+            # decides which repos they may read.
+            files = fetch_terraform_files_as(
+                st.user.email, github_token, repo_input.strip(), path_input.strip()
+            )
             st.session_state.repo_tf_files = files
             st.session_state.repo_tf_error = None
+        except RepoAccessDenied as e:
+            st.session_state.repo_tf_files = None
+            st.session_state.repo_tf_error = str(e)
+            _audit.log(
+                st.user.email,
+                "repo_import_blocked",
+                extra={"role": _roles.get_role(st.user.email), "repo": repo_input.strip()[:200]},
+            )
         except RuntimeError as e:
             st.session_state.repo_tf_files = None
             st.session_state.repo_tf_error = str(e)
@@ -844,7 +857,11 @@ def _render_history_sidebar(email: str) -> None:
             col_text, col_btn = st.columns([5, 1])
             with col_text:
                 st.caption(f"{badge}  {ts}")
-                st.markdown(f'<span class="tf-sidebar-preview">{preview}</span>', unsafe_allow_html=True)
+                # preview is the user's saved prompt: escape it before it goes into raw HTML
+                st.markdown(
+                    f'<span class="tf-sidebar-preview">{_html.escape(preview)}</span>',
+                    unsafe_allow_html=True,
+                )
             with col_btn:
                 if st.button("↺", key=f"reuse_{i}", help=entry["input"]):
                     st.session_state.user_input_area = entry["input"]
@@ -897,6 +914,23 @@ if not st.user.is_logged_in:
     st.title("Okta Terraform + Lambda Generator")
     st.markdown("Sign in with your Google account to continue.")
     st.button("Sign in with Google", on_click=st.login, args=("google",))
+    st.stop()
+
+# ── Access gate ──────────────────────────────────────────────────────────
+# Any Google account can complete the sign-in above. A deployment that wants
+# only listed accounts sets `default = "none"` in the [roles] secrets table;
+# everyone else stops here, before any model call or provider API call is
+# made on their behalf.
+if not _roles.has_access(st.user.email):
+    if not st.session_state.get("audit_access_denied_logged"):
+        _audit.log(st.user.email, "access_denied", extra={"reason": "account is not on the role list"})
+        st.session_state["audit_access_denied_logged"] = True
+    st.title("Okta Terraform + Lambda Generator")
+    st.error(
+        "This account is not authorised to use this app. "
+        "Ask an administrator to add your e-mail to a role."
+    )
+    st.button("Sign out", on_click=st.logout)
     st.stop()
 
 # ── Session-idle timeout (30 minutes) ────────────────────────────────────

@@ -40,7 +40,7 @@ Step 3. Update Streamlit Cloud Secrets UI
 Step 4. Update local dev machines
         Open .streamlit/secrets.toml on every machine that has it:
         # Windows
-        notepad C:\Users\cbot\TF Tool\.streamlit\secrets.toml
+        notepad "%USERPROFILE%\path\to\TF Tool\.streamlit\secrets.toml"
         # macOS / Linux
         $EDITOR ~/path/to/TF\ Tool/.streamlit/secrets.toml
         Replace ANTHROPIC_API_KEY value. Save.
@@ -276,7 +276,7 @@ Step 3. Convert the JSON to a single line for the secrets file
         # macOS / Linux
         cat ~/Downloads/key.json | python -c "import sys, json; print(json.dumps(json.load(sys.stdin)))"
         # Windows PowerShell
-        (Get-Content C:\Users\cbot\Downloads\key.json -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)
+        (Get-Content "$env:USERPROFILE\Downloads\key.json" -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)
 
 Step 4. Update Streamlit Cloud Secrets UI
         GCP_SA_JSON -> paste single-line JSON -> Save -> Reboot.

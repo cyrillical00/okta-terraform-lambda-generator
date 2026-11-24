@@ -38,6 +38,11 @@ except ImportError:  # pragma: no cover, older runtimes only
 
 _LEGACY_ACTOR_ID = "legacy-tfgen"
 _DEFAULT_LEGACY_QUOTA = 5.00
+# Role given to the legacy shared TFGEN_API_KEY. It was the only credential
+# before per-key tokens existed and was used for both generate and push, so
+# it maps to "editor" unless TFGEN_LEGACY_KEY_ROLE says otherwise.
+_DEFAULT_LEGACY_ROLE = "editor"
+_KNOWN_ROLES = ("viewer", "contributor", "editor", "admin")
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,17 @@ def _legacy_quota() -> float:
     return _DEFAULT_LEGACY_QUOTA
 
 
+def _legacy_role() -> str:
+    """Role for the legacy TFGEN_API_KEY actor (TFGEN_LEGACY_KEY_ROLE).
+
+    An unrecognised value falls back to "viewer", the least privileged role.
+    """
+    raw = (os.environ.get("TFGEN_LEGACY_KEY_ROLE") or "").strip().lower()
+    if not raw:
+        return _DEFAULT_LEGACY_ROLE
+    return raw if raw in _KNOWN_ROLES else "viewer"
+
+
 def actor_id_for(api_key: str) -> str:
     """Legacy helper: stable 16-char hash of a raw token.
 
@@ -179,6 +195,52 @@ def _parse_bearer(authorization: Optional[str]) -> str:
     return s[7:].strip()
 
 
+def _authenticate(x_api_key: Optional[str], authorization: Optional[str]) -> ApiKeyEntry:
+    """Resolve the presented key to its entry (actor, role, quota) or raise 401.
+
+    The role comes from the matched token itself, so two keys that share an
+    actor_id can never borrow each other's role.
+    """
+    provided = (x_api_key or "").strip() or _parse_bearer(authorization)
+    if not provided:
+        raise HTTPException(status_code=401, detail="missing API key")
+
+    # Path 1: per-key token from roles.toml [api_keys].
+    entry = resolve_token(provided)
+    if entry is not None:
+        role = entry.role.strip().lower()
+        if role not in _KNOWN_ROLES:
+            # A typo in roles.toml must not grant anything.
+            role = "viewer"
+        return ApiKeyEntry(
+            actor_id=entry.actor_id,
+            role=role,
+            daily_quota_usd=entry.daily_quota_usd,
+            sha256=entry.sha256,
+        )
+
+    # Path 2: legacy TFGEN_API_KEY (backwards compat).
+    legacy = _legacy_key()
+    if legacy and hmac.compare_digest(provided.encode("utf-8"), legacy.encode("utf-8")):
+        return ApiKeyEntry(
+            actor_id=_LEGACY_ACTOR_ID,
+            role=_legacy_role(),
+            daily_quota_usd=_legacy_quota(),
+            sha256="",
+        )
+
+    raise HTTPException(status_code=401, detail="invalid API key")
+
+
+async def verify_api_caller(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> ApiKeyEntry:
+    """FastAPI dependency. Like `verify_api_key`, but returns the whole
+    entry so the route can enforce the caller's role."""
+    return _authenticate(x_api_key, authorization)
+
+
 async def verify_api_key(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
@@ -200,21 +262,7 @@ async def verify_api_key(
     operational state without giving them anything actionable; 401 is
     the safer default once per-key tokens exist.
     """
-    provided = (x_api_key or "").strip() or _parse_bearer(authorization)
-    if not provided:
-        raise HTTPException(status_code=401, detail="missing API key")
-
-    # Path 1: per-key token from roles.toml [api_keys].
-    entry = resolve_token(provided)
-    if entry is not None:
-        return entry.actor_id
-
-    # Path 2: legacy TFGEN_API_KEY (backwards compat).
-    legacy = _legacy_key()
-    if legacy and hmac.compare_digest(provided, legacy):
-        return _LEGACY_ACTOR_ID
-
-    raise HTTPException(status_code=401, detail="invalid API key")
+    return _authenticate(x_api_key, authorization).actor_id
 
 
 def quota_for_actor(actor_id: str) -> float:

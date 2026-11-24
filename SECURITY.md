@@ -18,10 +18,10 @@ Roles are configured in `[roles]` of `.streamlit/secrets.toml`:
 |---|---|
 | `admin` | All features, manage `roles.toml` via the in-app sidebar, view all users' audit/cost. |
 | `editor` | All generation/push, sees only own audit/cost. |
-| `contributor` | Generation OK; push only to repos owned by their GitHub username (e.g. `alice@x.com` can push to `alice/foo` but not `acme/foo`). |
+| `contributor` | Generation OK; push to, and import Terraform context from, only repos owned by the GitHub username mapped to them in `[github_usernames]` (e.g. `"alice@x.com" = "alice-gh"` allows `alice-gh/foo` but not `acme/foo`). No mapping, no repos. |
 | `viewer` | Parse and view outputs only. No generation, no push. |
 
-Default for any signed-in user not in the role map is `viewer` (most restrictive). See `roles.py:_CAPS` for the full capability matrix and `roles.py:can_push_to` for the push-scope rule.
+Default for any signed-in user not in the role map is `viewer`. Any Google account can complete sign-in, so on an open OAuth client that means anyone can parse prompts at the viewer quota. To refuse accounts that are not listed, set `default = "none"`: they are stopped right after sign-in, before any model or provider API call. See `roles.py:_CAPS` for the full capability matrix and `roles.py:can_push_to` for the push-scope rule.
 
 Example `[roles]` block:
 
@@ -180,6 +180,7 @@ Phase 10 Track 2 added four entry points that share the same `core.service.gener
 - **No Google OAuth gate**: the Streamlit `[auth]` block does not apply to CLI / HTTP / Slack / JIRA. Each surface has its own auth (env var, shared header secret, signing secret, HMAC) summarized in the README. Treat each surface as a separate authorization plane that needs its own access review.
 - **PII redaction is preserved**: every surface calls `redact.redact()` before the prompt reaches Anthropic. Same patterns as the Streamlit app; same audit-log entries with per-category counts.
 - **Quota model is per-actor when per-key tokens are configured** (Phase 21b). Each `[api_keys]` entry in `roles.toml` carries its own `daily_quota_usd`. Legacy `TFGEN_API_KEY` callers fall back to the env-var `TFGEN_HTTP_DAILY_QUOTA_USD` cap (default $5/day) which still acts as a shared ceiling across all Slack / JIRA actors that have not been issued per-key tokens.
+- **The quota check fails closed**: on HTTP, Slack and JIRA an unknown spend total blocks the request instead of counting as $0. That covers a GitHub error while reading the usage file, a corrupt usage file, and a deployment with neither `GITHUB_TOKEN`/`GITHUB_REPO` nor a writable local file (the serverless case). Spend that could not be written back is kept in memory and added to later checks in the same worker. The counter is still a read-modify-write file, not an atomic store, so concurrent requests can overshoot slightly.
 - **Audit identifier shape**: HTTP uses `sha256(api_key)[:16]`, Slack uses `sha256(slack_user_id)[:16]`, JIRA uses `sha256(creator_email)[:16]`. Different hash inputs, same on-disk JSONL files, so per-actor history is queryable by hash. The hash itself never round-trips back to the underlying identifier from the log alone.
 - **GitHub push uses the server's `GITHUB_TOKEN`, not the caller's**: callers pushing through `/api/push` or via the Slack/JIRA flow share the bot's identity. If a customer needs caller-supplied tokens, that's a `PushRequest.github_token` field gated behind a separate role; not in this build.
 - **No callback secrets in transit to Anthropic**: the JIRA REST credentials and Slack `response_url` strings are never included in the prompt sent to Claude. They live in env vars / the inbound payload only.
@@ -229,9 +230,17 @@ The helper generates a fresh `secrets.token_urlsafe(32)` token, computes its SHA
 
 The legacy single shared secret `TFGEN_API_KEY` env var is still accepted for backwards compatibility. Requests matching the legacy value are tagged with the synthetic `actor_id = "legacy-tfgen"`; their daily cap falls back to `TFGEN_HTTP_DAILY_QUOTA_USD` or `[cost] daily_cap_usd` in `roles.toml`. New deployments should migrate to per-key tokens via the issuance helper. The legacy path will be removed in a future phase once all known callers have rotated.
 
+#### Role enforcement and push limits on the HTTP API
+
+The role stored with each key is enforced on every request, using the same capability matrix as the Streamlit app: `viewer` keys cannot generate, and only `editor` and `admin` keys can call `/api/push`. The legacy key is treated as `editor` unless `TFGEN_LEGACY_KEY_ROLE` is set; an unrecognised role (in the env var or in `roles.toml`) is treated as `viewer`.
+
+`/api/push` writes with the server's GitHub token, so its target is constrained server-side: the repo must be listed in `TFGEN_PUSH_ALLOWED_REPOS` (pushes are disabled while the list is empty), file paths must be inside the tool's own output directories, the default branch is refused, and the route shares the per-client rate limit with `/api/generate`. Rejected pushes are audit-logged as `http_push_rejected`.
+
 ### GitHub-backed audit sink (Phase 21c)
 
 `audit_github_sink.py` is an opt-in mirror of every `audit.log()` call to a monthly JSONL file in the configured GitHub repo. Defence in depth: the existing local-file path and the per-user GitHub log keep writing independently, so a sink failure cannot lose events. Failures (429, 5xx, 404 on the audit-repo root, network errors) buffer events in memory and retry on the next call; after 10 consecutive failures the buffered batch is dropped with an `st.error` notification (Streamlit context) or a `print` to stderr (headless context). User-facing operations are NEVER blocked by a sink failure.
+
+The sink target (`[audit] github_audit_repo` in `roles.toml`) must be a **private** repository: events contain actor e-mails, client IPs and prompt previews. The sink checks the repository's visibility on every flush and writes nothing if it is public; the committed `roles.toml` ships a `REPLACE_WITH_...` placeholder, which keeps the sink off even if the flag is enabled.
 
 #### Storage layout
 

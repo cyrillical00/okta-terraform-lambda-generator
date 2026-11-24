@@ -18,7 +18,7 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\cbot\\TF Tool\\.claude\\check-unpushed.ps1\""
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:CLAUDE_PROJECT_DIR\\.claude\\check-unpushed.ps1\""
           }
         ]
       }

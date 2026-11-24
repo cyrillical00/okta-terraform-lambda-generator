@@ -163,9 +163,11 @@ def test_push_missing_api_key_returns_401():
 
 def test_push_happy_path_returns_commit_url():
     fake_url = "https://github.com/owner/repo/commit/abcdef"
+    # The target repo has to be on the server-side allow-list.
     with patch("api.index.push_to_github", return_value=fake_url), \
          patch("api.index.audit.log"), \
-         patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_fake_for_test"}):
+         patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_fake_for_test",
+                                 "TFGEN_PUSH_ALLOWED_REPOS": "owner/repo"}):
         c = _client()
         r = c.post(
             "/api/push",
@@ -187,13 +189,14 @@ def test_push_runtime_error_returns_400():
     400 so the caller can fix their request."""
     with patch("api.index.push_to_github", side_effect=RuntimeError("Repository 'owner/missing' not found.")), \
          patch("api.index.audit.log"), \
-         patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_fake_for_test"}):
+         patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_fake_for_test",
+                                 "TFGEN_PUSH_ALLOWED_REPOS": "owner/missing"}):
         c = _client()
         r = c.post(
             "/api/push",
             headers={"X-API-Key": os.environ["TFGEN_API_KEY"]},
             json={
-                "files": {"a.tf": "x"},
+                "files": {"terraform/a.tf": "x"},
                 "repo": "owner/missing",
                 "commit_message": "test",
             },

@@ -54,6 +54,11 @@ Required:
   ANTHROPIC_API_KEY     for the LLM client
 
 Optional:
+  JIRA_BASE_URL         e.g. https://yourcompany.atlassian.net. When set, the
+                        callback credentials are only ever sent there. When
+                        unset, the issue's own link is used, but only if it
+                        is an https *.atlassian.net address. Set this for
+                        Jira Data Center or a custom domain.
   JIRA_AUTO_TRANSITION  "1" to auto-transition issues after pushing
   JIRA_TRANSITION_ID    transition ID to use (project-specific)
   ANTHROPIC_MODEL       defaults to claude-haiku-4-5-20251001
@@ -65,6 +70,9 @@ import hashlib
 import hmac
 import json as _json
 import os
+import re
+import threading
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -84,7 +92,7 @@ from headless_rate_limit import (
 )
 
 from api.index import _build_files, app
-from api._bootstrap import prepare_client, quota_blocked
+from api._bootstrap import USAGE_UNAVAILABLE_MESSAGE, prepare_client, quota_blocked
 
 
 # ─── HMAC verification ───────────────────────────────────────────────────
@@ -174,20 +182,96 @@ def _adf_to_text(adf: Any) -> str:
 # ─── JIRA REST callbacks ─────────────────────────────────────────────────
 
 
-def _jira_base_url(issue_self: str) -> str:
-    """Extract the JIRA base URL from an issue's `self` link.
+_ATLASSIAN_CLOUD_HOST = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\.atlassian\.net$")
 
-    e.g. https://company.atlassian.net/rest/api/3/issue/PROJ-123
-         -> https://company.atlassian.net
-    Falls back to "" so a missing `self` doesn't crash the handler;
-    the caller checks for empty before issuing callback requests.
+
+def _https_origin(url: str) -> str:
+    """Return "https://host" for a plain https URL, else "".
+
+    Rejects other schemes, embedded credentials and non-default ports, so
+    "https://good.example@evil.example" cannot pass as good.example.
     """
-    if not issue_self:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password:
+            return ""
+        if parsed.port not in (None, 443):
+            return ""
+    except ValueError:
         return ""
-    parsed = urlparse(issue_self)
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    return f"{parsed.scheme}://{parsed.netloc}"
+    return f"https://{host}"
+
+
+def _jira_base_url(issue_self: str) -> str:
+    """Where the JIRA callback (and its Basic-auth credentials) may be sent.
+
+    The webhook body names its own host in `issue.self`. Trusting that would
+    let whoever can craft a signed payload point the bot's JIRA credentials at
+    a server of their choice, so:
+
+      * if JIRA_BASE_URL is set, that is the only destination and the payload
+        is not consulted
+      * otherwise the payload's link is accepted only when it is an https
+        address on *.atlassian.net (Jira Cloud)
+
+    Returns "" in every other case; callers skip the callback on "".
+    """
+    pinned = (os.environ.get("JIRA_BASE_URL") or "").strip()
+    if pinned:
+        return _https_origin(pinned)
+    origin = _https_origin(issue_self or "")
+    if origin and _ATLASSIAN_CLOUD_HOST.match(origin[len("https://"):]):
+        return origin
+    return ""
+
+
+# ─── replay protection ───────────────────────────────────────────────────
+
+# JIRA project keys start with an upper-case letter; the issue number follows
+# a dash. The key ends up in a branch name and a REST path, so it is checked.
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}-[0-9]{1,10}$")
+
+# A signed delivery is accepted once. Identical bodies seen again inside the
+# window are acknowledged without running anything. Native JIRA webhooks also
+# carry a `timestamp` (ms); when present, stale deliveries are refused.
+_REPLAY_WINDOW_SECONDS = 600
+_FUTURE_SKEW_SECONDS = 300
+_seen_deliveries: dict[str, float] = {}
+_seen_lock = threading.Lock()
+
+
+def _delivery_is_stale(payload: dict) -> bool:
+    """True when the signed body carries a timestamp outside the window."""
+    ts = payload.get("timestamp")
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return False
+    seconds = ts / 1000.0 if ts > 1e11 else float(ts)
+    age = time.time() - seconds
+    return age > _REPLAY_WINDOW_SECONDS or age < -_FUTURE_SKEW_SECONDS
+
+
+def _is_duplicate_delivery(body: bytes) -> bool:
+    """Record this signed body; True if the same body was seen recently.
+
+    Held in process memory, so it covers retries and replays that reach the
+    same warm worker. It is not a cross-instance guarantee.
+    """
+    digest = hashlib.sha256(body).hexdigest()
+    now = time.monotonic()
+    with _seen_lock:
+        for key in [k for k, seen in _seen_deliveries.items() if now - seen > _REPLAY_WINDOW_SECONDS]:
+            del _seen_deliveries[key]
+        if digest in _seen_deliveries:
+            return True
+        _seen_deliveries[digest] = now
+        return False
+
+
+def _reset_replay_state_for_tests() -> None:
+    """Test-only convenience: forget every delivery seen so far."""
+    with _seen_lock:
+        _seen_deliveries.clear()
 
 
 def _jira_auth() -> tuple[str, str] | None:
@@ -283,6 +367,15 @@ async def jira_webhook(request: Request) -> Any:
     if not summary and not description_text:
         return {"status": "ignored", "reason": "empty summary and description"}
 
+    # From here on the event would cost model tokens and a push, so the
+    # remaining checks run first. All answer 200: a non-2xx makes JIRA retry.
+    if not _ISSUE_KEY_RE.fullmatch(issue_key):
+        return {"status": "ignored", "reason": "invalid issue key"}
+    if _delivery_is_stale(payload):
+        return {"status": "ignored", "reason": "stale delivery"}
+    if _is_duplicate_delivery(body):
+        return {"status": "ignored", "reason": "duplicate delivery"}
+
     prompt = summary if not description_text else f"{summary}\n\n{description_text}".strip()
 
     creator = (fields.get("creator") or {}) if isinstance(fields.get("creator"), dict) else {}
@@ -367,7 +460,10 @@ async def jira_webhook(request: Request) -> Any:
 
     blocked, spent, quota = quota_blocked(ctx)
     if blocked:
-        msg = f"TF Tool quota exceeded for today: ${spent:.2f} of ${quota:.2f} USD."
+        msg = (
+            f"TF Tool: {USAGE_UNAVAILABLE_MESSAGE}" if ctx.usage_unavailable
+            else f"TF Tool quota exceeded for today: ${spent:.2f} of ${quota:.2f} USD."
+        )
         ok, err = _post_comment(base_url, issue_key, msg)
         audit.log(
             actor_label, "quota_blocked",

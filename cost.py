@@ -43,6 +43,19 @@ _github_repo: str = ""
 # isolation only matters for test contexts (clear_session() handles that).
 _session: dict[str, dict[str, float]] = {}
 
+# Spend this process could not write to the store that reads come from,
+# keyed by (actor hash, UTC day). It is added to every read so a failed write
+# is still counted against the quota, at least by the worker that incurred it.
+_unpersisted: dict[tuple[str, str], float] = {}
+
+
+class UsageUnavailable(RuntimeError):
+    """Today's spend cannot be read, or there is nowhere to record it.
+
+    Raised by `today_usd(..., strict=True)`. Quota checks on the headless
+    surfaces treat it as "blocked": an unknown total must not count as zero.
+    """
+
 
 def configure(github_token: str, github_repo: str) -> None:
     global _github_token, _github_repo
@@ -52,6 +65,7 @@ def configure(github_token: str, github_repo: str) -> None:
 
 def clear_session() -> None:
     _session.clear()
+    _unpersisted.clear()
 
 
 def _email_hash(email: str) -> str:
@@ -126,8 +140,22 @@ def _bump_daily(email: str, delta_usd: float) -> None:
             _bump_github(email, today, delta_usd)
             return
         except Exception:
-            pass
-    _bump_local(email, today, delta_usd)
+            # Reads come from GitHub, so the local fallback below would not
+            # be seen by the next quota check. Remember the amount here.
+            _note_unpersisted(email, today, delta_usd)
+        _bump_local(email, today, delta_usd)
+        return
+    if not _bump_local(email, today, delta_usd):
+        _note_unpersisted(email, today, delta_usd)
+
+
+def _note_unpersisted(email: str, today: str, delta: float) -> None:
+    key = (_email_hash(email), today)
+    _unpersisted[key] = round(_unpersisted.get(key, 0.0) + delta, 6)
+
+
+def _pending(email: str, today: str) -> float:
+    return _unpersisted.get((_email_hash(email), today), 0.0)
 
 
 def _bump_github(email: str, today: str, delta: float) -> None:
@@ -148,7 +176,8 @@ def _bump_github(email: str, today: str, delta: float) -> None:
             raise
 
 
-def _bump_local(email: str, today: str, delta: float) -> None:
+def _bump_local(email: str, today: str, delta: float) -> bool:
+    """Add `delta` to the local usage file. Returns False if it could not be written."""
     try:
         os.makedirs(os.path.dirname(_LOCAL_PATH), exist_ok=True)
         try:
@@ -160,8 +189,20 @@ def _bump_local(email: str, today: str, delta: float) -> None:
         per_user[today] = round(per_user.get(today, 0.0) + delta, 6)
         with open(_LOCAL_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        return True
     except OSError:
-        pass
+        return False
+
+
+def _local_store_writable() -> bool:
+    """True if the local usage file could be written (without writing it)."""
+    directory = os.path.dirname(_LOCAL_PATH) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return False
+    target = _LOCAL_PATH if os.path.exists(_LOCAL_PATH) else directory
+    return os.access(target, os.W_OK)
 
 
 def quota_used_by_actor(actor_id: str) -> float:
@@ -176,9 +217,17 @@ def quota_used_by_actor(actor_id: str) -> float:
     return today_usd(actor_id)
 
 
-def today_usd(email: str) -> float:
-    """Return the user's accumulated USD spend for today (UTC)."""
+def today_usd(email: str, *, strict: bool = False) -> float:
+    """Return the user's accumulated USD spend for today (UTC).
+
+    By default a storage problem reads as 0.0, which suits display code.
+    With `strict=True` nothing is guessed: `UsageUnavailable` is raised when
+    the stored total cannot be read (any GitHub error other than "no usage
+    file yet", or a corrupt local file) and when there is no store the
+    counter could be written to. Quota enforcement uses strict mode.
+    """
     today = _today_key()
+    pending = _pending(email, today)
     if _github_token and _github_repo:
         try:
             from github import Github, GithubException
@@ -187,19 +236,29 @@ def today_usd(email: str) -> float:
             try:
                 contents = repo.get_contents(_gh_path(email))
                 data = json.loads(base64.b64decode(contents.content).decode("utf-8"))
-                return float(data.get(today, 0.0) or 0.0)
+                return float(data.get(today, 0.0) or 0.0) + pending
             except GithubException as e:
                 if e.status == 404:
-                    return 0.0
+                    return pending
                 raise
-        except Exception:
-            return 0.0
+        except Exception as e:
+            if strict:
+                raise UsageUnavailable("usage store could not be read") from e
+            return pending
     try:
         with open(_LOCAL_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return float(data.get(email or "anonymous", {}).get(today, 0.0) or 0.0)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return 0.0
+            raw = f.read()
+        data = json.loads(raw) if raw.strip() else {}
+        stored = float(data.get(email or "anonymous", {}).get(today, 0.0) or 0.0)
+    except FileNotFoundError:
+        stored = 0.0
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError, ValueError) as e:
+        if strict:
+            raise UsageUnavailable("local usage file could not be read") from e
+        return pending
+    if strict and not _local_store_writable():
+        raise UsageUnavailable("no writable usage store is configured")
+    return stored + pending
 
 
 def total_session(email: str) -> dict:
